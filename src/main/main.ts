@@ -30,7 +30,7 @@ function createVideoWindow() {
     const videoX = Math.floor((width - videoWidth) / 2)
     const videoY = Math.floor((height - videoHeight) / 2)
     
-    windowManager.createWindow({
+    const window = windowManager.createWindow({
       id: 'video',
       width: videoWidth,
       height: videoHeight,
@@ -39,8 +39,36 @@ function createVideoWindow() {
       title: 'MPV Player - 视频播放',
       route: '#/video',
       frame: true,
-      alwaysOnTop: false
+      alwaysOnTop: false,
+      show: true, // 立即显示窗口
+      transparent: false // 暂时不透明，先确保窗口正常显示
     })
+    
+    // 确保窗口显示
+    if (window && !window.isDestroyed()) {
+      window.once('ready-to-show', () => {
+        if (!window.isDestroyed()) {
+          window.show()
+          window.focus()
+          console.log('[Main] Video window ready and shown')
+        }
+      })
+      
+      // 如果窗口已经准备好了，立即显示
+      if (window.isVisible()) {
+        window.focus()
+      }
+    }
+    
+    return window
+  } else {
+    // 如果窗口已存在，确保它显示
+    const existingWindow = windowManager.getWindow('video')
+    if (existingWindow && !existingWindow.isDestroyed()) {
+      existingWindow.show()
+      existingWindow.focus()
+      existingWindow.moveTop()
+    }
   }
 }
 

@@ -1,9 +1,12 @@
 <template>
   <div class="video-view">
-    <!-- 控制面板区域（mpv 会在独立窗口中播放） -->
-    <div class="video-container">
-      <div class="mpv-info">
-        <p class="info-text">MPV 正在独立窗口中播放视频</p>
+    <!-- 视频渲染区域（MPV 会嵌入到这里） -->
+    <div class="video-container" id="video-container">
+      <!-- MPV 会通过 --wid 参数嵌入到这个区域 -->
+      <!-- 在嵌入模式下，这个区域会被 MPV 的原生视图占据 -->
+      <!-- 在非嵌入模式下（fallback），显示提示信息 -->
+      <div v-if="!isEmbedded" class="mpv-info">
+        <p class="info-text">{{ embedStatus }}</p>
         <p class="hint">控制面板在下方</p>
       </div>
     </div>
@@ -67,6 +70,8 @@ const currentTime = ref(0)
 const duration = ref(0)
 const volume = ref(100)
 const currentVideoName = ref<string>('')
+const isEmbedded = ref(false)
+const embedStatus = ref<string>('正在初始化视频播放器...')
 
 const formatTime = (seconds: number): string => {
   if (!seconds || isNaN(seconds)) return '00:00'
@@ -136,10 +141,24 @@ onMounted(() => {
 
     window.electronAPI.on('play-video', (file: { name: string; path: string }) => {
       currentVideoName.value = file.name
+      // 假设嵌入成功（实际状态会通过其他方式确认）
+      embedStatus.value = '视频正在加载...'
     })
     
     window.electronAPI.on('mpv-error', (error: { message: string }) => {
       console.error('MPV error:', error.message)
+      embedStatus.value = `错误: ${error.message}`
+      isEmbedded.value = false
+    })
+
+    // 监听嵌入状态
+    window.electronAPI.on('mpv-embedded', (data: { embedded: boolean }) => {
+      isEmbedded.value = data.embedded
+      if (data.embedded) {
+        embedStatus.value = '视频已嵌入'
+      } else {
+        embedStatus.value = 'MPV 正在独立窗口中播放'
+      }
     })
   }
 })
@@ -170,6 +189,9 @@ onUnmounted(() => {
   top: 0;
   left: 0;
   z-index: 1;
+  background: #000;
+  /* MPV 会嵌入到这个容器中 */
+  /* 在嵌入模式下，原生视图会占据这个区域 */
 }
 
 /* 控制面板 Overlay */

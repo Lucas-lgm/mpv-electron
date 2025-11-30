@@ -1,15 +1,25 @@
 import { MPVController } from './mpvController'
 import { BrowserWindow } from 'electron'
+import { getNSViewPointer } from './nativeHelper'
+import { windowSync } from './windowSync'
 
 class MPVManager {
   private controller: MPVController | null = null
   private videoWindow: BrowserWindow | null = null
+  private embedMode: boolean = false // 暂时禁用嵌入模式，先确保 video 窗口显示
 
   /**
    * 设置视频窗口
    */
   setVideoWindow(window: BrowserWindow | null) {
     this.videoWindow = window
+  }
+
+  /**
+   * 设置是否使用嵌入模式
+   */
+  setEmbedMode(enabled: boolean) {
+    this.embedMode = enabled
   }
 
   /**
@@ -29,42 +39,78 @@ class MPVManager {
       this.controller = null
     }
 
-    // 获取视频窗口的 native 窗口 ID（用于嵌入 mpv）
     let windowId: number | undefined
+
+    // 只要有 video 窗口，就尝试获取窗口句柄传给 MPV（不管 embedMode 标志）
+    console.log('[MPVManager] Checking for video window...')
     if (this.videoWindow && !this.videoWindow.isDestroyed()) {
-      // macOS 上，需要等待窗口准备好
-      await new Promise(resolve => setTimeout(resolve, 200))
-      
-      // 在 macOS 上，Electron 的 getNativeWindowHandle 返回的是 NSWindow 的指针
-      // 但 mpv 的 --wid 需要的是 NSView 的指针（通常是 contentView）
-      // 我们需要通过 native API 获取 contentView
+      console.log('[MPVManager] Video window exists, will get window handle for MPV')
       try {
-        // 使用 Electron 的 nativeImage 或其他方式获取 contentView
-        // 实际上，在 macOS 上，我们可以直接使用窗口的 webContents 的 native view
-        const nativeHandle = this.videoWindow.getNativeWindowHandle()
-        if (nativeHandle && nativeHandle.length >= 8) {
-          // macOS 上，尝试获取 contentView
-          // 注意：这需要 native 模块支持，或者我们可以尝试直接使用窗口句柄
-          // 对于 mpv，在 macOS 上 --wid 需要的是 NSView 指针
-          // Electron 返回的是 NSWindow，我们需要获取其 contentView
-          // 暂时先尝试使用窗口句柄，如果不行再调整
-          const windowPtr = nativeHandle.readBigUInt64LE(0)
-          // 在 macOS 上，mpv 可能需要 contentView，但我们可以先尝试窗口句柄
-          windowId = Number(windowPtr)
-          console.log('Window ID for mpv (NSWindow pointer):', windowId)
+        // 确保窗口显示在前台
+        if (!this.videoWindow.isVisible()) {
+          this.videoWindow.show()
+        }
+        this.videoWindow.focus()
+        
+        // 等待窗口完全准备好（缩短等待时间，因为不需要编译）
+        console.log('[MPVManager] Waiting for video window to be ready...')
+        await new Promise(resolve => setTimeout(resolve, 300))
+        
+        // 检查窗口状态
+        if (this.videoWindow.isDestroyed()) {
+          console.warn('[MPVManager] Video window was destroyed, using standalone window')
+        } else {
+          console.log('[MPVManager] Video window is ready, getting window handle for MPV...')
+          console.log('[MPVManager] Window bounds:', this.videoWindow.getBounds())
+          console.log('[MPVManager] Window visible:', this.videoWindow.isVisible())
+          
+          // 直接获取窗口句柄（不需要编译，直接使用 Electron 返回的句柄）
+          console.log('[MPVManager] Getting window handle from video window...')
+          const windowHandle = getNSViewPointer(this.videoWindow)
+          
+          if (windowHandle) {
+            windowId = windowHandle
+            console.log('[MPVManager] ✅ Got window handle:', windowId)
+            console.log('[MPVManager] This handle will be passed to MPV via --wid parameter')
+          } else {
+            console.error('[MPVManager] ❌ Failed to get window handle!')
+          }
         }
       } catch (error) {
-        console.error('Failed to get window ID:', error)
+        console.error('[MPVManager] Error getting window handle:', error)
+      }
+    } else {
+      if (!this.videoWindow) {
+        console.warn('[MPVManager] ⚠️ No video window set! Call setVideoWindow() first.')
+      } else {
+        console.warn('[MPVManager] ⚠️ Video window is destroyed')
       }
     }
 
-    // 创建新的控制器（不尝试嵌入，让 mpv 使用独立窗口）
+    // 创建新的控制器
     this.controller = new MPVController()
 
-    // 监听状态更新（状态会通过 IPC 在主进程中转发到控制窗口）
-
-    // 启动 mpv
-    await this.controller.start(filePath)
+    // 启动 mpv（如果 windowId 存在，则嵌入模式；否则独立窗口）
+    if (windowId) {
+      console.log('[MPVManager] Starting MPV with window handle:', windowId)
+      console.log('[MPVManager] MPV should embed into video window')
+    } else {
+      console.warn('[MPVManager] Starting MPV without window handle - will create standalone window')
+    }
+    
+    await this.controller.start(filePath, windowId)
+    
+    // 如果 MPV 创建了独立窗口，启动窗口同步
+    if (this.controller.getProcess() && this.videoWindow) {
+      console.log('[MPVManager] Setting up window synchronization...')
+      windowSync.setVideoWindow(this.videoWindow)
+      windowSync.setMPVProcess(this.controller.getProcess())
+      // 延迟一下，等 MPV 窗口创建好
+      setTimeout(() => {
+        windowSync.start()
+        console.log('[MPVManager] Window synchronization started')
+      }, 1000)
+    }
   }
 
   /**
@@ -132,6 +178,7 @@ class MPVManager {
    * 清理
    */
   async cleanup(): Promise<void> {
+    windowSync.stop()
     if (this.controller) {
       await this.controller.quit()
       this.controller = null

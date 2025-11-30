@@ -9,6 +9,10 @@ lerna-debug.log*
 
 out
 
+native/build/
+
+hls_output
+
 node_modules
 dist
 dist-electron
@@ -25,3 +29,6 @@ dist-electron
 *.sln
 *.sw?
 
+
+# Large video files
+videos/

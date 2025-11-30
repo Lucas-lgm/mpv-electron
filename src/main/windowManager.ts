@@ -15,6 +15,7 @@ export interface WindowConfig {
   transparent?: boolean
   x?: number
   y?: number
+  show?: boolean // 是否立即显示窗口
 }
 
 export class WindowManager {
@@ -38,12 +39,22 @@ export class WindowManager {
       frame: config.frame !== false,
       alwaysOnTop: config.alwaysOnTop || false,
       transparent: config.transparent || false,
+      show: config.show !== undefined ? config.show : false, // 根据配置决定是否立即显示
       webPreferences: {
         preload: join(__dirname, '../preload/preload.js'),
         nodeIntegration: false,
         contextIsolation: true
       }
     })
+
+    // 窗口准备好后显示（如果没有配置立即显示，则等待 ready-to-show 事件）
+    if (!config.show && config.id !== 'video') {
+      window.once('ready-to-show', () => {
+        if (!window.isDestroyed()) {
+          window.show()
+        }
+      })
+    }
 
     // 设置 Content Security Policy
     window.webContents.on('did-finish-load', () => {

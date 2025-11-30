@@ -15,6 +15,13 @@ export interface MPVStatus {
 
 export class MPVController extends EventEmitter {
   private mpvProcess: ChildProcess | null = null
+  
+  /**
+   * 获取 MPV 进程（用于窗口同步）
+   */
+  getProcess(): ChildProcess | null {
+    return this.mpvProcess
+  }
   private socketPath: string
   private socket: Socket | null = null
   private requestId: number = 0
@@ -39,8 +46,10 @@ export class MPVController extends EventEmitter {
 
   /**
    * 启动 mpv 进程
+   * @param videoPath 视频文件路径
+   * @param windowId 可选的窗口 ID（NSView 指针），如果提供则嵌入到该窗口，否则创建独立窗口
    */
-  async start(videoPath: string): Promise<void> {
+  async start(videoPath: string, windowId?: number): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
         // 清理旧的 socket 文件
@@ -53,17 +62,26 @@ export class MPVController extends EventEmitter {
           '--no-terminal',
           '--no-osc', // 禁用默认的 OSC 控制器
           '--no-osd-bar', // 禁用 OSD 条
-          '--no-border', // 无边框
           '--keep-open=yes', // 播放结束后保持窗口
         ]
 
-        // macOS 上直接嵌入到 Electron 窗口很困难，因为：
-        // 1. Electron 返回的是 NSWindow 指针
-        // 2. mpv 需要的是 NSView (contentView) 指针
-        // 3. 需要 native 模块才能获取 contentView
-        // 
-        // 因此，我们让 mpv 创建独立窗口，但通过窗口管理使其与控制窗口协调显示
-        // 不尝试嵌入，让 mpv 使用自己的窗口
+        // 如果提供了 windowId，则尝试嵌入到指定窗口
+        if (windowId && process.platform === 'darwin') {
+          // macOS 上使用 --wid 参数尝试嵌入到指定窗口
+          // 注意：macOS 可能不允许跨进程窗口嵌入，这里尝试传递窗口句柄
+          args.push('--wid=' + windowId.toString())
+          args.push('--vo=gpu') // macOS 上使用 gpu 输出
+          // 尝试禁用窗口相关的自动行为
+          args.push('--no-window-dragging') // 禁用窗口拖拽
+          args.push('--ontop=no') // 不在顶层
+          console.log('[MPVController] Attempting to embed into window with handle:', windowId)
+          console.log('[MPVController] Note: macOS may not allow cross-process window embedding')
+          console.log('[MPVController] If this doesn\'t work, MPV will create a standalone window')
+        } else {
+          // 创建独立窗口
+          args.push('--no-border') // 无边框
+          console.log('[MPVController] Creating standalone window')
+        }
         
         // 视频文件路径放在最后
         args.push(videoPath)
@@ -76,14 +94,26 @@ export class MPVController extends EventEmitter {
 
         // 监听进程输出
         this.mpvProcess.stdout?.on('data', (data) => {
-          console.log('MPV stdout:', data.toString())
+          const output = data.toString()
+          console.log('[MPV] stdout:', output)
+          // 检查是否有关于窗口嵌入的信息
+          if (output.includes('wid') || output.includes('window') || output.includes('embed')) {
+            console.log('[MPV] ⚠️ Window-related output:', output)
+          }
         })
 
         this.mpvProcess.stderr?.on('data', (data) => {
           const errorMsg = data.toString()
-          console.error('MPV stderr:', errorMsg)
+          console.error('[MPV] stderr:', errorMsg)
+          
+          // 检查窗口相关的错误
+          if (errorMsg.includes('wid') || errorMsg.includes('window') || errorMsg.includes('embed')) {
+            console.error('[MPV] ⚠️ Window embedding error:', errorMsg)
+          }
+          
           // 某些 stderr 输出是正常的，但如果是致命错误需要处理
-          if (errorMsg.includes('Failed') || errorMsg.includes('Error')) {
+          if (errorMsg.includes('Failed to') || errorMsg.includes('Error:') || errorMsg.includes('FATAL')) {
+            console.error('[MPV] ❌ Fatal error:', errorMsg)
             reject(new Error(`MPV error: ${errorMsg}`))
           }
         })
