@@ -1,0 +1,31 @@
+import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import vue from '@vitejs/plugin-vue'
+import { resolve } from 'path'
+
+export default defineConfig({
+  main: {
+    plugins: [externalizeDepsPlugin()]
+  },
+  preload: {
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        output: {
+          format: 'cjs',
+          entryFileNames: 'preload.js',
+          chunkFileNames: '[name].js',
+          assetFileNames: '[name].[ext]'
+        }
+      }
+    }
+  },
+  renderer: {
+    resolve: {
+      alias: {
+        '@renderer': resolve('src/renderer/src')
+      }
+    },
+    plugins: [vue()]
+  }
+})
+

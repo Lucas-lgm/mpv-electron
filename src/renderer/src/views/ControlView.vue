@@ -1,0 +1,257 @@
+<template>
+  <div class="control-view">
+    <header class="header">
+      <h1 class="title">{{ currentVideoName || 'MPV Player' }}</h1>
+    </header>
+    <main class="playback-controls">
+      <div class="control-buttons">
+        <button @click="togglePlayPause" class="btn-control">
+          {{ isPlaying ? '⏸️' : '▶️' }}
+        </button>
+        <button @click="seekBackward" class="btn-control">⏪</button>
+        <button @click="seekForward" class="btn-control">⏩</button>
+        <button @click="stop" class="btn-control">⏹️</button>
+      </div>
+      <div class="progress-container">
+        <div class="time-info">
+          <span>{{ formatTime(currentTime) }}</span>
+          <span>{{ formatTime(duration) }}</span>
+        </div>
+        <input
+          type="range"
+          :min="0"
+          :max="duration || 100"
+          :value="currentTime"
+          @input="onSeek"
+          class="progress-bar"
+        />
+      </div>
+      <div class="volume-control">
+        <span>🔊</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          :value="volume"
+          @input="onVolumeChange"
+          class="volume-bar"
+        />
+        <span>{{ volume }}%</span>
+      </div>
+    </main>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
+
+const isPlaying = ref(false)
+const currentTime = ref(0)
+const duration = ref(0)
+const volume = ref(100)
+const currentVideoName = ref<string>('')
+
+const formatTime = (seconds: number): string => {
+  if (!seconds || isNaN(seconds)) return '00:00'
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
+
+const togglePlayPause = () => {
+  isPlaying.value = !isPlaying.value
+  if (window.electronAPI) {
+    window.electronAPI.send(isPlaying.value ? 'control-play' : 'control-pause')
+  }
+}
+
+const seekBackward = () => {
+  const newTime = Math.max(0, currentTime.value - 10)
+  seekTo(newTime)
+}
+
+const seekForward = () => {
+  const newTime = Math.min(duration.value, currentTime.value + 10)
+  seekTo(newTime)
+}
+
+const stop = () => {
+  isPlaying.value = false
+  seekTo(0)
+  if (window.electronAPI) {
+    window.electronAPI.send('control-pause')
+  }
+}
+
+const seekTo = (time: number) => {
+  currentTime.value = time
+  if (window.electronAPI) {
+    window.electronAPI.send('control-seek', time)
+  }
+}
+
+const onSeek = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  seekTo(parseFloat(target.value))
+}
+
+const onVolumeChange = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  volume.value = parseInt(target.value)
+  // 可以发送音量控制消息
+  if (window.electronAPI) {
+    window.electronAPI.send('control-volume', volume.value)
+  }
+}
+
+onMounted(() => {
+  // 监听视频时间更新
+  if (window.electronAPI) {
+    window.electronAPI.on('video-time-update', (data: { currentTime: number; duration: number }) => {
+      currentTime.value = data.currentTime
+      duration.value = data.duration
+    })
+    
+    window.electronAPI.on('video-ended', () => {
+      isPlaying.value = false
+      currentTime.value = 0
+    })
+
+    // 监听播放视频，更新标题
+    window.electronAPI.on('play-video', (file: { name: string; path: string }) => {
+      currentVideoName.value = file.name
+    })
+  }
+})
+
+onUnmounted(() => {
+  if (window.electronAPI) {
+    window.electronAPI.removeListener('video-time-update', () => {})
+    window.electronAPI.removeListener('video-ended', () => {})
+    window.electronAPI.removeListener('play-video', () => {})
+  }
+})
+</script>
+
+<style scoped>
+.control-view {
+  width: 100%;
+  height: 100vh;
+  background: #1a1a1a;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  padding: 1.5rem 2rem;
+  background: #2a2a2a;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playback-controls {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  gap: 1.5rem;
+  max-width: 600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.control-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.btn-control {
+  width: 50px;
+  height: 50px;
+  border: none;
+  background: #667eea;
+  color: white;
+  border-radius: 50%;
+  font-size: 1.5rem;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.btn-control:hover {
+  background: #5568d3;
+  transform: scale(1.1);
+}
+
+.btn-control:active {
+  transform: scale(0.95);
+}
+
+.progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.time-info {
+  display: flex;
+  justify-content: space-between;
+  color: #ccc;
+  font-size: 0.875rem;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #3a3a3a;
+  outline: none;
+  cursor: pointer;
+}
+
+.progress-bar::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #667eea;
+  cursor: pointer;
+}
+
+.volume-control {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: #ccc;
+}
+
+.volume-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: #3a3a3a;
+  outline: none;
+  cursor: pointer;
+}
+
+.volume-bar::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #667eea;
+  cursor: pointer;
+}
+</style>
+
