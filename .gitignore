@@ -32,3 +32,11 @@ dist-electron
 
 # Large video files
 videos/
+# Native bindings
+native/build/
+native/Release/
+native/Debug/
+build/Release/
+build/Debug/
+*.node
+

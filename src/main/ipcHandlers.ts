@@ -72,42 +72,24 @@ export function setupIpcHandlers() {
       videoWindow.webContents.send('play-video', file)
       
       try {
-        // 使用 mpv 播放视频（会将窗口句柄传给 MPV）
-        console.log('[IPC] Starting MPV playback, window handle should be passed...')
+        // 使用 mpv 播放视频（会自动选择 libmpv 或 IPC 模式）
+        console.log('[IPC] Starting MPV playback...')
         await mpvManager.playVideo(file.path)
         
-        // 通知窗口嵌入状态（假设成功，实际状态会在启动时确定）
-        // 如果嵌入失败，会自动回退到独立窗口模式
+        // 通知窗口嵌入状态
+        const isUsingLibMPV = mpvManager.isUsingLibMPV()
         videoWindow.webContents.send('mpv-embedded', {
-          embedded: true // 假设成功，实际情况可能不同
+          embedded: isUsingLibMPV, // libmpv 可以真正嵌入，IPC 模式在 macOS 上不能
+          mode: isUsingLibMPV ? 'libmpv' : 'ipc'
         })
         
-        // 开始状态轮询并转发到视频窗口的控制面板
-        const controller = mpvManager.getController()
-        if (controller) {
-          controller.on('status', (status) => {
-            videoWindow.webContents.send('video-time-update', {
-              currentTime: status.position,
-              duration: status.duration
-            })
-          })
-          
-          controller.on('error', (error) => {
-            console.error('MPV controller error:', error)
-            videoWindow.webContents.send('mpv-error', {
-              message: error instanceof Error ? error.message : 'Unknown error'
-            })
-          })
-
-          controller.on('stopped', () => {
-            console.log('MPV stopped')
-          })
-        }
-
-        // 延迟检查是否成功启动（给 MPV 一些时间）
+        console.log('[IPC] MPV started successfully, mode:', isUsingLibMPV ? 'libmpv (native)' : 'IPC (spawn)')
+        
+        // 延迟检查是否成功启动
         setTimeout(() => {
+          const controller = mpvManager.getController()
           if (controller && controller.getStatus()) {
-            console.log('[IPC] MPV started successfully')
+            console.log('[IPC] MPV status check passed')
           } else {
             console.warn('[IPC] MPV may not have started correctly')
           }
@@ -119,7 +101,8 @@ export function setupIpcHandlers() {
           message: error instanceof Error ? error.message : 'Unknown error'
         })
         videoWindow.webContents.send('mpv-embedded', {
-          embedded: false
+          embedded: false,
+          mode: 'none'
         })
       }
     }
