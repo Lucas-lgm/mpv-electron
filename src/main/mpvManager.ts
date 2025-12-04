@@ -1,11 +1,10 @@
-import { MPVController } from './mpvController'
 import { LibMPVController, isLibMPVAvailable } from './libmpv'
 import { BrowserWindow } from 'electron'
 import { getNSViewPointer } from './nativeHelper'
 import { windowSync } from './windowSync'
 
 // 统一控制器类型：要么是 IPC 控制器，要么是 libmpv 控制器
-type Controller = MPVController | LibMPVController
+type Controller = LibMPVController
 
 class MPVManager {
   private controller: Controller | null = null
@@ -47,10 +46,7 @@ class MPVManager {
   async playVideo(filePath: string): Promise<void> {
     // 如果已有控制器，先关闭
     if (this.controller) {
-      // MPVController 有 quit，LibMPVController 有 destroy
-      if (this.controller instanceof MPVController) {
-        await this.controller.quit()
-      } else if (this.controller instanceof LibMPVController) {
+      if (this.controller instanceof LibMPVController) {
         await this.controller.destroy()
       }
       this.controller = null
@@ -230,9 +226,7 @@ class MPVManager {
   async cleanup(): Promise<void> {
     windowSync.stop()
     if (this.controller) {
-      if (this.controller instanceof MPVController) {
-        await this.controller.quit()
-      } else if (this.controller instanceof LibMPVController) {
+      if (this.controller instanceof LibMPVController) {
         await this.controller.destroy()
       }
       this.controller = null

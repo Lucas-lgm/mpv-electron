@@ -86,18 +86,23 @@ app.whenReady().then(() => {
 // 导出函数供 IPC 使用
 export { createVideoWindow }
 
-app.on('window-all-closed', async () => {
-  const { mpvManager } = await import('./mpvManager')
-  await mpvManager.cleanup()
+app.on('window-all-closed', () => {
+  // 异步清理 mpv，不阻塞主线程退出
+  import('./mpvManager')
+    .then(({ mpvManager }) => mpvManager.cleanup().catch(err => {
+      console.error('[Main] mpv cleanup error:', err)
+    }))
 
   // 不再区分 macOS，关掉最后一个窗口就退出
   app.quit()
 })
 
-app.on('before-quit', async () => {
-  // 应用退出前清理 mpv
-  const { mpvManager } = await import('./mpvManager')
-  await mpvManager.cleanup()
+app.on('before-quit', () => {
+  // 应用退出前清理 mpv，同样异步甩出去
+  import('./mpvManager')
+    .then(({ mpvManager }) => mpvManager.cleanup().catch(err => {
+      console.error('[Main] mpv cleanup error (before-quit):', err)
+    }))
 })
 
 // 在开发环境下，终端发来的 SIGINT/SIGTERM 也主动退出应用

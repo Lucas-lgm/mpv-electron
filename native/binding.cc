@@ -19,17 +19,8 @@ struct MPVInstance {
     MPVInstance() : ctx(nullptr), running(false), hasTsfn(false) {}
     
     ~MPVInstance() {
-        running = false;
-        if (ctx) {
-            mpv_wakeup(ctx);
-        }
-        if (eventThread.joinable()) {
-            eventThread.join();
-        }
-        if (ctx) {
-            mpv_terminate_destroy(ctx);
-            ctx = nullptr;
-        }
+        // 这里只负责释放 TSFN，不在析构里做重型的 mpv 销毁，
+        // 避免在 JS 主线程上触发 mpv 的 vo_destroy 造成卡死。
         if (hasTsfn) {
             tsfn.Release();
             hasTsfn = false;
@@ -507,7 +498,7 @@ Napi::Value SetEventCallback(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
-// 销毁实例
+// 销毁实例（在后台线程中完成重型销毁，避免阻塞 JS 主线程）
 Napi::Value Destroy(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -520,8 +511,6 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
     int64_t id = info[0].As<Napi::Number>().Int64Value();
     
     MPVInstance* instance = nullptr;
-    bool needJoin = false;
-    
     {
         std::lock_guard<std::mutex> lock(instancesMutex);
         auto it = instances.find(id);
@@ -531,21 +520,34 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
         }
         
         instance = it->second;
+        // 从全局表中摘掉，后续生命周期交给后台线程
+        instances.erase(it);
+    }
+    
+    // 在后台线程里做真正的销毁（停止事件循环、join、mpv_terminate_destroy），
+    // 避免在 JS 主线程上同步阻塞，导致窗口关闭卡死。
+    std::thread([instance]() {
+        if (!instance) return;
+        
+        // 停止事件循环
         instance->running = false;
         if (instance->ctx) {
             mpv_wakeup(instance->ctx);
         }
         
-        needJoin = instance->eventThread.joinable();
-        instances.erase(it);
-    }
-    
-    // 在锁外等待线程结束
-    if (needJoin) {
-        instance->eventThread.join();
-    }
-    
-    delete instance;
+        // 等事件线程自然退出
+        if (instance->eventThread.joinable()) {
+            instance->eventThread.join();
+        }
+        
+        // 销毁 mpv 实例
+        if (instance->ctx) {
+            mpv_terminate_destroy(instance->ctx);
+            instance->ctx = nullptr;
+        }
+        
+        delete instance;
+    }).detach();
     
     return Napi::Boolean::New(env, true);
 }

@@ -92,7 +92,7 @@ export class LibMPVController extends EventEmitter {
       
       // 在初始化前设置选项（如果需要）
       // 注意：libmpv 默认已经设置了 no-terminal，不需要再设置
-      // 某些选项可能不存在，忽略错误
+      // 这些 UI 相关选项在某些构建里可能不存在，失败就忽略
       try {
         await this.setOption('no-osc', true)
       } catch (error) {
@@ -101,12 +101,6 @@ export class LibMPVController extends EventEmitter {
       
       try {
         await this.setOption('no-osd-bar', true)
-      } catch (error) {
-        // 忽略，可能不存在
-      }
-      
-      try {
-        await this.setOption('keep-open', 'yes')
       } catch (error) {
         // 忽略，可能不存在
       }
@@ -323,6 +317,7 @@ export class LibMPVController extends EventEmitter {
   async destroy(): Promise<void> {
     if (this.instanceId !== null) {
       try {
+        // 通知 mpv 正常退出，释放所有资源和窗口
         mpvBinding!.destroy(this.instanceId)
       } catch (error) {
         console.error('Error destroying MPV instance:', error)
