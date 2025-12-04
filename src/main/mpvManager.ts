@@ -1,5 +1,5 @@
 import { LibMPVController, isLibMPVAvailable } from './libmpv'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, screen } from 'electron'
 import { getNSViewPointer } from './nativeHelper'
 import { windowSync } from './windowSync'
 
@@ -16,7 +16,27 @@ class MPVManager {
    * 设置视频窗口
    */
   setVideoWindow(window: BrowserWindow | null) {
+    // 如果之前有窗口，先移除监听
+    if (this.videoWindow && !this.videoWindow.isDestroyed()) {
+      this.videoWindow.removeAllListeners('close')
+      this.videoWindow.removeAllListeners('closed')
+      this.videoWindow.removeAllListeners('resize')
+    }
+    
     this.videoWindow = window
+    
+    // 为新窗口添加关闭监听，确保窗口关闭时立即停止渲染循环
+    if (window && !window.isDestroyed()) {
+      window.on('close', () => {
+        this.cleanup()
+      })
+      window.on('closed', () => {
+        // 窗口已关闭，清理引用
+        if (this.videoWindow === window) {
+          this.videoWindow = null
+        }
+      })
+    }
   }
 
   /**
@@ -97,15 +117,21 @@ class MPVManager {
         this.controller = new LibMPVController()
         await (this.controller as LibMPVController).initialize()
         
-        // 设置窗口 ID（真正嵌入）
+        // 设置窗口 ID（真正嵌入 + 创建 GL/render context）
         await (this.controller as LibMPVController).setWindowId(windowId)
-        console.log('[MPVManager] ✅ Window embedded via libmpv')
+        console.log('[MPVManager] ✅ Render context created for Electron window')
+        
+        // 设置窗口大小变化监听
+        this.setupWindowResizeListener()
         
         // 加载并播放文件
         await (this.controller as LibMPVController).loadFile(filePath)
         
         // 设置事件监听
         this.setupEventHandlers()
+        
+        // 渲染循环现在在原生代码中自动运行，不需要手动启动
+        // this.startRenderLoop() // 已移除：渲染循环在原生代码中处理
         
         return
       } catch (error) {
@@ -116,6 +142,50 @@ class MPVManager {
     }
   }
   
+  /**
+   * 设置窗口大小变化监听
+   * 简化：native 端会在每次渲染时自动从 view 获取最新尺寸
+   * 这里只设置一次初始尺寸，之后由 native 端自动处理
+   */
+  private setupWindowResizeListener(): void {
+    if (!this.videoWindow || !this.controller || !(this.controller instanceof LibMPVController)) {
+      return
+    }
+    
+    // 只在窗口创建时设置一次初始尺寸
+    // native 端会在每次渲染时自动从 view 获取最新尺寸，所以不需要频繁更新
+    const setInitialSize = () => {
+      if (!this.videoWindow || this.videoWindow.isDestroyed()) {
+        return
+      }
+      
+      try {
+        const display = screen.getDisplayMatching(this.videoWindow!.getBounds())
+        const scaleFactor = display.scaleFactor || 1.0
+        const contentSize = this.videoWindow!.getContentSize()
+        
+        if (Array.isArray(contentSize) && contentSize.length >= 2) {
+          const logicalWidth = contentSize[0]
+          const logicalHeight = contentSize[1]
+          
+          if (logicalWidth > 10 && logicalHeight > 10) {
+            const pixelWidth = Math.round(logicalWidth * scaleFactor)
+            const pixelHeight = Math.round(logicalHeight * scaleFactor)
+            
+            // 设置初始尺寸（native 端会在渲染时自动更新）
+            ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight)
+            console.log(`[MPVManager] Initial window size: ${pixelWidth}x${pixelHeight} (logical: ${logicalWidth}x${logicalHeight}, scale: ${scaleFactor})`)
+          }
+        }
+      } catch (error) {
+        console.error('[MPVManager] Error setting initial window size:', error)
+      }
+    }
+    
+    // 延迟一点设置，确保窗口完全准备好
+    setTimeout(setInitialSize, 100)
+  }
+
   /**
    * 设置事件处理器
    */
@@ -128,6 +198,7 @@ class MPVManager {
     // 监听状态更新
     ;(this.controller as LibMPVController).on('status', (status: any) => {
       if (videoWindow && !videoWindow.isDestroyed()) {
+        // 将时间信息发给渲染层
         videoWindow.webContents.send('video-time-update', {
           currentTime: status.position,
           duration: status.duration
@@ -220,10 +291,13 @@ class MPVManager {
     return this.controller?.getStatus() || null
   }
 
+  // 渲染循环已移至原生代码，不再需要 JS 层面的循环
+
   /**
    * 清理
    */
   async cleanup(): Promise<void> {
+    // 渲染循环在原生代码中自动停止，不需要手动停止
     windowSync.stop()
     if (this.controller) {
       if (this.controller instanceof LibMPVController) {

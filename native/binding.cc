@@ -15,8 +15,9 @@ struct MPVInstance {
     bool running;
     Napi::ThreadSafeFunction tsfn;
     bool hasTsfn;
+    struct GLRenderContext* glCtx;
     
-    MPVInstance() : ctx(nullptr), running(false), hasTsfn(false) {}
+    MPVInstance() : ctx(nullptr), running(false), hasTsfn(false), glCtx(nullptr) {}
     
     ~MPVInstance() {
         // 这里只负责释放 TSFN，不在析构里做重型的 mpv 销毁，
@@ -27,6 +28,12 @@ struct MPVInstance {
         }
     }
 };
+
+// 来自 mpv_render_gl.mm
+extern "C" struct GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv);
+extern "C" void mpv_destroy_gl_context(int64_t instanceId);
+extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
+extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 
 // 发送到 JS 的事件数据
 struct MPVEventMessage {
@@ -119,6 +126,67 @@ void eventLoop(MPVInstance* instance) {
             break;
         }
     }
+}
+
+// 绑定 NSView 并创建 GL + mpv_render_context
+Napi::Value AttachView(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number, viewPtr: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    int64_t viewPtr = info[1].As<Napi::Number>().Int64Value();
+    
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    auto it = instances.find(id);
+    if (it == instances.end() || !it->second->ctx) {
+        Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    MPVInstance* inst = it->second;
+    
+    // 避免重复创建
+    if (!inst->glCtx) {
+        inst->glCtx = mpv_create_gl_context_for_view(id, (void*)viewPtr, inst->ctx);
+        if (!inst->glCtx) {
+            Napi::Error::New(env, "Failed to create GL context for view").ThrowAsJavaScriptException();
+            return env.Null();
+        }
+    }
+    
+    return env.Undefined();
+}
+
+// 渲染一帧（已废弃：渲染循环现在在原生代码中自动运行）
+// 保留此函数以保持 API 兼容性，但实际不做任何操作
+Napi::Value RenderFrame(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    // 渲染循环现在在原生代码中自动运行，不需要从 JS 调用
+    return env.Undefined();
+}
+
+// 设置窗口尺寸（由 Electron 调用）
+Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number, width: number, height: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    int width = info[1].As<Napi::Number>().Int32Value();
+    int height = info[2].As<Napi::Number>().Int32Value();
+    
+    mpv_set_window_size(id, width, height);
+    
+    return env.Undefined();
 }
 
 // 创建 MPV 实例（不立即初始化，允许先设置选项）
@@ -526,7 +594,7 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
     
     // 在后台线程里做真正的销毁（停止事件循环、join、mpv_terminate_destroy），
     // 避免在 JS 主线程上同步阻塞，导致窗口关闭卡死。
-    std::thread([instance]() {
+    std::thread([instance, id]() {
         if (!instance) return;
         
         // 停止事件循环
@@ -539,6 +607,9 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
         if (instance->eventThread.joinable()) {
             instance->eventThread.join();
         }
+
+        // 销毁渲染上下文
+        mpv_destroy_gl_context(id);
         
         // 销毁 mpv 实例
         if (instance->ctx) {
@@ -564,6 +635,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "command"), Napi::Function::New(env, Command));
     exports.Set(Napi::String::New(env, "setEventCallback"), Napi::Function::New(env, SetEventCallback));
     exports.Set(Napi::String::New(env, "destroy"), Napi::Function::New(env, Destroy));
+    exports.Set(Napi::String::New(env, "attachView"), Napi::Function::New(env, AttachView));
+    exports.Set(Napi::String::New(env, "renderFrame"), Napi::Function::New(env, RenderFrame));
+    exports.Set(Napi::String::New(env, "setWindowSize"), Napi::Function::New(env, SetWindowSize));
     
     return exports;
 }

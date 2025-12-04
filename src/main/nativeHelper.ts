@@ -22,20 +22,22 @@ export function getNSViewPointer(window: BrowserWindow): number | null {
     }
 
     // 获取窗口句柄（Electron 返回的 native handle）
+    // 在 macOS 上，getNativeWindowHandle() 返回的是 NSView* (content view)
     const nativeHandle = window.getNativeWindowHandle()
     if (!nativeHandle || nativeHandle.length < 8) {
       console.error('[NativeHelper] Failed to get native window handle')
       return null
     }
 
-    // 直接读取指针值（这是窗口句柄）
-    const windowPtr = nativeHandle.readBigUInt64LE(0)
-    const windowId = Number(windowPtr)
+    // 直接读取指针值（这是 NSView* 的指针值）
+    const viewPtr = nativeHandle.readBigUInt64LE(0)
+    const viewId = Number(viewPtr)
     
-    console.log('[NativeHelper] ✅ Got window handle:', windowId)
-    console.log('[NativeHelper] Will pass this handle to MPV via --wid parameter')
+    console.log('[NativeHelper] ✅ Got NSView pointer:', viewId)
+    console.log('[NativeHelper] This is the content view of the Electron window')
+    console.log('[NativeHelper] Will attach OpenGL context to this view for mpv rendering')
     
-    return windowId
+    return viewId
   } catch (error) {
     console.error('[NativeHelper] Error getting window handle:', error)
     return null

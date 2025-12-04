@@ -98,14 +98,12 @@ const onSeek = (event: Event) => {
 const onVolumeChange = (event: Event) => {
   const target = event.target as HTMLInputElement
   volume.value = parseInt(target.value)
-  // 可以发送音量控制消息
   if (window.electronAPI) {
     window.electronAPI.send('control-volume', volume.value)
   }
 }
 
 onMounted(() => {
-  // 监听视频时间更新
   if (window.electronAPI) {
     window.electronAPI.on('video-time-update', (data: { currentTime: number; duration: number }) => {
       currentTime.value = data.currentTime
@@ -117,7 +115,6 @@ onMounted(() => {
       currentTime.value = 0
     })
 
-    // 监听播放视频，更新标题
     window.electronAPI.on('play-video', (file: { name: string; path: string }) => {
       currentVideoName.value = file.name
     })
@@ -137,14 +134,16 @@ onUnmounted(() => {
 .control-view {
   width: 100%;
   height: 100vh;
-  background: #1a1a1a;
+  /* 关键：让 Electron 窗口内容透明，避免覆盖底层 OpenGL */
+  background: transparent;
   display: flex;
   flex-direction: column;
+  pointer-events: none; /* 让点击事件透传到底层（如果以后要在 HTML 上操作，再调整） */
 }
 
 .header {
   padding: 1.5rem 2rem;
-  background: #2a2a2a;
+  background: rgba(42, 42, 42, 0.7);
   border-bottom: 1px solid #3a3a3a;
 }
 
@@ -169,6 +168,7 @@ onUnmounted(() => {
   max-width: 600px;
   margin: 0 auto;
   width: 100%;
+  pointer-events: auto; /* 控件本身仍然可以交互 */
 }
 
 .control-buttons {
@@ -254,4 +254,3 @@ onUnmounted(() => {
   cursor: pointer;
 }
 </style>
-

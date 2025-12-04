@@ -13,6 +13,8 @@ interface MPVBinding {
   command(instanceId: number, args: string[]): boolean
   // 事件现在会传递一个对象，包含 eventId / name / value 等
   setEventCallback(instanceId: number, callback: (event: any) => void): boolean
+  attachView(instanceId: number, viewPtr: number): void
+  setWindowSize(instanceId: number, width: number, height: number): void
   destroy(instanceId: number): boolean
 }
 
@@ -90,9 +92,16 @@ export class LibMPVController extends EventEmitter {
       // 创建实例（未初始化）
       this.instanceId = mpvBinding!.create()
       
-      // 在初始化前设置选项（如果需要）
+      // 在初始化前设置选项（使用 render API 时，必须设置 vo=gpu，不能设置 wid）
       // 注意：libmpv 默认已经设置了 no-terminal，不需要再设置
-      // 这些 UI 相关选项在某些构建里可能不存在，失败就忽略
+      try {
+        // 使用 GPU 渲染（render API 模式必需，这样 mpv 不会创建自己的窗口）
+        await this.setOption('vo', 'libmpv')
+        console.log('[libmpv] ✅ Set vo=libmpv for render API')
+      } catch (error) {
+        console.warn('[libmpv] Failed to set vo=libmpv:', error)
+      }
+      
       try {
         await this.setOption('no-osc', true)
       } catch (error) {
@@ -105,12 +114,25 @@ export class LibMPVController extends EventEmitter {
         // 忽略，可能不存在
       }
       
-      // 现在初始化
+      // 现在初始化（初始化后不能再设置 vo 和 wid）
       mpvBinding!.initialize(this.instanceId)
+      
+      // 初始化后设置视频缩放属性（保持原始宽高比）
+      try {
+        // 保持宽高比（原始比例）- 这是关键设置
+        await this.setProperty('keepaspect', true)
+        // 允许视频缩放（不禁止缩放）
+        await this.setProperty('video-unscaled', 'no')
+        // 确保使用容器的宽高比（而不是强制覆盖）
+        await this.setProperty('video-aspect-override', '-1')  // -1 表示使用容器/视频的原始宽高比
+        console.log('[libmpv] ✅ Video scaling: keepaspect=true, video-unscaled=no, video-aspect-override=-1')
+      } catch (error) {
+        console.warn('[libmpv] Failed to set video scaling properties:', error)
+      }
       
       // 设置事件回调
       mpvBinding!.setEventCallback(this.instanceId, (event: any) => {
-        console.log('[libmpv] Event:', event)
+        // console.log('[libmpv] Event:', event)
         this.handleEvent(event)
       })
       
@@ -129,10 +151,29 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      mpvBinding!.setWindowId(this.instanceId, windowId)
+      // B 方案：使用 render API，把 libmpv 绑定到 Electron 的 NSView 上
+      mpvBinding!.attachView(this.instanceId, windowId)
       this.emit('window-set', windowId)
     } catch (error) {
       throw new Error(`Failed to set window ID: ${error}`)
+    }
+  }
+
+  /**
+   * 设置窗口尺寸（由 Electron 窗口大小变化时调用）
+   * @param width 窗口宽度（像素）
+   * @param height 窗口高度（像素）
+   */
+  setWindowSize(width: number, height: number): void {
+    if (this.instanceId === null) {
+      console.warn('[libmpv] Cannot set window size: MPV instance not initialized')
+      return
+    }
+
+    try {
+      mpvBinding!.setWindowSize(this.instanceId, width, height)
+    } catch (error) {
+      console.error('[libmpv] Failed to set window size:', error)
     }
   }
 

@@ -3,7 +3,8 @@
     {
       "target_name": "mpv_binding",
       "sources": [
-        "binding.cc"
+        "binding.cc",
+        "mpv_render_gl.mm"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -24,12 +25,13 @@
             "MACOSX_DEPLOYMENT_TARGET": "10.13"
           },
           "link_settings": {
-            "libraries": [
-              "/opt/homebrew/opt/mpv/lib/libmpv.dylib",
-              "-framework Cocoa",
-              "-framework IOKit",
-              "-framework QuartzCore"
-            ],
+        "libraries": [
+          "/opt/homebrew/opt/mpv/lib/libmpv.dylib",
+          "-framework Cocoa",
+          "-framework IOKit",
+          "-framework QuartzCore",
+          "-framework CoreVideo"
+        ],
             "library_dirs": [
               "/opt/homebrew/opt/mpv/lib"
             ]

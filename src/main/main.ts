@@ -25,8 +25,8 @@ function createVideoWindow() {
     const { width, height } = primaryDisplay.workAreaSize
     
     // 视频窗口居中
-    const videoWidth = 1280
-    const videoHeight = 720
+    const videoWidth = 680
+    const videoHeight = 200
     const videoX = Math.floor((width - videoWidth) / 2)
     const videoY = Math.floor((height - videoHeight) / 2)
     
@@ -38,10 +38,11 @@ function createVideoWindow() {
       y: videoY,
       title: 'MPV Player - 视频播放',
       route: '#/video',
+      titleBarStyle: 'hiddenInset',
       frame: true,
       alwaysOnTop: false,
       show: true, // 立即显示窗口
-      transparent: false // 暂时不透明，先确保窗口正常显示
+      transparent: true // 必须透明才能看到底层 OpenGL 渲染（macOS 上透明窗口会失去边框，这是系统限制）
     })
     
     // 确保窗口显示
