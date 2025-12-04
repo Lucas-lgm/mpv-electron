@@ -1,6 +1,7 @@
 import { app, BrowserWindow, screen } from 'electron'
 import { WindowManager } from './windowManager'
 import { setupIpcHandlers } from './ipcHandlers'
+import { mpvManager } from './mpvManager'
 
 const windowManager = new WindowManager()
 
@@ -25,8 +26,8 @@ function createVideoWindow() {
     const { width, height } = primaryDisplay.workAreaSize
     
     // 视频窗口居中
-    const videoWidth = 680
-    const videoHeight = 200
+    const videoWidth = 1280
+    const videoHeight = 720
     const videoX = Math.floor((width - videoWidth) / 2)
     const videoY = Math.floor((height - videoHeight) / 2)
     
@@ -43,6 +44,13 @@ function createVideoWindow() {
       alwaysOnTop: false,
       show: true, // 立即显示窗口
       transparent: true // 必须透明才能看到底层 OpenGL 渲染（macOS 上透明窗口会失去边框，这是系统限制）
+    })
+
+    window.on('close', async () => {
+      console.log('[Main] Video window closed, cleaning up mpv...')
+      await mpvManager.cleanup().catch(err => {
+        console.error('[Main] mpv cleanup error (window close):', err)
+      })
     })
     
     // 确保窗口显示

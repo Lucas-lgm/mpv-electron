@@ -125,7 +125,9 @@ export class LibMPVController extends EventEmitter {
         await this.setProperty('video-unscaled', 'no')
         // 确保使用容器的宽高比（而不是强制覆盖）
         await this.setProperty('video-aspect-override', '-1')  // -1 表示使用容器/视频的原始宽高比
-        console.log('[libmpv] ✅ Video scaling: keepaspect=true, video-unscaled=no, video-aspect-override=-1')
+        // 重置可能影响视频显示的属性
+        await this.setProperty('panscan', 0)  // 重置平移扫描
+        console.log('[libmpv] ✅ Video scaling: keepaspect=true, video-unscaled=no, video-aspect-override=-1, panscan=0, zoom=0')
       } catch (error) {
         console.warn('[libmpv] Failed to set video scaling properties:', error)
       }

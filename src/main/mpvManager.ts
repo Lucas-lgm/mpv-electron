@@ -297,8 +297,11 @@ class MPVManager {
    * 清理
    */
   async cleanup(): Promise<void> {
-    // 渲染循环在原生代码中自动停止，不需要手动停止
+    // 先停止 windowSync，避免访问已销毁的窗口
     windowSync.stop()
+    windowSync.cleanup()
+    
+    // 然后销毁 controller（会停止渲染循环）
     if (this.controller) {
       if (this.controller instanceof LibMPVController) {
         await this.controller.destroy()

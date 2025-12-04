@@ -8,6 +8,7 @@
 #include <atomic>
 #include <dlfcn.h>
 #include <cmath>
+#include <unistd.h>  // for usleep
 
 extern "C" {
 #include <mpv/client.h>
@@ -19,18 +20,20 @@ struct GLRenderContext {
     NSOpenGLContext *glContext = nil;
     mpv_render_context *mpvRenderCtx = nullptr;
     CVDisplayLinkRef displayLink = nullptr;
-    int width = 0;
+    int width = 0;           // 当前使用的尺寸（已通知 mpv）
     int height = 0;
     std::atomic<bool> needRedraw;
+    std::atomic<bool> isDestroying;  // 标记正在销毁，回调应该立即退出
     std::mutex sizeMutex;  // 保护尺寸更新的互斥锁
     
-    GLRenderContext() : needRedraw(false) {}
+    GLRenderContext() : needRedraw(false), isDestroying(false) {}
     
     ~GLRenderContext() {
         stopDisplayLink();
     }
     
     void stopDisplayLink() {
+        // 这个方法现在由 destroyGL 直接处理，保留用于兼容性
         if (displayLink) {
             CVDisplayLinkStop(displayLink);
             CVDisplayLinkRelease(displayLink);
@@ -66,22 +69,51 @@ static CVReturn displayLinkCallback(
 {
     int64_t instanceId = (int64_t)(intptr_t)displayLinkContext;
     
+    // 关键：先检查 context 是否存在，避免在销毁后访问
+    GLRenderContext *rc = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        auto it = g_renderContexts.find(instanceId);
+        if (it == g_renderContexts.end()) {
+            // context 已被销毁，直接返回
+            return kCVReturnSuccess;
+        }
+        rc = it->second;
+        // 检查是否正在销毁或 displayLink 已停止
+        if (!rc || rc->isDestroying.load() || !rc->displayLink || rc->displayLink != displayLink) {
+            // context 正在被销毁或 displayLink 已停止，立即返回
+            return kCVReturnSuccess;
+        }
+    }
+    
+    // 再次检查是否正在销毁（双重检查，确保安全）
+    if (rc->isDestroying.load()) {
+        return kCVReturnSuccess;
+    }
+    
     // 检查是否需要重绘
     bool shouldRender = false;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
+        // 再次检查 context 是否还存在且未在销毁（双重检查）
         auto it = g_renderContexts.find(instanceId);
-        if (it != g_renderContexts.end()) {
-            // 即使 needRedraw 为 false，也检查窗口大小是否变化（强制更新尺寸）
-            shouldRender = it->second->needRedraw.load();
+        if (it != g_renderContexts.end() && it->second == rc && !rc->isDestroying.load()) {
+            shouldRender = rc->needRedraw.load();
             if (shouldRender) {
-                it->second->needRedraw = false;
+                rc->needRedraw = false;
             } else {
                 // 即使不需要重绘，也检查尺寸变化（确保尺寸始终是最新的）
-                // 这样即使 KVO 没有触发，我们也能检测到窗口大小变化
                 shouldRender = true; // 总是渲染，让 mpv_render_frame_for_instance 检查尺寸
             }
+        } else {
+            // context 在检查过程中被销毁了
+            return kCVReturnSuccess;
         }
+    }
+    
+    // 最后一次检查（在调用渲染函数前）
+    if (rc->isDestroying.load()) {
+        return kCVReturnSuccess;
     }
     
     if (shouldRender) {
@@ -166,8 +198,22 @@ static bool createGLForView(GLRenderContext *rc) {
 static void destroyGL(GLRenderContext *rc) {
     if (!rc) return;
     
-    // 停止 display link
-    rc->stopDisplayLink();
+    // 关键：先设置销毁标志，让所有正在执行或即将执行的回调立即退出
+    rc->isDestroying = true;
+    
+    // 然后停止 display link
+    if (rc->displayLink) {
+        CVDisplayLinkStop(rc->displayLink);
+        // 等待 displayLink 完全停止（最多等待 50ms）
+        // 设置 isDestroying 后，回调会立即退出，所以不需要等待太久
+        int waitCount = 0;
+        while (CVDisplayLinkIsRunning(rc->displayLink) && waitCount < 50) {
+            usleep(1000); // 等待 1ms
+            waitCount++;
+        }
+        CVDisplayLinkRelease(rc->displayLink);
+        rc->displayLink = nullptr;
+    }
     
     if (rc->mpvRenderCtx) {
         // 清除更新回调
@@ -181,6 +227,8 @@ static void destroyGL(GLRenderContext *rc) {
         [rc->glContext release];
         rc->glContext = nil;
     }
+    // view 不需要释放，它由 Electron 管理
+    rc->view = nil;
 }
 
 extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv) {
@@ -302,7 +350,8 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     }
     
     // 在锁外执行渲染，避免长时间持有锁
-    if (!rc || !rc->glContext || !rc->mpvRenderCtx || !rc->view) return;
+    // 检查是否正在销毁，如果是则立即返回
+    if (!rc || rc->isDestroying.load() || !rc->glContext || !rc->mpvRenderCtx || !rc->view) return;
 
     // 安全检查：确保 view 还没有被释放（通过检查 window 是否存在）
     @try {
@@ -316,35 +365,51 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
         return;
     }
 
-    // 简化：直接从 view 获取窗口尺寸（每次渲染时都获取最新尺寸）
+    // 关键修复：每次渲染时都从 view 获取最新尺寸，确保 mpv 始终使用正确的窗口大小
     int renderWidth = 0;
     int renderHeight = 0;
+    bool sizeChanged = false;
     
     @try {
         NSRect bounds = [rc->view bounds];
         
-        // 使用 convertSizeToBacking 获取实际像素尺寸（考虑 Retina）
-        NSSize backingSize = [rc->view convertSizeToBacking:bounds.size];
-        renderWidth = (int)backingSize.width;
-        renderHeight = (int)backingSize.height;
-        
-        // 如果转换失败，使用 bounds（非 Retina 显示器）
-        if (renderWidth <= 0 || renderHeight <= 0) {
-            renderWidth = (int)bounds.size.width;
-            renderHeight = (int)bounds.size.height;
+        // 验证 bounds 是否有效（窗口调整大小时，bounds 可能暂时无效）
+        if (bounds.size.width <= 0 || bounds.size.height <= 0 || 
+            bounds.size.width > 50000 || bounds.size.height > 50000) {
+            // bounds 无效，使用存储的尺寸
+            std::lock_guard<std::mutex> sizeLock(rc->sizeMutex);
+            if (rc->width > 0 && rc->height > 0) {
+                renderWidth = rc->width;
+                renderHeight = rc->height;
+            } else {
+                return; // 没有有效尺寸，跳过渲染
+            }
+        } else {
+            // 使用 convertSizeToBacking 获取实际像素尺寸（考虑 Retina）
+            NSSize backingSize = [rc->view convertSizeToBacking:bounds.size];
+            renderWidth = (int)backingSize.width;
+            renderHeight = (int)backingSize.height;
+            
+            // 如果转换失败，使用 bounds（非 Retina 显示器）
+            if (renderWidth <= 0 || renderHeight <= 0) {
+                renderWidth = (int)bounds.size.width;
+                renderHeight = (int)bounds.size.height;
+            }
+            
+            // 确保尺寸有效且合理
+            if (renderWidth <= 0) renderWidth = 1;
+            if (renderHeight <= 0) renderHeight = 1;
+            if (renderWidth > 20000) renderWidth = 20000;  // 限制最大尺寸
+            if (renderHeight > 20000) renderHeight = 20000;
         }
         
-        // 确保尺寸有效
-        if (renderWidth <= 0) renderWidth = 1;
-        if (renderHeight <= 0) renderHeight = 1;
-        
-        // 检查尺寸是否变化，如果变化则更新并通知 mpv
+        // 检查尺寸是否变化（简化：直接更新，不使用稳定检测）
         {
             std::lock_guard<std::mutex> sizeLock(rc->sizeMutex);
             int widthDiff = std::abs(rc->width - renderWidth);
             int heightDiff = std::abs(rc->height - renderHeight);
             
-            // 只有当尺寸变化超过 2 像素时才更新
+            // 只有当尺寸变化超过 2 像素时才更新（避免微小变化导致频繁更新）
             if (widthDiff > 2 || heightDiff > 2) {
                 if (rc->width > 0 && rc->height > 0) {
                     NSLog(@"[mpv_render_gl] Size changed: %dx%d -> %dx%d", 
@@ -352,17 +417,9 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
                 }
                 rc->width = renderWidth;
                 rc->height = renderHeight;
-                
-                // 通知 mpv 窗口大小变化了
-                if (rc->mpvRenderCtx) {
-                    mpv_render_context_update(rc->mpvRenderCtx);
-                }
-                rc->needRedraw = true;
-            } else {
-                // 尺寸没变化，使用存储的尺寸（避免重复计算）
-                renderWidth = rc->width;
-                renderHeight = rc->height;
+                sizeChanged = true;
             }
+            // renderWidth 和 renderHeight 已经是正确的值，直接使用
         }
     } @catch (NSException *exception) {
         // 如果获取失败，使用存储的尺寸
@@ -378,6 +435,23 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     if (renderWidth <= 0 || renderHeight <= 0) {
         return;
     }
+    
+    // 关键：在渲染前，先调用 mpv_render_context_update 处理任何更新
+    // 如果尺寸变化了，mpv 需要重新计算视频缩放和显示区域
+    if (rc->mpvRenderCtx) {
+        // 如果尺寸变化了，需要多次调用 update 确保 mpv 完全处理了尺寸变化
+        if (sizeChanged) {
+            // 尺寸变化时，先更新一次让 mpv 知道尺寸变了
+            mpv_render_context_update(rc->mpvRenderCtx);
+            // 再更新一次，确保 mpv 完全处理了尺寸变化（某些情况下需要多次调用）
+            mpv_render_context_update(rc->mpvRenderCtx);
+            NSLog(@"[mpv_render_gl] 🔄 Size changed, forcing mpv to recalculate (size: %dx%d)", 
+                  renderWidth, renderHeight);
+        } else {
+            // 正常情况，只调用一次
+            mpv_render_context_update(rc->mpvRenderCtx);
+        }
+    }
 
     @try {
     // OpenGL context 操作可以在任何线程执行（只要 context 已正确设置）
@@ -391,6 +465,8 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
         glClear(GL_COLOR_BUFFER_BIT);
 
     // 设置 FBO（OpenGL 帧缓冲对象）
+    // 关键：FBO、viewport 和 SW_SIZE 必须使用完全相同的尺寸！
+    // 这是 mpv 的要求，如果不匹配会导致视频缩放计算错误（偏移、拉伸、压缩、缩小）
     mpv_opengl_fbo fbo = {};
     fbo.fbo = 0;  // 0 表示使用默认帧缓冲
     fbo.w   = renderWidth;
@@ -399,7 +475,7 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     int flip_y = 1;  // 翻转 Y 轴（macOS 坐标系需要）
     
     // 告诉 mpv 窗口大小（像素尺寸）
-    // 重要：FBO 尺寸和 SW_SIZE 必须完全匹配，mpv 用这个计算视频缩放和宽高比
+    // 重要：SW_SIZE 必须和 FBO 尺寸完全匹配，mpv 用这个计算视频缩放和宽高比
     int win_size[2] = { renderWidth, renderHeight };
     
     mpv_render_param r_params[] = {
@@ -410,12 +486,25 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     };
 
         // 渲染视频帧
+        // 重要：每次渲染时都使用最新的 renderWidth/renderHeight
+        // 关键：FBO.w/h、viewport、SW_SIZE 必须完全一致！
         // mpv 会根据 SW_SIZE（窗口大小）和 keepaspect 设置自动缩放视频：
         // - keepaspect=true: 保持视频原始宽高比，在窗口内居中显示（可能有黑边）
         // - keepaspect=false: 拉伸视频填满整个窗口（可能变形）
         int render_result = mpv_render_context_render(rc->mpvRenderCtx, r_params);
         if (render_result < 0) {
             NSLog(@"[mpv_render_gl] ⚠️ Render failed: %d, size: %dx%d", render_result, renderWidth, renderHeight);
+        } else if (sizeChanged) {
+            // 尺寸变化后的第一次渲染，输出详细调试信息
+            // 验证 FBO、viewport 和 SW_SIZE 是否完全匹配
+            if (fbo.w != win_size[0] || fbo.h != win_size[1] || 
+                renderWidth != win_size[0] || renderHeight != win_size[1]) {
+                NSLog(@"[mpv_render_gl] ⚠️ Size mismatch! viewport=%dx%d, FBO=%dx%d, SW_SIZE=%dx%d", 
+                      renderWidth, renderHeight, fbo.w, fbo.h, win_size[0], win_size[1]);
+            } else {
+                NSLog(@"[mpv_render_gl] ✅ Rendered with new size: %dx%d (all match)", 
+                      renderWidth, renderHeight);
+            }
         }
     [rc->glContext flushBuffer];
     } @catch (NSException *exception) {
