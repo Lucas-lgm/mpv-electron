@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import * as path from 'path'
 
 // 定义 native binding 的类型
 interface MPVBinding {
@@ -10,7 +11,8 @@ interface MPVBinding {
   getProperty(instanceId: number, name: string): any
   setProperty(instanceId: number, name: string, value: string | number | boolean): boolean
   command(instanceId: number, args: string[]): boolean
-  setEventCallback(instanceId: number, callback: (eventId: number) => void): boolean
+  // 事件现在会传递一个对象，包含 eventId / name / value 等
+  setEventCallback(instanceId: number, callback: (event: any) => void): boolean
   destroy(instanceId: number): boolean
 }
 
@@ -18,9 +20,6 @@ interface MPVBinding {
 let mpvBinding: MPVBinding | null = null
 try {
   // 尝试多个可能的路径（相对于编译后的 out/main 目录）
-  const path = require('path')
-  const { app } = require('electron')
-  
   // 在开发和生产环境中的不同路径
   const possiblePaths = [
     // 开发环境：从 out/main 到 native/build/Release
@@ -70,7 +69,6 @@ export class LibMPVController extends EventEmitter {
     volume: 100,
     path: null
   }
-  private statusInterval: NodeJS.Timeout | null = null
 
   constructor() {
     super()
@@ -117,12 +115,10 @@ export class LibMPVController extends EventEmitter {
       mpvBinding!.initialize(this.instanceId)
       
       // 设置事件回调
-      mpvBinding!.setEventCallback(this.instanceId, (eventId: number) => {
-        this.handleEvent(eventId)
+      mpvBinding!.setEventCallback(this.instanceId, (event: any) => {
+        console.log('[libmpv] Event:', event)
+        this.handleEvent(event)
       })
-      
-      // 开始状态轮询
-      this.startStatusPolling()
       
       this.emit('initialized')
     } catch (error) {
@@ -274,18 +270,44 @@ export class LibMPVController extends EventEmitter {
   }
 
   /**
-   * 处理事件
+   * 处理事件（来自 C++ 的 ThreadSafeFunction）
    */
-  private handleEvent(eventId: number): void {
+  private handleEvent(event: any): void {
     // MPV 事件 ID 定义（从 client.h）
     const MPV_EVENT_PROPERTY_CHANGE = 22
     const MPV_EVENT_END_FILE = 7
     const MPV_EVENT_SHUTDOWN = 1
-    
+
+    const eventId: number = event?.eventId
+
     switch (eventId) {
-      case MPV_EVENT_PROPERTY_CHANGE:
-        this.updateStatus()
+      case MPV_EVENT_PROPERTY_CHANGE: {
+        const name: string | undefined = event?.name
+        const value = event?.value
+
+        if (!name) {
+          return
+        }
+
+        // 根据属性名更新 currentStatus
+        switch (name) {
+          case 'pause':
+            this.currentStatus.paused = !!value
+            break
+          case 'time-pos':
+            this.currentStatus.position = typeof value === 'number' ? value : 0
+            break
+          case 'duration':
+            this.currentStatus.duration = typeof value === 'number' ? value : 0
+            break
+          case 'volume':
+            this.currentStatus.volume = typeof value === 'number' ? value : 100
+            break
+        }
+
+        this.emit('status', { ...this.currentStatus })
         break
+      }
       case MPV_EVENT_END_FILE:
         this.emit('ended')
         break
@@ -296,51 +318,9 @@ export class LibMPVController extends EventEmitter {
   }
 
   /**
-   * 开始状态轮询
-   */
-  private startStatusPolling(): void {
-    this.statusInterval = setInterval(async () => {
-      await this.updateStatus()
-    }, 500)
-  }
-
-  /**
-   * 更新状态
-   */
-  private async updateStatus(): Promise<void> {
-    if (this.instanceId === null) return
-
-    try {
-      const [paused, position, duration, volume] = await Promise.all([
-        this.getProperty('pause'),
-        this.getProperty('time-pos'),
-        this.getProperty('duration'),
-        this.getProperty('volume')
-      ])
-
-      this.currentStatus = {
-        paused: paused || false,
-        position: position || 0,
-        duration: duration || 0,
-        volume: volume || 100,
-        path: this.currentStatus.path
-      }
-
-      this.emit('status', this.currentStatus)
-    } catch (error) {
-      // 忽略错误，可能 mpv 还未完全启动
-    }
-  }
-
-  /**
    * 清理资源
    */
   async destroy(): Promise<void> {
-    if (this.statusInterval) {
-      clearInterval(this.statusInterval)
-      this.statusInterval = null
-    }
-
     if (this.instanceId !== null) {
       try {
         mpvBinding!.destroy(this.instanceId)

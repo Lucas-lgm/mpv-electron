@@ -37,6 +37,23 @@ struct MPVInstance {
     }
 };
 
+// 发送到 JS 的事件数据
+struct MPVEventMessage {
+    mpv_event_id event_id;
+    std::string property_name;   // 对于 PROPERTY_CHANGE 事件
+    mpv_format property_format;  // 数据格式
+    double double_value;         // 用于 MPV_FORMAT_DOUBLE
+    int64_t int_value;           // 用于 MPV_FORMAT_INT64
+    int flag_value;              // 用于 MPV_FORMAT_FLAG
+    
+    MPVEventMessage()
+        : event_id(MPV_EVENT_NONE),
+          property_format(MPV_FORMAT_NONE),
+          double_value(0.0),
+          int_value(0),
+          flag_value(0) {}
+};
+
 static std::map<int64_t, MPVInstance*> instances;
 static std::mutex instancesMutex;
 static int64_t nextInstanceId = 1;
@@ -49,14 +66,63 @@ void eventLoop(MPVInstance* instance) {
             continue;
         }
         
-        // 通过 ThreadSafeFunction 发送事件到主线程
-        auto callback = [](Napi::Env env, Napi::Function jsCallback, mpv_event_id* eventId) {
-            jsCallback.Call({Napi::Number::New(env, *eventId)});
-            delete eventId;
+        // 构造事件消息
+        MPVEventMessage* msg = new MPVEventMessage();
+        msg->event_id = event->event_id;
+        
+        if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->data) {
+            mpv_event_property* prop = static_cast<mpv_event_property*>(event->data);
+            if (prop->name) {
+                msg->property_name = prop->name;
+            }
+            msg->property_format = prop->format;
+            
+            if (prop->format == MPV_FORMAT_DOUBLE && prop->data) {
+                msg->double_value = *static_cast<double*>(prop->data);
+            } else if (prop->format == MPV_FORMAT_INT64 && prop->data) {
+                msg->int_value = *static_cast<int64_t*>(prop->data);
+            } else if (prop->format == MPV_FORMAT_FLAG && prop->data) {
+                msg->flag_value = *static_cast<int*>(prop->data);
+            }
+        }
+        
+        // 通过 ThreadSafeFunction 发送事件到主线程（非阻塞，避免退出时死锁）
+        auto callback = [](Napi::Env env, Napi::Function jsCallback, MPVEventMessage* msg) {
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("eventId", Napi::Number::New(env, msg->event_id));
+            
+            if (!msg->property_name.empty()) {
+                obj.Set("name", Napi::String::New(env, msg->property_name));
+                obj.Set("format", Napi::Number::New(env, static_cast<int>(msg->property_format)));
+                
+                switch (msg->property_format) {
+                    case MPV_FORMAT_DOUBLE:
+                        obj.Set("value", Napi::Number::New(env, msg->double_value));
+                        break;
+                    case MPV_FORMAT_INT64:
+                        obj.Set("value", Napi::Number::New(env, static_cast<double>(msg->int_value)));
+                        break;
+                    case MPV_FORMAT_FLAG:
+                        obj.Set("value", Napi::Boolean::New(env, msg->flag_value != 0));
+                        break;
+                    default:
+                        break;
+                }
+            }
+            
+            jsCallback.Call({obj});
+            delete msg;
         };
         
-        mpv_event_id* eventId = new mpv_event_id(event->event_id);
-        instance->tsfn.BlockingCall(eventId, callback);
+        if (instance->hasTsfn) {
+            napi_status s = instance->tsfn.NonBlockingCall(msg, callback);
+            if (s != napi_ok) {
+                // JS 侧已经退出或队列满，丢弃事件避免卡住
+                delete msg;
+            }
+        } else {
+            delete msg;
+        }
         
         if (event->event_id == MPV_EVENT_SHUTDOWN) {
             break;
@@ -119,6 +185,12 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
             .ThrowAsJavaScriptException();
         return env.Null();
     }
+    
+    // 在初始化后订阅我们关心的属性变化（忽略错误）
+    mpv_observe_property(instance->ctx, 0, "pause", MPV_FORMAT_FLAG);
+    mpv_observe_property(instance->ctx, 0, "time-pos", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(instance->ctx, 0, "duration", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(instance->ctx, 0, "volume", MPV_FORMAT_DOUBLE);
     
     instance->running = true;
     

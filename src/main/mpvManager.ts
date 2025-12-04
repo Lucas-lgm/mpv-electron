@@ -4,22 +4,11 @@ import { BrowserWindow } from 'electron'
 import { getNSViewPointer } from './nativeHelper'
 import { windowSync } from './windowSync'
 
-// 统一的控制器接口
-interface IMPVController {
-  pause(): Promise<void>
-  play(): Promise<void>
-  togglePause(): Promise<void>
-  seek(time: number): Promise<void>
-  setVolume(volume: number): Promise<void>
-  stop(): Promise<void>
-  getStatus(): any
-  on(event: string, listener: (...args: any[]) => void): this
-  quit?(): Promise<void>
-  destroy?(): Promise<void>
-}
+// 统一控制器类型：要么是 IPC 控制器，要么是 libmpv 控制器
+type Controller = MPVController | LibMPVController
 
 class MPVManager {
-  private controller: IMPVController | null = null
+  private controller: Controller | null = null
   private videoWindow: BrowserWindow | null = null
   private useLibMPV: boolean = false
   private embedMode: boolean = false // 暂时禁用嵌入模式，先确保 video 窗口显示
@@ -41,7 +30,7 @@ class MPVManager {
   /**
    * 获取或创建 MPV 控制器
    */
-  getController(): IMPVController | null {
+  getController(): Controller | null {
     return this.controller
   }
   
@@ -58,9 +47,10 @@ class MPVManager {
   async playVideo(filePath: string): Promise<void> {
     // 如果已有控制器，先关闭
     if (this.controller) {
-      if (this.controller.quit) {
+      // MPVController 有 quit，LibMPVController 有 destroy
+      if (this.controller instanceof MPVController) {
         await this.controller.quit()
-      } else if (this.controller.destroy) {
+      } else if (this.controller instanceof LibMPVController) {
         await this.controller.destroy()
       }
       this.controller = null
@@ -128,35 +118,6 @@ class MPVManager {
         // 继续使用 IPC 模式
       }
     }
-
-    // 使用 IPC 模式（命令行启动 mpv）
-    console.log('[MPVManager] Using IPC mode (spawn mpv process)')
-    this.useLibMPV = false
-    this.controller = new MPVController()
-
-    // 启动 mpv（如果 windowId 存在，则尝试嵌入；否则独立窗口）
-    if (windowId) {
-      console.log('[MPVManager] Starting MPV with window handle:', windowId)
-      console.log('[MPVManager] Note: IPC mode may not support true embedding on macOS')
-    } else {
-      console.warn('[MPVManager] Starting MPV without window handle - will create standalone window')
-    }
-    
-    await (this.controller as MPVController).start(filePath, windowId)
-    
-    // 如果 MPV 创建了独立窗口，启动窗口同步
-    if ((this.controller as MPVController).getProcess && (this.controller as MPVController).getProcess() && this.videoWindow) {
-      console.log('[MPVManager] Setting up window synchronization...')
-      windowSync.setVideoWindow(this.videoWindow)
-      windowSync.setMPVProcess((this.controller as MPVController).getProcess()!)
-      setTimeout(() => {
-        windowSync.start()
-        console.log('[MPVManager] Window synchronization started')
-      }, 1000)
-    }
-    
-    // 设置事件监听
-    this.setupEventHandlers()
   }
   
   /**
@@ -169,7 +130,7 @@ class MPVManager {
     if (!videoWindow) return
     
     // 监听状态更新
-    this.controller.on('status', (status: any) => {
+    ;(this.controller as LibMPVController).on('status', (status: any) => {
       if (videoWindow && !videoWindow.isDestroyed()) {
         videoWindow.webContents.send('video-time-update', {
           currentTime: status.position,
@@ -179,7 +140,7 @@ class MPVManager {
     })
     
     // 监听错误
-    this.controller.on('error', (error: any) => {
+    ;(this.controller as any).on('error', (error: any) => {
       console.error('MPV controller error:', error)
       if (videoWindow && !videoWindow.isDestroyed()) {
         videoWindow.webContents.send('mpv-error', {
@@ -189,7 +150,7 @@ class MPVManager {
     })
     
     // 监听播放结束
-    this.controller.on('ended', () => {
+    ;(this.controller as any).on('ended', () => {
       console.log('MPV playback ended')
       if (videoWindow && !videoWindow.isDestroyed()) {
         videoWindow.webContents.send('video-ended')
@@ -197,7 +158,7 @@ class MPVManager {
     })
     
     // 监听停止
-    this.controller.on('stopped', () => {
+    ;(this.controller as any).on('stopped', () => {
       console.log('MPV stopped')
     })
   }
@@ -269,9 +230,9 @@ class MPVManager {
   async cleanup(): Promise<void> {
     windowSync.stop()
     if (this.controller) {
-      if (this.controller.quit) {
+      if (this.controller instanceof MPVController) {
         await this.controller.quit()
-      } else if (this.controller.destroy) {
+      } else if (this.controller instanceof LibMPVController) {
         await this.controller.destroy()
       }
       this.controller = null

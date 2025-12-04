@@ -5,9 +5,8 @@
     "module": "ESNext",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "skipLibCheck": true,
-    "types": ["node"],
 
-    /* Bundler mode */
+    /* Bundler mode for renderer */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
@@ -28,7 +27,12 @@
       "@renderer/*": ["./src/renderer/src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "include": [
+    "src/renderer/src/**/*.ts",
+    "src/renderer/src/**/*.d.ts",
+    "src/renderer/src/**/*.tsx",
+    "src/renderer/src/**/*.vue"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
 

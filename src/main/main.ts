@@ -87,13 +87,11 @@ app.whenReady().then(() => {
 export { createVideoWindow }
 
 app.on('window-all-closed', async () => {
-  // 清理 mpv
   const { mpvManager } = await import('./mpvManager')
   await mpvManager.cleanup()
-  
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+
+  // 不再区分 macOS，关掉最后一个窗口就退出
+  app.quit()
 })
 
 app.on('before-quit', async () => {
@@ -101,3 +99,12 @@ app.on('before-quit', async () => {
   const { mpvManager } = await import('./mpvManager')
   await mpvManager.cleanup()
 })
+
+// 在开发环境下，终端发来的 SIGINT/SIGTERM 也主动退出应用
+const handleSignal = (signal: NodeJS.Signals) => {
+  console.log(`[Main] Received ${signal}, quitting app...`)
+  app.quit()
+}
+
+process.on('SIGINT', handleSignal)
+process.on('SIGTERM', handleSignal)

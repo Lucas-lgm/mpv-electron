@@ -118,7 +118,7 @@ export class MPVController extends EventEmitter {
           }
         })
 
-        this.mpvProcess.on('error', (error) => {
+        this.mpvProcess.on('error', (error: Error) => {
           console.error('MPV spawn error:', error)
           this.emit('error', error)
           reject(error)
