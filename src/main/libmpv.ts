@@ -172,6 +172,28 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
+      // 调试：记录尺寸设置
+      console.log(`[libmpv] Setting window size: ${width}x${height}`)
+      
+      // 获取当前视频尺寸用于调试
+      try {
+        const vidWidth = await this.getProperty('width')
+        const vidHeight = await this.getProperty('height')
+        if (vidWidth && vidHeight) {
+          const vidAspect = Number(vidWidth) / Number(vidHeight)
+          const winAspect = width / height
+          console.log(`[libmpv] Video: ${vidWidth}x${vidHeight} (aspect=${vidAspect.toFixed(2)}), Window: ${width}x${height} (aspect=${winAspect.toFixed(2)})`)
+          
+          // 如果宽高比不匹配，确保 keepaspect 已设置
+          if (Math.abs(vidAspect - winAspect) > 0.01) {
+            console.log(`[libmpv] Aspect ratio mismatch, ensuring keepaspect is enabled`)
+            await this.setProperty('keepaspect', true)
+          }
+        }
+      } catch (e) {
+        // 忽略，视频可能还没加载
+      }
+      
       // Native 实现会自动触发渲染，并处理 letterbox
       mpvBinding!.setWindowSize(this.instanceId, width, height)
     } catch (error) {
@@ -224,6 +246,44 @@ export class LibMPVController extends EventEmitter {
     } catch (error) {
       console.warn(`Failed to get property ${name}:`, error)
       return null
+    }
+  }
+
+  /**
+   * 调试工具：打印当前视频和窗口状态
+   */
+  async debugVideoState(): Promise<void> {
+    if (this.instanceId === null) {
+      console.warn('[libmpv] Cannot debug: MPV instance not initialized')
+      return
+    }
+
+    try {
+      const width = await this.getProperty('width')
+      const height = await this.getProperty('height')
+      const keepaspect = await this.getProperty('keepaspect')
+      const videoUnscaled = await this.getProperty('video-unscaled')
+      const videoAspectOverride = await this.getProperty('video-aspect-override')
+      const panscan = await this.getProperty('panscan')
+      const videoZoom = await this.getProperty('video-zoom')
+      const videoScaleX = await this.getProperty('video-scale-x')
+      const videoScaleY = await this.getProperty('video-scale-y')
+      
+      console.log('=== MPV Video State Debug ===')
+      console.log(`Video size: ${width}x${height}`)
+      if (width && height) {
+        console.log(`Video aspect ratio: ${(Number(width) / Number(height)).toFixed(4)}`)
+      }
+      console.log(`keepaspect: ${keepaspect}`)
+      console.log(`video-unscaled: ${videoUnscaled}`)
+      console.log(`video-aspect-override: ${videoAspectOverride}`)
+      console.log(`panscan: ${panscan}`)
+      console.log(`video-zoom: ${videoZoom}`)
+      console.log(`video-scale-x: ${videoScaleX}`)
+      console.log(`video-scale-y: ${videoScaleY}`)
+      console.log('============================')
+    } catch (error) {
+      console.error('[libmpv] Failed to debug video state:', error)
     }
   }
 

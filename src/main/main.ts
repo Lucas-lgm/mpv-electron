@@ -26,8 +26,8 @@ function createVideoWindow() {
     const { width, height } = primaryDisplay.workAreaSize
     
     // 视频窗口居中
-    const videoWidth = 500
-    const videoHeight = 200
+    const videoWidth = 1280
+    const videoHeight = 720
     const videoX = Math.floor((width - videoWidth) / 2)
     const videoY = Math.floor((height - videoHeight) / 2)
     

@@ -28,6 +28,10 @@ struct GLRenderContext {
     int height = 0;
     std::mutex sizeMutex; // protect width/height
     
+    // 上次渲染的尺寸（用于检测尺寸变化）
+    int lastRenderedWidth = 0;
+    int lastRenderedHeight = 0;
+    
     // render scheduling flag (atomic)
     std::atomic<bool> needRedraw;
     std::atomic<bool> isDestroying;
@@ -151,9 +155,30 @@ static void renderThreadFunc(GLRenderContext *rc, int64_t instanceId) {
         
         // 渲染循环
         while (rc->renderThreadRunning.load() && !rc->isDestroying.load()) {
-            // 检查是否需要渲染
-            if (rc->needRedraw.load()) {
+            // 检查是否需要渲染（通过 needRedraw 标志或 mpv 的 update 回调）
+            // 即使 needRedraw 为 false，也检查 mpv 是否有新帧（因为尺寸变化时可能需要重新渲染）
+            bool shouldRender = rc->needRedraw.load();
+            
+            if (shouldRender) {
                 mpv_render_frame_for_instance(instanceId);
+            } else {
+                // 即使 needRedraw 为 false，也检查 mpv 是否有新帧
+                // 这样可以确保尺寸变化时能及时渲染
+                GLRenderContext *checkRc = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(g_renderMutex);
+                    auto it = g_renderContexts.find(instanceId);
+                    if (it != g_renderContexts.end()) {
+                        checkRc = it->second;
+                    }
+                }
+                
+                if (checkRc && checkRc->mpvRenderCtx) {
+                    uint64_t flags = mpv_render_context_update(checkRc->mpvRenderCtx);
+                    if (flags & MPV_RENDER_UPDATE_FRAME) {
+                        mpv_render_frame_for_instance(instanceId);
+                    }
+                }
             }
             
             // 短暂休眠，避免 CPU 占用过高
@@ -320,13 +345,10 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
         }
     }
     
-    // 尺寸变化时，立即通知 mpv 更新（在渲染线程中）
-    // 按照 mpv render API 的要求：
-    // 1. 更新 FBO 尺寸（在渲染时传递新的 width/height）
-    // 2. 传递 MPV_RENDER_PARAM_SW_SIZE（在渲染时）
-    // 3. 调用 mpv_render_context_update()（在渲染时，但尺寸变化后立即标记需要更新）
+    // 尺寸变化时，标记需要重绘
+    // mpv 会在 render 时自动检测尺寸变化并重新计算 letterbox
     if (sizeChanged) {
-        // 标记需要重绘
+        // 标记需要重绘（mpv 会在 render 时自动处理 letterbox）
         rc->needRedraw.store(true);
     }
 }
@@ -337,7 +359,8 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
 static void render_internal(GLRenderContext *rc) {
     if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
     
-    // get pixel target size (from stored fields)
+    // 使用存储的尺寸（由 Electron 通过 mpv_set_window_size 更新）
+    // 如果存储的尺寸无效，才从 NSView 读取作为 fallback
     int w = 0, h = 0;
     {
         std::lock_guard<std::mutex> sl(rc->sizeMutex);
@@ -345,17 +368,17 @@ static void render_internal(GLRenderContext *rc) {
         h = rc->height;
     }
     
-    // fallback: one-off read from view (only if stored sizes are 0)
+    // fallback: 如果存储的尺寸无效，从 NSView 读取（仅作为最后手段）
     if (w <= 0 || h <= 0) {
         @try {
             NSRect bounds = [rc->view bounds];
             NSSize backing = [rc->view convertSizeToBacking:bounds.size];
             int bw = (int)backing.width;
             int bh = (int)backing.height;
-            if (bw > 0 && bh > 0) { 
-                w = bw; 
-                h = bh; 
-                // 更新存储的尺寸，避免下次再读取
+            if (bw > 0 && bh > 0) {
+                w = bw;
+                h = bh;
+                // 更新存储的尺寸
                 rc->width = w;
                 rc->height = h;
             }
@@ -366,10 +389,27 @@ static void render_internal(GLRenderContext *rc) {
     
     if (w <= 0 || h <= 0) return;
     
-    // 调试：记录渲染尺寸
+    // 调试：记录渲染尺寸和视频参数
     static int lastRenderW = 0, lastRenderH = 0;
     if (w != lastRenderW || h != lastRenderH) {
-        NSLog(@"[mpv_render_gl] Rendering at %dx%d", w, h);
+        // 获取视频尺寸用于调试
+        int64_t vid_w = 0, vid_h = 0;
+        bool haveVidSize = false;
+        if (rc->mpvHandle) {
+            if (mpv_get_property(rc->mpvHandle, "width", MPV_FORMAT_INT64, &vid_w) >= 0 &&
+                mpv_get_property(rc->mpvHandle, "height", MPV_FORMAT_INT64, &vid_h) >= 0) {
+                haveVidSize = (vid_w > 0 && vid_h > 0);
+            }
+        }
+        
+        if (haveVidSize) {
+            double aspect = (double)vid_w / (double)vid_h;
+            double winAspect = (double)w / (double)h;
+            NSLog(@"[mpv_render_gl] Rendering: window=%dx%d (aspect=%.2f), video=%lldx%lld (aspect=%.2f)", 
+                  w, h, winAspect, (long long)vid_w, (long long)vid_h, aspect);
+        } else {
+            NSLog(@"[mpv_render_gl] Rendering: window=%dx%d (video size unknown)", w, h);
+        }
         lastRenderW = w;
         lastRenderH = h;
     }
@@ -378,48 +418,140 @@ static void render_internal(GLRenderContext *rc) {
     // 确保 OpenGL context 在当前线程是 current 的（渲染线程已经设置）
     // 注意：render_internal 现在在渲染线程中调用，context 已经是 current 的
     
-    // 设置 viewport 为整个窗口（mpv 会根据 keepaspect 自动处理 letterbox）
+    // 关键参数说明：
+    // 1. 窗口大小（w, h）：Electron 传入的像素尺寸
+    // 2. 视口大小（viewport）：OpenGL 渲染区域，应该等于窗口大小
+    // 3. 视频大小：mpv 视频的原始尺寸（从 mpv 属性获取）
+    // 4. keepaspect：mpv 属性，控制是否保持宽高比
+    // 
+    // mpv 的工作流程：
+    // - 从 FBO 尺寸（w, h）获取窗口大小
+    // - 调用 mp_get_src_dst_rects 计算 letterbox（考虑 keepaspect 和视频尺寸）
+    // - 使用 dst_rect 渲染视频到正确的位置和尺寸
+    // 
+    // 所以我们需要：
+    // - viewport = 窗口大小（整个窗口）
+    // - FBO 尺寸 = 窗口大小（让 mpv 知道窗口尺寸）
+    // - mpv 会自动计算 dst_rect（letterbox 区域）并只在这个区域渲染视频
+    
+    // 设置 viewport 为整个窗口
     glViewport(0, 0, w, h);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     
-    // 不手动计算 letterbox，让 mpv 根据 keepaspect 自动处理
-    // mpv 会根据 FBO 尺寸和视频宽高比自动计算并渲染
+    // 创建 FBO，使用完整的窗口尺寸
+    // mpv 会从 FBO 尺寸获取窗口大小，然后根据 keepaspect 和视频尺寸计算 letterbox
     mpv_opengl_fbo fbo;
     memset(&fbo, 0, sizeof(fbo));
     fbo.fbo = 0;
-    fbo.w = w;  // 使用窗口完整尺寸
-    fbo.h = h;  // mpv 会自动处理 letterbox
+    fbo.w = w;  // 窗口宽度（像素）
+    fbo.h = h;  // 窗口高度（像素）
     
+    // 按照 mpv 官方实现（libmpv_helper.swift）：
+    // OpenGL 渲染只需要传递 OPENGL_FBO 和 FLIP_Y
+    // 注意：MPV_RENDER_PARAM_SW_SIZE 只用于软件渲染（MPV_RENDER_API_TYPE_SW），不用于 OpenGL
     int flip_y = 1;
-    // 注意：对于 OpenGL 渲染，SW_SIZE 可能不需要，但参考实现中有，保留
-    int sw_size[2] = { w, h };
     
-    // 按照 mpv render API 的正确顺序：
-    // 1. 创建/更新 OpenGL FBO（已创建 fbo 结构）
-    // 2. 在 MPV_RENDER_PARAM_OPENGL_FBO 中传递新的 width/height（fbo.w 和 fbo.h）
-    // 3. 传递 MPV_RENDER_PARAM_SW_SIZE（当底层渲染目标尺寸变化时）
-    // 4. 调用 mpv_render_context_update() 通知 mpv 尺寸变化
     mpv_render_param params[] = {
         { MPV_RENDER_PARAM_OPENGL_FBO, &fbo },
         { MPV_RENDER_PARAM_FLIP_Y, &flip_y },
-        { MPV_RENDER_PARAM_SW_SIZE, sw_size },  // 当底层渲染目标尺寸变化时传递
         { MPV_RENDER_PARAM_INVALID, nullptr }
     };
     
-    // 先通知 mpv 尺寸/状态变化（在渲染前调用）
-    mpv_render_context_update(rc->mpvRenderCtx);
+    // 检查尺寸是否变化（通过比较当前尺寸和上次渲染尺寸）
+    bool sizeChanged = (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight);
     
-    // 然后渲染（传递新的 FBO 尺寸）
-    int res = mpv_render_context_render(rc->mpvRenderCtx, params);
-    if (res < 0) {
-        NSLog(@"[mpv_render_gl] mpv_render_context_render failed: %d (win %dx%d)", res, w, h);
+    // 通知 mpv 尺寸/状态变化
+    uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
+    bool hasNewFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
+    
+    // 调试日志：记录关键参数
+    if (sizeChanged) {
+        // 获取视频尺寸用于调试
+        int64_t vid_w = 0, vid_h = 0;
+        bool haveVidSize = false;
+        if (rc->mpvHandle) {
+            if (mpv_get_property(rc->mpvHandle, "width", MPV_FORMAT_INT64, &vid_w) >= 0 &&
+                mpv_get_property(rc->mpvHandle, "height", MPV_FORMAT_INT64, &vid_h) >= 0) {
+                haveVidSize = (vid_w > 0 && vid_h > 0);
+            }
+        }
+        
+        int keepaspect = 0;
+        if (rc->mpvHandle) {
+            mpv_get_property(rc->mpvHandle, "keepaspect", MPV_FORMAT_FLAG, &keepaspect);
+        }
+        
+        if (haveVidSize) {
+            double vid_aspect = (double)vid_w / (double)vid_h;
+            double win_aspect = (double)w / (double)h;
+            NSLog(@"[mpv_render_gl] Size changed: %dx%d -> %dx%d", 
+                  rc->lastRenderedWidth, rc->lastRenderedHeight, w, h);
+            NSLog(@"[mpv_render_gl] Parameters: window=%dx%d (aspect=%.2f), video=%lldx%lld (aspect=%.2f), keepaspect=%d", 
+                  w, h, win_aspect, (long long)vid_w, (long long)vid_h, vid_aspect, keepaspect);
+        } else {
+            NSLog(@"[mpv_render_gl] Size changed: %dx%d -> %dx%d (video size unknown)", 
+                  rc->lastRenderedWidth, rc->lastRenderedHeight, w, h);
+        }
     }
     
-    // flush/swap (在渲染线程中执行，不会阻塞主线程)
-    @try {
-        [rc->glContext flushBuffer];
-    } @catch (NSException *ex) {}
+    // 如果有新帧需要渲染，或者尺寸变化了，都进行渲染
+    // 尺寸变化时必须重新渲染，即使 mpv 没有新帧（因为 viewport 和 FBO 尺寸变了）
+    // mpv 会在 render 时检测到 FBO 尺寸变化，自动重新计算 letterbox
+    if (hasNewFrame || sizeChanged) {
+        // 调试：记录渲染参数
+        if (sizeChanged) {
+            NSLog(@"[mpv_render_gl] Rendering: viewport=%dx%d, FBO=%dx%d", 
+                  w, h, fbo.w, fbo.h);
+        }
+        
+        // 渲染（传递新的 FBO 尺寸）
+        // mpv 的工作流程：
+        // 1. get_target_size -> wrap_fbo -> ra_gl_ctx_resize(fbo->w, fbo->h)
+        //    这会更新纹理尺寸，mpv 从 tex->params.w/h 获取 vp_w/vp_h
+        // 2. 如果 vp_w/vp_h 变化，调用 mp_get_src_dst_rects 计算 letterbox（考虑 keepaspect）
+        // 3. 调用 resize 更新渲染器的 dst_rect
+        // 4. gl_video_render_frame 使用 dst_rect 渲染视频到正确的位置和尺寸
+        //
+        // 关键：FBO 尺寸 = 视口大小 = 窗口大小
+        // mpv 会从 FBO 尺寸获取窗口大小，然后计算 letterbox
+        // 关键点总结：
+        // - 窗口大小 (w, h): Electron 传入的像素尺寸
+        // - 视口大小 (glViewport): (0, 0, w, h) - 整个窗口
+        // - FBO 尺寸 (fbo.w, fbo.h): (w, h) - 等于窗口大小，告诉 mpv 窗口尺寸
+        // - 视频大小: mpv 从属性获取 (640x360)
+        // - keepaspect: mpv 属性，控制是否保持宽高比
+        //
+        // mpv 会：
+        // 1. 从 FBO 尺寸获取窗口大小 (vp_w, vp_h)
+        // 2. 如果尺寸变化，调用 mp_get_src_dst_rects 计算 letterbox (考虑 keepaspect)
+        // 3. 使用 dst_rect 渲染视频到正确的位置和尺寸
+        int res = mpv_render_context_render(rc->mpvRenderCtx, params);
+        
+        if (res < 0) {
+            NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)", 
+                  res, w, h, fbo.w, fbo.h);
+        } else {
+            // 更新上次渲染的尺寸
+            if (sizeChanged) {
+                rc->lastRenderedWidth = w;
+                rc->lastRenderedHeight = h;
+                NSLog(@"[mpv_render_gl] ✅ Render successful, size updated to %dx%d", w, h);
+            }
+            
+            // 只有在成功渲染后才 flush（在渲染线程中执行，不会阻塞主线程）
+            @try {
+                [rc->glContext flushBuffer];
+            } @catch (NSException *ex) {
+                NSLog(@"[mpv_render_gl] flushBuffer failed: %@", ex);
+            }
+        }
+    } else {
+        // 调试：记录为什么跳过了渲染
+        if (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight) {
+            NSLog(@"[mpv_render_gl] Skipping render: size changed but no new frame (this shouldn't happen)");
+        }
+    }
 }
 
 // ------------------ request render (exposed) ------------------

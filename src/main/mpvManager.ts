@@ -140,7 +140,8 @@ class MPVManager {
           }
         }
         
-        // 设置窗口大小变化监听（增加节流时间，减少更新频率）
+        // 设置窗口大小变化监听（通知 native 端更新尺寸）
+        // 注意：虽然 native 端可以从 NSView 读取，但为了确保尺寸同步和性能，由 Electron 主动通知
         let resizeTimer: NodeJS.Timeout | null = null
         
         this.videoWindow?.on('resize', () => {
@@ -172,21 +173,25 @@ class MPVManager {
               const pixelWidth = Math.round(logicalWidth * scaleFactor)
               const pixelHeight = Math.round(logicalHeight * scaleFactor)
               
-              // 只有当尺寸真正变化时才更新
-              if (pixelWidth !== lastWidth || pixelHeight !== lastHeight) {
-                console.log(`[MPVManager] Resize: ${pixelWidth}x${pixelHeight} (logical: ${logicalWidth}x${logicalHeight}, scale: ${scaleFactor})`)
-                // 使用非阻塞方式调用，避免阻塞 UI
-                ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight).catch(err => {
-                  console.error('[MPVManager] Error setting window size:', err)
-                })
-                
-                lastWidth = pixelWidth
-                lastHeight = pixelHeight
-              }
+              console.log(`[MPVManager] Resize event: logical=${logicalWidth}x${logicalHeight}, scale=${scaleFactor}, pixel=${pixelWidth}x${pixelHeight}`)
+              
+              // 通知 native 端更新尺寸
+              ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight).catch(err => {
+                console.error('[MPVManager] Error setting window size:', err)
+              })
+              
+              // 调试：延迟打印视频状态（给 mpv 一点时间处理）
+              setTimeout(async () => {
+                try {
+                  await (this.controller as LibMPVController).debugVideoState()
+                } catch (e) {
+                  // 忽略错误
+                }
+              }, 100)
             } catch (error) {
               console.error('[MPVManager] Error in resize handler:', error)
             }
-          }, 50) // 增加到 50ms 节流，减少更新频率，提升性能
+          }, 16) // 16ms 节流，约 60fps
         })
         
         // 加载并播放文件
