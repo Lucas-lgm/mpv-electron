@@ -121,8 +121,21 @@ class MPVManager {
         await (this.controller as LibMPVController).setWindowId(windowId)
         console.log('[MPVManager] ✅ Render context created for Electron window')
         
-        // 设置窗口大小变化监听
-        this.setupWindowResizeListener()
+        // 立即设置初始窗口大小（在设置监听之前）
+        // 这样可以确保初始尺寸和后续尺寸来源一致
+        const display = screen.getDisplayMatching(this.videoWindow!.getBounds())
+        const scaleFactor = display.scaleFactor || 1.0
+        const contentSize = this.videoWindow!.getContentSize()
+        if (Array.isArray(contentSize) && contentSize.length >= 2) {
+          const logicalWidth = contentSize[0]
+          const logicalHeight = contentSize[1]
+          if (logicalWidth > 10 && logicalHeight > 10) {
+            const pixelWidth = Math.round(logicalWidth * scaleFactor)
+            const pixelHeight = Math.round(logicalHeight * scaleFactor)
+            ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight)
+            console.log(`[MPVManager] Initial window size: ${pixelWidth}x${pixelHeight} (logical: ${logicalWidth}x${logicalHeight}, scale: ${scaleFactor})`)
+          }
+        }
         
         // 加载并播放文件
         await (this.controller as LibMPVController).loadFile(filePath)
@@ -140,50 +153,6 @@ class MPVManager {
         // 继续使用 IPC 模式
       }
     }
-  }
-  
-  /**
-   * 设置窗口大小变化监听
-   * 简化：native 端会在每次渲染时自动从 view 获取最新尺寸
-   * 这里只设置一次初始尺寸，之后由 native 端自动处理
-   */
-  private setupWindowResizeListener(): void {
-    if (!this.videoWindow || !this.controller || !(this.controller instanceof LibMPVController)) {
-      return
-    }
-    
-    // 只在窗口创建时设置一次初始尺寸
-    // native 端会在每次渲染时自动从 view 获取最新尺寸，所以不需要频繁更新
-    const setInitialSize = () => {
-      if (!this.videoWindow || this.videoWindow.isDestroyed()) {
-        return
-      }
-      
-      try {
-        const display = screen.getDisplayMatching(this.videoWindow!.getBounds())
-        const scaleFactor = display.scaleFactor || 1.0
-        const contentSize = this.videoWindow!.getContentSize()
-        
-        if (Array.isArray(contentSize) && contentSize.length >= 2) {
-          const logicalWidth = contentSize[0]
-          const logicalHeight = contentSize[1]
-          
-          if (logicalWidth > 10 && logicalHeight > 10) {
-            const pixelWidth = Math.round(logicalWidth * scaleFactor)
-            const pixelHeight = Math.round(logicalHeight * scaleFactor)
-            
-            // 设置初始尺寸（native 端会在渲染时自动更新）
-            ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight)
-            console.log(`[MPVManager] Initial window size: ${pixelWidth}x${pixelHeight} (logical: ${logicalWidth}x${logicalHeight}, scale: ${scaleFactor})`)
-          }
-        }
-      } catch (error) {
-        console.error('[MPVManager] Error setting initial window size:', error)
-      }
-    }
-    
-    // 延迟一点设置，确保窗口完全准备好
-    setTimeout(setInitialSize, 100)
   }
 
   /**

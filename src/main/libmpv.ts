@@ -127,7 +127,15 @@ export class LibMPVController extends EventEmitter {
         await this.setProperty('video-aspect-override', '-1')  // -1 表示使用容器/视频的原始宽高比
         // 重置可能影响视频显示的属性
         await this.setProperty('panscan', 0)  // 重置平移扫描
-        console.log('[libmpv] ✅ Video scaling: keepaspect=true, video-unscaled=no, video-aspect-override=-1, panscan=0, zoom=0')
+        await this.setProperty('video-align-x', 0)  // 水平居中 (-1=左, 0=中, 1=右)
+        await this.setProperty('video-align-y', 0)  // 垂直居中 (-1=上, 0=中, 1=下)
+        await this.setProperty('video-pan-x', 0)  // 重置水平平移
+        await this.setProperty('video-pan-y', 0)  // 重置垂直平移
+        // 重置缩放相关属性，确保视频按窗口大小正确缩放
+        await this.setProperty('video-scale-x', 1.0)  // 水平缩放比例（默认 1.0）
+        await this.setProperty('video-scale-y', 1.0)  // 垂直缩放比例（默认 1.0）
+        await this.setProperty('video-zoom', 0)  // 重置缩放（0 表示不缩放）
+        console.log('[libmpv] ✅ Video scaling: keepaspect=true, video-unscaled=no, video-aspect-override=-1, panscan=0, align=(0,0), pan=(0,0), scale=(1.0,1.0), zoom=0')
       } catch (error) {
         console.warn('[libmpv] Failed to set video scaling properties:', error)
       }
@@ -166,7 +174,7 @@ export class LibMPVController extends EventEmitter {
    * @param width 窗口宽度（像素）
    * @param height 窗口高度（像素）
    */
-  setWindowSize(width: number, height: number): void {
+  async setWindowSize(width: number, height: number): Promise<void> {
     if (this.instanceId === null) {
       console.warn('[libmpv] Cannot set window size: MPV instance not initialized')
       return
@@ -174,6 +182,25 @@ export class LibMPVController extends EventEmitter {
 
     try {
       mpvBinding!.setWindowSize(this.instanceId, width, height)
+      
+      // 窗口大小变化时，确保 mpv 配置仍然正确
+      // 这可以防止某些属性在窗口大小变化时被重置或失效
+      try {
+        await this.setProperty('keepaspect', true)
+        await this.setProperty('video-unscaled', 'no')
+        await this.setProperty('video-aspect-override', '-1')
+        await this.setProperty('panscan', 0)
+        await this.setProperty('video-align-x', 0)
+        await this.setProperty('video-align-y', 0)
+        await this.setProperty('video-pan-x', 0)
+        await this.setProperty('video-pan-y', 0)
+        // 重置缩放相关属性，确保视频按窗口大小正确缩放
+        await this.setProperty('video-scale-x', 1.0)  // 水平缩放比例
+        await this.setProperty('video-scale-y', 1.0)  // 垂直缩放比例
+        await this.setProperty('video-zoom', 0)  // 重置缩放
+      } catch (error) {
+        // 配置失败不影响尺寸更新，静默忽略
+      }
     } catch (error) {
       console.error('[libmpv] Failed to set window size:', error)
     }
