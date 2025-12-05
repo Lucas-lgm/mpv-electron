@@ -117,29 +117,17 @@ export class LibMPVController extends EventEmitter {
       // 现在初始化（初始化后不能再设置 vo 和 wid）
       mpvBinding!.initialize(this.instanceId)
       
-      // 初始化后设置视频缩放属性（保持原始宽高比）
+      // 初始化后设置视频缩放属性
+      // 注意：使用 render API 时，让 mpv 自己处理 keepaspect，native 端不做 letterbox
       try {
-        // 保持宽高比（原始比例）- 这是关键设置
         await this.setProperty('keepaspect', true)
-        // 允许视频缩放（不禁止缩放）
         await this.setProperty('video-unscaled', 'no')
-        // 确保使用容器的宽高比（而不是强制覆盖）
-        await this.setProperty('video-aspect-override', '-1')  // -1 表示使用容器/视频的原始宽高比
-        // 重置可能影响视频显示的属性
-        await this.setProperty('panscan', 0)  // 重置平移扫描
-        await this.setProperty('video-align-x', 0)  // 水平居中 (-1=左, 0=中, 1=右)
-        await this.setProperty('video-align-y', 0)  // 垂直居中 (-1=上, 0=中, 1=下)
-        await this.setProperty('video-pan-x', 0)  // 重置水平平移
-        await this.setProperty('video-pan-y', 0)  // 重置垂直平移
-        // 重置缩放相关属性，确保视频按窗口大小正确缩放
-        await this.setProperty('video-scale-x', 1.0)  // 水平缩放比例（默认 1.0）
-        await this.setProperty('video-scale-y', 1.0)  // 垂直缩放比例（默认 1.0）
-        await this.setProperty('video-zoom', 0)  // 重置缩放（0 表示不缩放）
-        console.log('[libmpv] ✅ Video scaling: keepaspect=true, video-unscaled=no, video-aspect-override=-1, panscan=0, align=(0,0), pan=(0,0), scale=(1.0,1.0), zoom=0')
+        await this.setProperty('video-aspect-override', '-1')
+        console.log('[libmpv] ✅ Video scaling properties set')
       } catch (error) {
         console.warn('[libmpv] Failed to set video scaling properties:', error)
       }
-      
+
       // 设置事件回调
       mpvBinding!.setEventCallback(this.instanceId, (event: any) => {
         // console.log('[libmpv] Event:', event)
@@ -173,6 +161,9 @@ export class LibMPVController extends EventEmitter {
    * 设置窗口尺寸（由 Electron 窗口大小变化时调用）
    * @param width 窗口宽度（像素）
    * @param height 窗口高度（像素）
+   * 
+   * 注意：新的 native 实现会自动处理 letterbox（保持宽高比），
+   * 所以不需要手动设置 keepaspect 等属性。
    */
   async setWindowSize(width: number, height: number): Promise<void> {
     if (this.instanceId === null) {
@@ -181,26 +172,8 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
+      // Native 实现会自动触发渲染，并处理 letterbox
       mpvBinding!.setWindowSize(this.instanceId, width, height)
-      
-      // 窗口大小变化时，确保 mpv 配置仍然正确
-      // 这可以防止某些属性在窗口大小变化时被重置或失效
-      try {
-        await this.setProperty('keepaspect', true)
-        await this.setProperty('video-unscaled', 'no')
-        await this.setProperty('video-aspect-override', '-1')
-        await this.setProperty('panscan', 0)
-        await this.setProperty('video-align-x', 0)
-        await this.setProperty('video-align-y', 0)
-        await this.setProperty('video-pan-x', 0)
-        await this.setProperty('video-pan-y', 0)
-        // 重置缩放相关属性，确保视频按窗口大小正确缩放
-        await this.setProperty('video-scale-x', 1.0)  // 水平缩放比例
-        await this.setProperty('video-scale-y', 1.0)  // 垂直缩放比例
-        await this.setProperty('video-zoom', 0)  // 重置缩放
-      } catch (error) {
-        // 配置失败不影响尺寸更新，静默忽略
-      }
     } catch (error) {
       console.error('[libmpv] Failed to set window size:', error)
     }
