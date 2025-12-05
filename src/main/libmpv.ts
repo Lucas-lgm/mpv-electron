@@ -108,6 +108,14 @@ export class LibMPVController extends EventEmitter {
         // 忽略，可能不存在
       }
       
+      // 启用 mpv 日志（verbose 级别，可以看到 letterbox 计算等详细信息）
+      try {
+        await this.setOption('log-level', 'v')
+        console.log('[libmpv] ✅ Enabled mpv verbose logging')
+      } catch (error) {
+        console.warn('[libmpv] Failed to set log-level:', error)
+      }
+      
       try {
         await this.setOption('no-osd-bar', true)
       } catch (error) {
@@ -130,6 +138,21 @@ export class LibMPVController extends EventEmitter {
 
       // 设置事件回调
       mpvBinding!.setEventCallback(this.instanceId, (event: any) => {
+        // 处理日志消息
+        if (event.eventId === 2 && event.logText) { // MPV_EVENT_LOG_MESSAGE = 2
+          const prefix = event.logPrefix || ''
+          const level = event.logLevel || ''
+          const text = event.logText || ''
+          // 只输出与视频渲染相关的日志（过滤掉太多噪音）
+          if (text.includes('aspect') || text.includes('letterbox') || 
+              text.includes('Video display') || text.includes('Window size') ||
+              text.includes('Video borders') || text.includes('Video scale') ||
+              text.includes('dst_rect') || text.includes('viewport') ||
+              text.includes('resize') || text.includes('FBO') ||
+              text.includes('OSD borders')) {
+            console.log(`[mpv] [${level}] ${prefix}: ${text.trim()}`)
+          }
+        }
         // console.log('[libmpv] Event:', event)
         this.handleEvent(event)
       })

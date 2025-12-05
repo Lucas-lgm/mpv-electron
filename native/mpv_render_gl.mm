@@ -434,10 +434,19 @@ static void render_internal(GLRenderContext *rc) {
     // - FBO 尺寸 = 窗口大小（让 mpv 知道窗口尺寸）
     // - mpv 会自动计算 dst_rect（letterbox 区域）并只在这个区域渲染视频
     
-    // 设置 viewport 为整个窗口
-    glViewport(0, 0, w, h);
+    // 注意：根据 mpv 文档，mpv 会管理 glViewport 状态
+    // mpv 官方实现（libmpv_helper.swift）没有设置 glViewport，让 mpv 自己处理
+    // 我们只清空窗口，不设置 viewport，让 mpv 自己管理
+    // 但为了确保清空整个窗口，我们需要临时设置 viewport
+    // 注意：根据 mpv 文档，mpv 会管理 glViewport 状态
+    // mpv 官方实现（libmpv_helper.swift）没有设置 glViewport，让 mpv 自己处理
+    // 但为了确保清空整个窗口，我们需要设置 viewport
+    // 关键：mpv 的 shader 使用正交投影，坐标系统是相对于 FBO 的
+    // 所以 viewport 应该设置为整个 FBO 尺寸，让 mpv 的坐标转换正确工作
+    glViewport(0, 0, w, h);  // 设置 viewport 为整个 FBO 尺寸
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    // 保持 viewport 设置，让 mpv 的坐标转换正确工作
     
     // 创建 FBO，使用完整的窗口尺寸
     // mpv 会从 FBO 尺寸获取窗口大小，然后根据 keepaspect 和视频尺寸计算 letterbox

@@ -43,6 +43,9 @@ struct MPVEventMessage {
     double double_value;         // 用于 MPV_FORMAT_DOUBLE
     int64_t int_value;           // 用于 MPV_FORMAT_INT64
     int flag_value;              // 用于 MPV_FORMAT_FLAG
+    std::string log_prefix;      // 对于 LOG_MESSAGE 事件
+    std::string log_level;       // 对于 LOG_MESSAGE 事件
+    std::string log_text;        // 对于 LOG_MESSAGE 事件
     
     MPVEventMessage()
         : event_id(MPV_EVENT_NONE),
@@ -82,6 +85,17 @@ void eventLoop(MPVInstance* instance) {
             } else if (prop->format == MPV_FORMAT_FLAG && prop->data) {
                 msg->flag_value = *static_cast<int*>(prop->data);
             }
+        } else if (event->event_id == MPV_EVENT_LOG_MESSAGE && event->data) {
+            mpv_event_log_message* log_msg = static_cast<mpv_event_log_message*>(event->data);
+            if (log_msg->prefix) {
+                msg->log_prefix = log_msg->prefix;
+            }
+            if (log_msg->level) {
+                msg->log_level = log_msg->level;
+            }
+            if (log_msg->text) {
+                msg->log_text = log_msg->text;
+            }
         }
         
         // 通过 ThreadSafeFunction 发送事件到主线程（非阻塞，避免退出时死锁）
@@ -106,6 +120,13 @@ void eventLoop(MPVInstance* instance) {
                     default:
                         break;
                 }
+            }
+            
+            // 处理日志消息
+            if (!msg->log_prefix.empty() || !msg->log_text.empty()) {
+                obj.Set("logPrefix", Napi::String::New(env, msg->log_prefix));
+                obj.Set("logLevel", Napi::String::New(env, msg->log_level));
+                obj.Set("logText", Napi::String::New(env, msg->log_text));
             }
             
             jsCallback.Call({obj});
@@ -244,6 +265,9 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
             .ThrowAsJavaScriptException();
         return env.Null();
     }
+    
+    // 启用 mpv 日志（verbose 级别，可以看到 letterbox 计算等详细信息）
+    mpv_request_log_messages(instance->ctx, "v");
     
     // 在初始化后订阅我们关心的属性变化（忽略错误）
     mpv_observe_property(instance->ctx, 0, "pause", MPV_FORMAT_FLAG);
