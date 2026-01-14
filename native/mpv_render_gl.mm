@@ -118,6 +118,10 @@ static bool createGLForView(GLRenderContext *rc) {
     [ctx setView:rc->view];
     [ctx makeCurrentContext];
     
+    // 关键：开启 Retina 支持，并更新 context
+    [rc->view setWantsBestResolutionOpenGLSurface:YES];
+    [ctx update];
+    
     rc->glContext = ctx;
     
     // Read initial backing size on main thread as fallback initial value
@@ -318,8 +322,9 @@ extern "C" void mpv_destroy_gl_context(int64_t instanceId) {
 }
 
 // ------------------ public: set window size (pixel) ------------------
-// External code (Electron main/renderer on main thread) may call this to inform us of new pixel sizes.
-// If not called, we fall back to initial size read at creation.
+// External code (Electron main/renderer) calls this when the window size changes.
+// 为了避免 JS 侧的缩放因子和 macOS 实际 backing 尺寸不一致，这里不直接使用传入的 width/height，
+// 而是在主线程上从 NSView 的 backing 尺寸读取真实像素大小。
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     if (width <= 0 || height <= 0) return;
     
@@ -333,24 +338,45 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     
     if (!rc) return;
     
-    // 检查尺寸是否真的变化了，避免不必要的渲染
-    bool sizeChanged = false;
-    {
-        std::lock_guard<std::mutex> sl(rc->sizeMutex);
-        if (rc->width != width || rc->height != height) {
-            rc->width = width;
-            rc->height = height;
-            sizeChanged = true;
-            NSLog(@"[mpv_render_gl] Window size changed to %dx%d", width, height);
+    runOnMainAsync(^{
+        if (!rc->view) return;
+        
+        // 关键：通知 OpenGL context 视图几何形状已更改
+        // 这必须在主线程上调用，否则会导致画面不更新或缩放错误（如只显示在左下角）
+        if (rc->glContext) {
+            [rc->glContext update];
         }
-    }
-    
-    // 尺寸变化时，标记需要重绘
-    // mpv 会在 render 时自动检测尺寸变化并重新计算 letterbox
-    if (sizeChanged) {
-        // 标记需要重绘（mpv 会在 render 时自动处理 letterbox）
-        rc->needRedraw.store(true);
-    }
+        
+        int pixelW = 0;
+        int pixelH = 0;
+        
+        @try {
+            NSRect bounds = [rc->view bounds];
+            NSSize backing = [rc->view convertSizeToBacking:bounds.size];
+            pixelW = (int)backing.width;
+            pixelH = (int)backing.height;
+        } @catch (NSException *ex) {
+            return;
+        }
+        
+        if (pixelW <= 0 || pixelH <= 0) return;
+        
+        bool sizeChanged = false;
+        {
+            std::lock_guard<std::mutex> sl(rc->sizeMutex);
+            if (rc->width != pixelW || rc->height != pixelH) {
+                rc->width = pixelW;
+                rc->height = pixelH;
+                sizeChanged = true;
+                NSLog(@"[mpv_render_gl] Window backing size updated to %dx%d (from JS %dx%d)",
+                      pixelW, pixelH, width, height);
+            }
+        }
+        
+        if (sizeChanged) {
+            rc->needRedraw.store(true);
+        }
+    });
 }
 
 // 不再需要查询视频尺寸，让 mpv 自己处理 keepaspect
@@ -434,25 +460,15 @@ static void render_internal(GLRenderContext *rc) {
     // - FBO 尺寸 = 窗口大小（让 mpv 知道窗口尺寸）
     // - mpv 会自动计算 dst_rect（letterbox 区域）并只在这个区域渲染视频
     
-    // 注意：根据 mpv 文档，mpv 会管理 glViewport 状态
-    // mpv 官方实现（libmpv_helper.swift）没有设置 glViewport，让 mpv 自己处理
-    // 我们只清空窗口，不设置 viewport，让 mpv 自己管理
-    // 但为了确保清空整个窗口，我们需要临时设置 viewport
-    // 注意：根据 mpv 文档，mpv 会管理 glViewport 状态
-    // mpv 官方实现（libmpv_helper.swift）没有设置 glViewport，让 mpv 自己处理
-    // 但为了确保清空整个窗口，我们需要设置 viewport
-    // 关键：mpv 的 shader 使用正交投影，坐标系统是相对于 FBO 的
-    // 所以 viewport 应该设置为整个 FBO 尺寸，让 mpv 的坐标转换正确工作
-    glViewport(0, 0, w, h);  // 设置 viewport 为整个 FBO 尺寸
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    // 保持 viewport 设置，让 mpv 的坐标转换正确工作
     
-    // 创建 FBO，使用完整的窗口尺寸
-    // mpv 会从 FBO 尺寸获取窗口大小，然后根据 keepaspect 和视频尺寸计算 letterbox
+    GLint drawFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+    
     mpv_opengl_fbo fbo;
     memset(&fbo, 0, sizeof(fbo));
-    fbo.fbo = 0;
+    fbo.fbo = drawFbo != 0 ? (int)drawFbo : 0;
     fbo.w = w;  // 窗口宽度（像素）
     fbo.h = h;  // 窗口高度（像素）
     

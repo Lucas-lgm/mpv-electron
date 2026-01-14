@@ -125,12 +125,15 @@ export class LibMPVController extends EventEmitter {
       // 现在初始化（初始化后不能再设置 vo 和 wid）
       mpvBinding!.initialize(this.instanceId)
       
-      // 初始化后设置视频缩放属性
-      // 注意：使用 render API 时，让 mpv 自己处理 keepaspect，native 端不做 letterbox
       try {
         await this.setProperty('keepaspect', true)
+        await this.setProperty('keepaspect-window', true)
         await this.setProperty('video-unscaled', 'no')
         await this.setProperty('video-aspect-override', '-1')
+        await this.setProperty('panscan', 0)
+        await this.setProperty('video-zoom', 0)
+        await this.setProperty('video-scale-x', 1)
+        await this.setProperty('video-scale-y', 1)
         console.log('[libmpv] ✅ Video scaling properties set')
       } catch (error) {
         console.warn('[libmpv] Failed to set video scaling properties:', error)
@@ -221,6 +224,27 @@ export class LibMPVController extends EventEmitter {
       mpvBinding!.setWindowSize(this.instanceId, width, height)
     } catch (error) {
       console.error('[libmpv] Failed to set window size:', error)
+    }
+  }
+
+  /**
+   * 获取当前视频宽高比（如果已知）
+   */
+  async getVideoAspectRatio(): Promise<number | null> {
+    if (this.instanceId === null) {
+      return null
+    }
+
+    try {
+      const width = await this.getProperty('width')
+      const height = await this.getProperty('height')
+      if (!width || !height) return null
+      const w = Number(width)
+      const h = Number(height)
+      if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) return null
+      return w / h
+    } catch {
+      return null
     }
   }
 
