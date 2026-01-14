@@ -9,6 +9,7 @@
 #include <cmath>
 #include <unistd.h>  // for usleep
 #include <thread>
+#include <memory>
 
 extern "C" {
 #include <mpv/client.h>
@@ -43,8 +44,18 @@ struct GLRenderContext {
     GLRenderContext() : needRedraw(false), isDestroying(false), renderThreadRunning(false) {}
 };
 
+struct ScopedCGLock {
+    CGLContextObj ctx;
+    ScopedCGLock(CGLContextObj c) : ctx(c) {
+        if (ctx) CGLLockContext(ctx);
+    }
+    ~ScopedCGLock() {
+        if (ctx) CGLUnlockContext(ctx);
+    }
+};
+
 // globals
-static std::map<int64_t, GLRenderContext*> g_renderContexts;
+static std::map<int64_t, std::shared_ptr<GLRenderContext>> g_renderContexts;
 static std::mutex g_renderMutex;
 
 // forward declarations
@@ -77,7 +88,7 @@ static void runOnMainAsync(dispatch_block_t block) {
 // Just mark needRedraw, render thread will handle it.
 static void on_mpv_redraw(void *ctx) {
     int64_t instanceId = (int64_t)(intptr_t)ctx;
-    GLRenderContext *rc = nullptr;
+    std::shared_ptr<GLRenderContext> rc = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
         auto it = g_renderContexts.find(instanceId);
@@ -168,7 +179,7 @@ static void renderThreadFunc(GLRenderContext *rc, int64_t instanceId) {
             } else {
                 // 即使 needRedraw 为 false，也检查 mpv 是否有新帧
                 // 这样可以确保尺寸变化时能及时渲染
-                GLRenderContext *checkRc = nullptr;
+                std::shared_ptr<GLRenderContext> checkRc = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(g_renderMutex);
                     auto it = g_renderContexts.find(instanceId);
@@ -195,7 +206,7 @@ static void renderThreadFunc(GLRenderContext *rc, int64_t instanceId) {
 }
 
 // ------------------ destroy GL ------------------
-static void destroyGL(GLRenderContext *rc) {
+static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
     if (!rc) return;
     
     rc->isDestroying.store(true);
@@ -218,6 +229,7 @@ static void destroyGL(GLRenderContext *rc) {
     }
     
     // release GL context (必须在主线程)
+    // 捕获 shared_ptr 确保在 Block 执行时 rc 有效
     runOnMainAsync(^{
         if (rc->glContext) {
             @try {
@@ -227,9 +239,13 @@ static void destroyGL(GLRenderContext *rc) {
             [rc->glContext release];
             rc->glContext = nil;
         }
+        
+        if (rc->view) {
+            [rc->view release];
+            rc->view = nil;
+        }
     });
     
-    rc->view = nil;
     rc->mpvHandle = nullptr;
 }
 
@@ -237,9 +253,10 @@ static void destroyGL(GLRenderContext *rc) {
 extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv) {
     if (!nsViewPtr || !mpv) return nullptr;
     
-    GLRenderContext *rc = new GLRenderContext();
+    auto rc = std::make_shared<GLRenderContext>();
     NSView *view = reinterpret_cast<NSView*>(nsViewPtr);
     rc->view = view;
+    if (rc->view) [rc->view retain]; // Retain view to prevent dangling pointer
     rc->mpvHandle = mpv;
     
     // create GL and read initial size - must be on main thread
@@ -247,8 +264,9 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
         // ensure createGLForView runs on main thread
         // 使用指针来避免 block 捕获 const 的问题
         std::atomic<bool>* ok = new std::atomic<bool>(false);
+        GLRenderContext* rawRc = rc.get();
         runOnMainAsync(^{
-            bool result = createGLForView(rc);
+            bool result = createGLForView(rawRc);
             ok->store(result);
         });
         // 等待主线程执行完成（简单等待，实际应该用更好的同步机制）
@@ -260,12 +278,10 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
         bool result = ok->load();
         delete ok;
         if (!result) {
-            delete rc;
             return nullptr;
         }
     } else {
-        if (!createGLForView(rc)) {
-            delete rc;
+        if (!createGLForView(rc.get())) {
             return nullptr;
         }
     }
@@ -284,7 +300,6 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
     int err = mpv_render_context_create(&rc->mpvRenderCtx, mpv, params);
     if (err < 0) {
         destroyGL(rc);
-        delete rc;
         return nullptr;
     }
     
@@ -299,14 +314,14 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
     
     // 创建渲染线程（后台线程，避免阻塞主线程）
     rc->renderThreadRunning.store(true);
-    rc->renderThread = new std::thread(renderThreadFunc, rc, instanceId);
+    rc->renderThread = new std::thread(renderThreadFunc, rc.get(), instanceId);
     
-    return rc;
+    return rc.get();
 }
 
 // ------------------ public: destroy context ------------------
 extern "C" void mpv_destroy_gl_context(int64_t instanceId) {
-    GLRenderContext *rc = nullptr;
+    std::shared_ptr<GLRenderContext> rc = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
         auto it = g_renderContexts.find(instanceId);
@@ -317,7 +332,6 @@ extern "C" void mpv_destroy_gl_context(int64_t instanceId) {
     
     if (rc) {
         destroyGL(rc);
-        delete rc;
     }
 }
 
@@ -328,7 +342,7 @@ extern "C" void mpv_destroy_gl_context(int64_t instanceId) {
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     if (width <= 0 || height <= 0) return;
     
-    GLRenderContext *rc = nullptr;
+    std::shared_ptr<GLRenderContext> rc = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
         auto it = g_renderContexts.find(instanceId);
@@ -339,11 +353,13 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     if (!rc) return;
     
     runOnMainAsync(^{
+        if (rc->isDestroying) return;
         if (!rc->view) return;
         
         // 关键：通知 OpenGL context 视图几何形状已更改
         // 这必须在主线程上调用，否则会导致画面不更新或缩放错误（如只显示在左下角）
         if (rc->glContext) {
+            ScopedCGLock lock([rc->glContext CGLContextObj]);
             [rc->glContext update];
         }
         
@@ -368,8 +384,6 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
                 rc->width = pixelW;
                 rc->height = pixelH;
                 sizeChanged = true;
-                NSLog(@"[mpv_render_gl] Window backing size updated to %dx%d (from JS %dx%d)",
-                      pixelW, pixelH, width, height);
             }
         }
         
@@ -384,6 +398,8 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
 // ------------------ core render (must run on main thread) ------------------
 static void render_internal(GLRenderContext *rc) {
     if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
+    
+    ScopedCGLock lock([rc->glContext CGLContextObj]);
     
     // 使用存储的尺寸（由 Electron 通过 mpv_set_window_size 更新）
     // 如果存储的尺寸无效，才从 NSView 读取作为 fallback
@@ -582,7 +598,7 @@ static void render_internal(GLRenderContext *rc) {
 // ------------------ request render (exposed) ------------------
 // Mark needRedraw, render thread will handle it
 extern "C" void mpv_request_render(int64_t instanceId) {
-    GLRenderContext *rc = nullptr;
+    std::shared_ptr<GLRenderContext> rc = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
         auto it = g_renderContexts.find(instanceId);
@@ -599,7 +615,7 @@ extern "C" void mpv_request_render(int64_t instanceId) {
 // ------------------ render entry (exposed) ------------------
 // Called from render thread (background thread, not main thread)
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
-    GLRenderContext *rc = nullptr;
+    std::shared_ptr<GLRenderContext> rc = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
         auto it = g_renderContexts.find(instanceId);
@@ -617,5 +633,5 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     }
     
     // call internal renderer (在渲染线程中执行，context 已经是 current 的)
-    render_internal(rc);
+    render_internal(rc.get());
 }

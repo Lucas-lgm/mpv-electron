@@ -39,4 +39,8 @@ native/Debug/
 build/Release/
 build/Debug/
 *.node
+videos/
 
+
+# Large video files
+videos/
