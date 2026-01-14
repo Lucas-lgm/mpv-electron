@@ -9,8 +9,6 @@ lerna-debug.log*
 
 out
 
-native/build/
-
 hls_output
 
 node_modules
@@ -29,9 +27,9 @@ dist-electron
 *.sln
 *.sw?
 
-
 # Large video files
 videos/
+
 # Native bindings
 native/build/
 native/Release/
@@ -39,8 +37,3 @@ native/Debug/
 build/Release/
 build/Debug/
 *.node
-videos/
-
-
-# Large video files
-videos/
