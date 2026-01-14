@@ -8,8 +8,8 @@
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
-        "/opt/homebrew/opt/mpv/include",
-        "../mpv/include"
+        "<(module_root_dir)/../vendor/mpv/darwin-arm64/include",
+        "<(module_root_dir)/../mpv/include"
       ],
       "dependencies": [
         "<!(node -p \"require('node-addon-api').gyp\")"
@@ -25,19 +25,19 @@
             "MACOSX_DEPLOYMENT_TARGET": "10.13"
           },
           "link_settings": {
-        "libraries": [
-          "/opt/homebrew/opt/mpv/lib/libmpv.dylib",
-          "-framework Cocoa",
-          "-framework IOKit",
-          "-framework QuartzCore",
-          "-framework CoreVideo"
-        ],
+            "libraries": [
+              "<(module_root_dir)/../vendor/mpv/darwin-arm64/lib/libmpv.2.dylib",
+              "-framework Cocoa",
+              "-framework IOKit",
+              "-framework QuartzCore",
+              "-framework CoreVideo"
+            ],
             "library_dirs": [
-              "/opt/homebrew/opt/mpv/lib"
+              "<(module_root_dir)/../vendor/mpv/darwin-arm64/lib"
             ]
           },
           "include_dirs": [
-            "/opt/homebrew/opt/mpv/include"
+            "<(module_root_dir)/../vendor/mpv/darwin-arm64/include"
           ]
         }],
         ["OS=='win'", {
