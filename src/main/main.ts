@@ -43,7 +43,7 @@ function createVideoWindow() {
       frame: true,
       alwaysOnTop: false,
       show: true, // 立即显示窗口
-      transparent: true // 必须透明才能看到底层 OpenGL 渲染（macOS 上透明窗口会失去边框，这是系统限制）
+      transparent: true
     })
 
     window.on('close', async (event) => {

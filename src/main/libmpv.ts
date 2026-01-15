@@ -273,6 +273,12 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
+      if (mpvBinding) {
+        try {
+          mpvBinding.clearToBlack(this.instanceId)
+        } catch (error) {
+        }
+      }
       mpvBinding!.loadFile(this.instanceId, path)
       this.currentStatus.path = path
       this.emit('file-loaded', path)

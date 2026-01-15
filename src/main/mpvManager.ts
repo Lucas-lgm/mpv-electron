@@ -10,6 +10,18 @@ class MPVManager {
   private videoWindow: BrowserWindow | null = null
   private useLibMPV: boolean = false
   private isCleaningUp: boolean = false
+  private initPromise: Promise<void> | null = null
+
+  constructor() {
+    if (isLibMPVAvailable()) {
+      this.controller = new LibMPVController()
+      this.initPromise = (this.controller as LibMPVController).initialize().catch((error) => {
+        console.error('[MPVManager] Failed to pre-initialize libmpv:', error)
+        this.controller = null
+        this.initPromise = null
+      })
+    }
+  }
 
   /**
    * 设置视频窗口
@@ -90,7 +102,12 @@ class MPVManager {
         // 如无实例则创建，有实例则直接复用
         if (!this.controller) {
           this.controller = new LibMPVController()
-          await (this.controller as LibMPVController).initialize()
+          this.initPromise = (this.controller as LibMPVController).initialize()
+        }
+
+        if (this.initPromise) {
+          await this.initPromise
+          this.initPromise = null
         }
         
         // 设置窗口 ID（真正嵌入 + 创建 GL/render context）
