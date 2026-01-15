@@ -8,7 +8,7 @@ export function setupIpcHandlers() {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [
-        { name: '视频文件', extensions: ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v'] },
+        { name: '视频文件', extensions: ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts', 'm2ts', 'mts', 'm3u8'] },
         { name: '所有文件', extensions: ['*'] }
       ]
     })
