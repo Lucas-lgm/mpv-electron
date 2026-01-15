@@ -4,39 +4,44 @@
       <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
     </header>
     <main class="playback-controls">
-      <div class="control-buttons">
-        <button @click="togglePlayPause" class="btn-control">
-          {{ isPlaying ? '⏸️' : '▶️' }}
-        </button>
-        <button @click="seekBackward" class="btn-control">⏪</button>
-        <button @click="seekForward" class="btn-control">⏩</button>
-        <button @click="stop" class="btn-control">⏹️</button>
-      </div>
-      <div class="progress-container">
-        <div class="time-info">
-          <span>{{ formatTime(currentTime) }}</span>
-          <span>{{ formatTime(duration) }}</span>
+      <div class="control-bar">
+        <div class="progress-wrapper">
+          <input
+            type="range"
+            :min="0"
+            :max="duration || 100"
+            :value="currentTime"
+            @input="onSeek"
+            class="progress-bar"
+          />
         </div>
-        <input
-          type="range"
-          :min="0"
-          :max="duration || 100"
-          :value="currentTime"
-          @input="onSeek"
-          class="progress-bar"
-        />
-      </div>
-      <div class="volume-control">
-        <span>🔊</span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          :value="volume"
-          @input="onVolumeChange"
-          class="volume-bar"
-        />
-        <span>{{ volume }}%</span>
+        <div class="control-row">
+          <div class="control-left">
+            <button @click="togglePlayPause" class="btn-control">
+              {{ isPlaying ? '⏸️' : '▶️' }}
+            </button>
+            <button @click="seekBackward" class="btn-control small">⏪</button>
+            <button @click="seekForward" class="btn-control small">⏩</button>
+            <button @click="stop" class="btn-control small">⏹️</button>
+          </div>
+          <div class="control-center">
+            <span class="time-current">{{ formatTime(currentTime) }}</span>
+            <span class="time-separator">/</span>
+            <span class="time-total">{{ formatTime(duration) }}</span>
+          </div>
+          <div class="control-right">
+            <span class="volume-icon">🔊</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              :value="volume"
+              @input="onVolumeChange"
+              class="volume-bar"
+            />
+            <span class="volume-percent">{{ volume }}%</span>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -203,17 +208,29 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 2rem;
-  gap: 1.5rem;
-  max-width: 600px;
-  margin: 0 auto;
-  width: 100%;
+  display: block;
+  padding: 0 0 1rem;
   pointer-events: auto;
   -webkit-app-region: no-drag;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
+}
+
+.control-bar {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.progress-wrapper {
+  padding: 6px 12px 0;
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 10px;
 }
 
 .control-buttons {
@@ -223,20 +240,19 @@ onUnmounted(() => {
 }
 
 .btn-control {
-  width: 50px;
-  height: 50px;
+  width: 32px;
+  height: 32px;
   border: none;
-  background: #667eea;
-  color: white;
-  border-radius: 50%;
-  font-size: 1.5rem;
+  background: transparent;
+  color: #ffffff;
+  border-radius: 0;
+  font-size: 1.2rem;
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
 }
 
 .btn-control:hover {
-  background: #5568d3;
-  transform: scale(1.1);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .btn-control:active {
@@ -279,6 +295,46 @@ onUnmounted(() => {
   align-items: center;
   gap: 1rem;
   color: #ccc;
+}
+
+.control-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.control-center {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #ccc;
+  font-size: 0.9rem;
+  min-width: 120px;
+  justify-content: center;
+}
+
+.control-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #ccc;
+  min-width: 180px;
+  justify-content: flex-end;
+}
+
+.time-current,
+.time-total {
+  font-variant-numeric: tabular-nums;
+}
+
+.volume-icon {
+  font-size: 0.9rem;
+}
+
+.volume-percent {
+  font-size: 0.85rem;
+  min-width: 40px;
+  text-align: right;
 }
 
 .volume-bar {
