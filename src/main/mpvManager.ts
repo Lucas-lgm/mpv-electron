@@ -35,6 +35,48 @@ class MPVManager {
   }
 
   /**
+   * 同步窗口尺寸到 MPV
+   */
+  private async syncWindowSize(): Promise<void> {
+    if (!this.videoWindow || this.videoWindow.isDestroyed() || !this.controller) {
+      return
+    }
+
+    const bounds = this.videoWindow.getContentBounds()
+    const display = screen.getDisplayMatching(this.videoWindow.getBounds())
+    const scaleFactor = display.scaleFactor
+    
+    // 计算物理像素尺寸
+    const width = Math.round(bounds.width * scaleFactor)
+    const height = Math.round(bounds.height * scaleFactor)
+    
+    // console.log(`[MPVManager] Syncing window size: logical=${bounds.width}x${bounds.height}, physical=${width}x${height}, scale=${scaleFactor}`)
+    
+    if (this.controller instanceof LibMPVController) {
+      await this.controller.setWindowSize(width, height)
+    }
+  }
+
+  /**
+   * 设置窗口大小变化监听
+   */
+  private setupResizeHandler(): void {
+    if (!this.videoWindow || this.videoWindow.isDestroyed()) {
+      return
+    }
+
+    // 先移除可能存在的旧监听器
+    this.videoWindow.removeAllListeners('resize')
+    
+    // 添加新的监听器
+    this.videoWindow.on('resize', () => {
+      this.syncWindowSize().catch(err => {
+        console.error('[MPVManager] Error syncing window size on resize:', err)
+      })
+    })
+  }
+
+  /**
    * 获取或创建 MPV 控制器
    */
   getController(): Controller | null {
@@ -114,79 +156,17 @@ class MPVManager {
         await (this.controller as LibMPVController).setWindowId(windowId)
         console.log('[MPVManager] ✅ Render context created for Electron window')
         
-        // 设置初始窗口尺寸（从 Electron 传入）
-        const display = screen.getDisplayMatching(this.videoWindow!.getBounds())
-        const scaleFactor = display.scaleFactor || 1.0
-        const contentSize = this.videoWindow!.getContentSize()
-        if (Array.isArray(contentSize) && contentSize.length >= 2) {
-          const logicalWidth = contentSize[0]
-          const logicalHeight = contentSize[1]
-          if (logicalWidth > 10 && logicalHeight > 10) {
-            const pixelWidth = Math.round(logicalWidth * scaleFactor)
-            const pixelHeight = Math.round(logicalHeight * scaleFactor)
-            await (this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight)
-            console.log(`[MPVManager] Initial window size: ${pixelWidth}x${pixelHeight} (logical: ${logicalWidth}x${logicalHeight}, scale: ${scaleFactor})`)
-          }
-        }
+        // 设置初始窗口尺寸
+        await this.syncWindowSize()
         
-        // 设置窗口大小变化监听（通知 native 端更新尺寸）
-        let resizeTimer: NodeJS.Timeout | null = null
-        
-        this.videoWindow?.on('resize', () => {
-          if (resizeTimer) {
-            clearTimeout(resizeTimer)
-          }
-          
-          resizeTimer = setTimeout(() => {
-            if (!this.videoWindow || this.videoWindow.isDestroyed()) {
-              return
-            }
-            
-            try {
-              const display = screen.getDisplayMatching(this.videoWindow!.getBounds())
-              const scaleFactor = display.scaleFactor || 1.0
-              const contentSize = this.videoWindow!.getContentSize()
-              
-              if (!Array.isArray(contentSize) || contentSize.length < 2) {
-                return
-              }
-              
-              const logicalWidth = contentSize[0]
-              const logicalHeight = contentSize[1]
-              
-              if (logicalWidth < 10 || logicalHeight < 10) {
-                return
-              }
-              
-              const pixelWidth = Math.round(logicalWidth * scaleFactor)
-              const pixelHeight = Math.round(logicalHeight * scaleFactor)
-              
-              // 通知 native 端更新尺寸
-              ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight).catch(err => {
-                console.error('[MPVManager] Error setting window size:', err)
-              })
-            } catch (error) {
-              console.error('[MPVManager] Error in resize handler:', error)
-            }
-          }, 16) // 16ms 节流
-        })
+        // 设置窗口大小变化监听
+        this.setupResizeHandler()
         
         // 加载并播放文件
         await (this.controller as LibMPVController).loadFile(filePath)
         
-        // 加载文件后，再次设置窗口尺寸，确保 mpv 知道正确的窗口尺寸
-        const display2 = screen.getDisplayMatching(this.videoWindow!.getBounds())
-        const scaleFactor2 = display2.scaleFactor || 1.0
-        const contentSize2 = this.videoWindow!.getContentSize()
-        if (Array.isArray(contentSize2) && contentSize2.length >= 2) {
-          const logicalWidth2 = contentSize2[0]
-          const logicalHeight2 = contentSize2[1]
-          if (logicalWidth2 > 10 && logicalHeight2 > 10) {
-            const pixelWidth2 = Math.round(logicalWidth2 * scaleFactor2)
-            const pixelHeight2 = Math.round(logicalHeight2 * scaleFactor2)
-            await (this.controller as LibMPVController).setWindowSize(pixelWidth2, pixelHeight2)
-          }
-        }
+        // 加载文件后，再次确认窗口尺寸
+        await this.syncWindowSize()
         
         // 设置事件监听
         this.setupEventHandlers()
