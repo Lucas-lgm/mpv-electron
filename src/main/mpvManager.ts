@@ -118,8 +118,6 @@ class MPVManager {
         const display = screen.getDisplayMatching(this.videoWindow!.getBounds())
         const scaleFactor = display.scaleFactor || 1.0
         const contentSize = this.videoWindow!.getContentSize()
-        let lastWidth = 0
-        let lastHeight = 0
         if (Array.isArray(contentSize) && contentSize.length >= 2) {
           const logicalWidth = contentSize[0]
           const logicalHeight = contentSize[1]
@@ -127,14 +125,11 @@ class MPVManager {
             const pixelWidth = Math.round(logicalWidth * scaleFactor)
             const pixelHeight = Math.round(logicalHeight * scaleFactor)
             await (this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight)
-            lastWidth = pixelWidth
-            lastHeight = pixelHeight
             console.log(`[MPVManager] Initial window size: ${pixelWidth}x${pixelHeight} (logical: ${logicalWidth}x${logicalHeight}, scale: ${scaleFactor})`)
           }
         }
         
         // 设置窗口大小变化监听（通知 native 端更新尺寸）
-        // 注意：虽然 native 端可以从 NSView 读取，但为了确保尺寸同步和性能，由 Electron 主动通知
         let resizeTimer: NodeJS.Timeout | null = null
         
         this.videoWindow?.on('resize', () => {
@@ -166,32 +161,20 @@ class MPVManager {
               const pixelWidth = Math.round(logicalWidth * scaleFactor)
               const pixelHeight = Math.round(logicalHeight * scaleFactor)
               
-              console.log(`[MPVManager] Resize event: logical=${logicalWidth}x${logicalHeight}, scale=${scaleFactor}, pixel=${pixelWidth}x${pixelHeight}`)
-              
               // 通知 native 端更新尺寸
               ;(this.controller as LibMPVController).setWindowSize(pixelWidth, pixelHeight).catch(err => {
                 console.error('[MPVManager] Error setting window size:', err)
               })
-              
-              // 调试：延迟打印视频状态（给 mpv 一点时间处理）
-              setTimeout(async () => {
-                try {
-                  await (this.controller as LibMPVController).debugVideoState()
-                } catch (e) {
-                  // 忽略错误
-                }
-              }, 100)
             } catch (error) {
               console.error('[MPVManager] Error in resize handler:', error)
             }
-          }, 16) // 16ms 节流，约 60fps
+          }, 16) // 16ms 节流
         })
         
         // 加载并播放文件
         await (this.controller as LibMPVController).loadFile(filePath)
         
         // 加载文件后，再次设置窗口尺寸，确保 mpv 知道正确的窗口尺寸
-        // 因为加载文件时可能会重置某些状态
         const display2 = screen.getDisplayMatching(this.videoWindow!.getBounds())
         const scaleFactor2 = display2.scaleFactor || 1.0
         const contentSize2 = this.videoWindow!.getContentSize()
@@ -202,7 +185,6 @@ class MPVManager {
             const pixelWidth2 = Math.round(logicalWidth2 * scaleFactor2)
             const pixelHeight2 = Math.round(logicalHeight2 * scaleFactor2)
             await (this.controller as LibMPVController).setWindowSize(pixelWidth2, pixelHeight2)
-            console.log(`[MPVManager] Window size after load: ${pixelWidth2}x${pixelHeight2}`)
           }
         }
         

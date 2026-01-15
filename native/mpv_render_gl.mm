@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/gl3.h>
 #import <OpenGL/OpenGL.h>
+#import <CoreVideo/CoreVideo.h>
 
 #include <map>
 #include <mutex>
@@ -37,13 +38,15 @@ struct GLRenderContext {
     std::atomic<bool> needRedraw;
     std::atomic<bool> isDestroying;
     
-    // 渲染线程（后台线程，避免阻塞主线程）
-    std::thread* renderThread = nullptr;
-    std::atomic<bool> renderThreadRunning;
+    // CVDisplayLink
+    CVDisplayLinkRef displayLink = nullptr;
+    
+    // NSView frame observer
+    id frameObserver = nil;
     
     std::atomic<bool> forceBlackFrame;
     
-    GLRenderContext() : needRedraw(false), isDestroying(false), renderThread(nullptr), renderThreadRunning(false), forceBlackFrame(false) {}
+    GLRenderContext() : needRedraw(false), isDestroying(false), displayLink(nullptr), frameObserver(nil), forceBlackFrame(false) {}
 };
 
 struct ScopedCGLock {
@@ -64,6 +67,7 @@ static std::mutex g_renderMutex;
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
 extern "C" void mpv_force_black_frame(int64_t instanceId);
+static void render_internal(GLRenderContext *rc);
 
 // ------------------ helper: dlsym for mpv GL ------------------
 static void *get_proc_address(void *ctx, const char *name) {
@@ -88,7 +92,7 @@ static void runOnMainAsync(dispatch_block_t block) {
 
 // ------------------ mpv update callback ------------------
 // Called by mpv on arbitrary thread. We must not do GL here.
-// Just mark needRedraw, render thread will handle it.
+// Just mark needRedraw, CVDisplayLink will handle it.
 static void on_mpv_redraw(void *ctx) {
     int64_t instanceId = (int64_t)(intptr_t)ctx;
     std::shared_ptr<GLRenderContext> rc = nullptr;
@@ -101,10 +105,47 @@ static void on_mpv_redraw(void *ctx) {
     
     if (!rc || rc->isDestroying.load()) return;
     
-    // 只标记需要重绘，渲染线程会处理
+    // 只标记需要重绘，DisplayLink 会处理
     rc->needRedraw.store(true);
 }
 
+// ------------------ CVDisplayLink Callback ------------------
+static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
+                                    const CVTimeStamp *now,
+                                    const CVTimeStamp *outputTime,
+                                    CVOptionFlags flagsIn,
+                                    CVOptionFlags *flagsOut,
+                                    void *displayLinkContext) {
+    GLRenderContext *rc = (GLRenderContext *)displayLinkContext;
+    if (!rc || rc->isDestroying.load()) return kCVReturnSuccess;
+    
+    @autoreleasepool {
+        // Check if we need to render
+        bool forceRender = false;
+        
+        // Check mpv update
+        if (rc->mpvRenderCtx) {
+            uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
+            if (flags & MPV_RENDER_UPDATE_FRAME) {
+                forceRender = true;
+            }
+        }
+        
+        if (rc->needRedraw.load() || forceRender) {
+            // Reset flag if it was true
+            rc->needRedraw.store(false);
+            
+            // Set context current for this thread (safe with ScopedCGLock in render_internal)
+            if (rc->glContext) {
+                [rc->glContext makeCurrentContext];
+            }
+            
+            render_internal(rc);
+        }
+    }
+    
+    return kCVReturnSuccess;
+}
 
 // ------------------ create GL (must be on main thread) ------------------
 static bool createGLForView(GLRenderContext *rc) {
@@ -138,7 +179,7 @@ static bool createGLForView(GLRenderContext *rc) {
     
     rc->glContext = ctx;
     
-    // Read initial backing size on main thread as fallback initial value
+    // Read initial backing size on main thread
     @try {
         NSRect bounds = [rc->view bounds];
         NSSize backing = [rc->view convertSizeToBacking:bounds.size]; // consider Retina
@@ -160,52 +201,23 @@ static bool createGLForView(GLRenderContext *rc) {
         NSLog(@"[mpv_render_gl] Warning: failed to read initial view size");
     }
     
+    // Setup CVDisplayLink
+    CVReturn cvRet = CVDisplayLinkCreateWithActiveCGDisplays(&rc->displayLink);
+    if (cvRet == kCVReturnSuccess) {
+        CVDisplayLinkSetOutputCallback(rc->displayLink, DisplayLinkCallback, rc);
+        
+        CGLContextObj cglCtx = [rc->glContext CGLContextObj];
+        CGLPixelFormatObj cglPix = [pf CGLPixelFormatObj];
+        CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(rc->displayLink, cglCtx, cglPix);
+        
+        CVDisplayLinkStart(rc->displayLink);
+        NSLog(@"[mpv_render_gl] CVDisplayLink started");
+    } else {
+        NSLog(@"[mpv_render_gl] Failed to create CVDisplayLink: %d", cvRet);
+    }
+    
     [pf release];
     return true;
-}
-
-// ------------------ render thread function ------------------
-// 在后台线程中运行，避免阻塞主线程
-static void renderThreadFunc(GLRenderContext *rc, int64_t instanceId) {
-    // 在渲染线程中设置 OpenGL context 为 current
-    @autoreleasepool {
-        [rc->glContext makeCurrentContext];
-        
-        // 渲染循环
-        while (rc->renderThreadRunning.load() && !rc->isDestroying.load()) {
-            // 检查是否需要渲染（通过 needRedraw 标志或 mpv 的 update 回调）
-            // 即使 needRedraw 为 false，也检查 mpv 是否有新帧（因为尺寸变化时可能需要重新渲染）
-            bool shouldRender = rc->needRedraw.load();
-            
-            if (shouldRender) {
-                mpv_render_frame_for_instance(instanceId);
-            } else {
-                // 即使 needRedraw 为 false，也检查 mpv 是否有新帧
-                // 这样可以确保尺寸变化时能及时渲染
-                std::shared_ptr<GLRenderContext> checkRc = nullptr;
-                {
-                    std::lock_guard<std::mutex> lock(g_renderMutex);
-                    auto it = g_renderContexts.find(instanceId);
-                    if (it != g_renderContexts.end()) {
-                        checkRc = it->second;
-                    }
-                }
-                
-                if (checkRc && checkRc->mpvRenderCtx) {
-                    uint64_t flags = mpv_render_context_update(checkRc->mpvRenderCtx);
-                    if (flags & MPV_RENDER_UPDATE_FRAME) {
-                        mpv_render_frame_for_instance(instanceId);
-                    }
-                }
-            }
-            
-            // 短暂休眠，避免 CPU 占用过高
-            usleep(1000); // 1ms，约 1000fps 检查频率
-        }
-        
-        // 清理：清除当前 context
-        [NSOpenGLContext clearCurrentContext];
-    }
 }
 
 // ------------------ destroy GL ------------------
@@ -214,14 +226,11 @@ static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
     
     rc->isDestroying.store(true);
     
-    // 停止渲染线程
-    if (rc->renderThread) {
-        rc->renderThreadRunning.store(false);
-        if (rc->renderThread->joinable()) {
-            rc->renderThread->join();
-        }
-        delete rc->renderThread;
-        rc->renderThread = nullptr;
+    // Stop DisplayLink
+    if (rc->displayLink) {
+        CVDisplayLinkStop(rc->displayLink);
+        CVDisplayLinkRelease(rc->displayLink);
+        rc->displayLink = nullptr;
     }
     
     // Free mpv render context
@@ -232,7 +241,6 @@ static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
     }
     
     // release GL context (必须在主线程)
-    // 捕获 shared_ptr 确保在 Block 执行时 rc 有效
     runOnMainAsync(^{
         if (rc->glContext) {
             @try {
@@ -264,15 +272,12 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
     
     // create GL and read initial size - must be on main thread
     if (!isMainThread()) {
-        // ensure createGLForView runs on main thread
-        // 使用指针来避免 block 捕获 const 的问题
         std::atomic<bool>* ok = new std::atomic<bool>(false);
         GLRenderContext* rawRc = rc.get();
         runOnMainAsync(^{
             bool result = createGLForView(rawRc);
             ok->store(result);
         });
-        // 等待主线程执行完成（简单等待，实际应该用更好的同步机制）
         int waitCount = 0;
         while (!ok->load() && waitCount < 100) {
             usleep(10000); // 等待 10ms
@@ -306,7 +311,7 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
         return nullptr;
     }
     
-    // Set mpv update callback (thread may be arbitrary)
+    // Set mpv update callback
     mpv_render_context_set_update_callback(rc->mpvRenderCtx, on_mpv_redraw, (void*)(intptr_t)instanceId);
     
     // 注册到全局 map
@@ -314,10 +319,6 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
         std::lock_guard<std::mutex> lock(g_renderMutex);
         g_renderContexts[instanceId] = rc;
     }
-    
-    // 创建渲染线程（后台线程，避免阻塞主线程）
-    rc->renderThreadRunning.store(true);
-    rc->renderThread = new std::thread(renderThreadFunc, rc.get(), instanceId);
     
     return rc.get();
 }
