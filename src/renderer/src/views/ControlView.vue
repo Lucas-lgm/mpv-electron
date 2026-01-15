@@ -132,6 +132,13 @@ const handlePlayerState = (state: PlayerState) => {
   }
   if (typeof state.path === 'string') {
     currentPath.value = state.path
+    const found = playlist.value.find((item: PlaylistItem) => item.path === state.path)
+    if (found) {
+      currentVideoName.value = found.name
+    } else {
+      const parts = state.path.split(/[/\\]/)
+      currentVideoName.value = parts[parts.length - 1] || state.path
+    }
   }
 }
 

@@ -157,7 +157,7 @@ export class VideoPlayerApp {
 
     corePlayer.setVideoWindow(videoWindow)
 
-    videoWindow.webContents.send('play-video', {
+    corePlayer.broadcastToPlaybackUIs('play-video', {
       name: target.name,
       path: target.path
     })
