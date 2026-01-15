@@ -251,7 +251,7 @@ export class VideoPlayerApp {
       title: '视频播放器 - 视频播放',
       route: '#/video',
       titleBarStyle: 'hiddenInset',
-      frame: true,
+      frame: false,
       alwaysOnTop: false,
       show: true,
       transparent: true

@@ -51,6 +51,15 @@ const duration = ref(0)
 const volume = ref(100)
 const currentVideoName = ref<string>('')
 
+type PlayerState = {
+  phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
+  currentTime: number
+  duration: number
+  volume: number
+  path: string | null
+  error: string | null
+}
+
 const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
   currentTime.value = data.currentTime
   duration.value = data.duration
@@ -72,6 +81,17 @@ const handlePlayerError = (payload: { message: string }) => {
 
 const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
   console.log('player embedded mode:', payload)
+}
+
+const handlePlayerState = (state: PlayerState) => {
+  isPlaying.value = state.phase === 'playing'
+  // 同步音量和时长，时间仍由 video-time-update 驱动
+  if (typeof state.duration === 'number') {
+    duration.value = state.duration
+  }
+  if (typeof state.volume === 'number') {
+    volume.value = state.volume
+  }
 }
 
 const formatTime = (seconds: number): string => {
@@ -132,6 +152,7 @@ onMounted(() => {
     window.electronAPI.on('play-video', handlePlayVideo)
     window.electronAPI.on('player-error', handlePlayerError)
     window.electronAPI.on('player-embedded', handlePlayerEmbedded)
+    window.electronAPI.on('player-state', handlePlayerState)
   }
 })
 
@@ -142,6 +163,7 @@ onUnmounted(() => {
     window.electronAPI.removeListener('play-video', handlePlayVideo)
     window.electronAPI.removeListener('player-error', handlePlayerError)
     window.electronAPI.removeListener('player-embedded', handlePlayerEmbedded)
+    window.electronAPI.removeListener('player-state', handlePlayerState)
   }
 })
 </script>
