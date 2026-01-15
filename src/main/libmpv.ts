@@ -405,17 +405,6 @@ export class LibMPVController extends EventEmitter {
    */
   async stop(): Promise<void> {
     await this.command('stop')
-    if (this.instanceId === null) {
-      return
-    }
-    if (!mpvBinding) {
-      return
-    }
-    try {
-      mpvBinding.clearToBlack(this.instanceId)
-    } catch (error) {
-      console.warn('[libmpv] Failed to clear to black after stop:', error)
-    }
   }
 
   /**
@@ -433,6 +422,11 @@ export class LibMPVController extends EventEmitter {
     const MPV_EVENT_PROPERTY_CHANGE = 22
     const MPV_EVENT_END_FILE = 7
     const MPV_EVENT_SHUTDOWN = 1
+    const MPV_END_FILE_REASON_EOF = 0
+    const MPV_END_FILE_REASON_STOP = 2
+    const MPV_END_FILE_REASON_QUIT = 3
+    const MPV_END_FILE_REASON_ERROR = 4
+    const MPV_END_FILE_REASON_REDIRECT = 5
 
     const eventId: number = event?.eventId
 
@@ -464,15 +458,22 @@ export class LibMPVController extends EventEmitter {
         this.emit('status', { ...this.currentStatus })
         break
       }
-      case MPV_EVENT_END_FILE:
-        this.emit('ended')
-        if (this.instanceId !== null && mpvBinding) {
-          try {
-            mpvBinding.clearToBlack(this.instanceId)
-          } catch (error) {
+      case MPV_EVENT_END_FILE: {
+        const reason: number | null =
+          typeof event?.endFileReason === 'number' ? event.endFileReason : null
+        if (reason === MPV_END_FILE_REASON_STOP) {
+          this.emit('stopped')
+          if (this.instanceId !== null && mpvBinding) {
+            try {
+              mpvBinding.clearToBlack(this.instanceId)
+            } catch (error) {
+            }
           }
+        } else {
+          this.emit('ended')
         }
         break
+      }
       case MPV_EVENT_SHUTDOWN:
         this.emit('shutdown')
         break

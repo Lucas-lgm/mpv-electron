@@ -36,7 +36,6 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 extern "C" void mpv_force_black_frame(int64_t instanceId);
 
-// 发送到 JS 的事件数据
 struct MPVEventMessage {
     mpv_event_id event_id;
     std::string property_name;   // 对于 PROPERTY_CHANGE 事件
@@ -47,13 +46,19 @@ struct MPVEventMessage {
     std::string log_prefix;      // 对于 LOG_MESSAGE 事件
     std::string log_level;       // 对于 LOG_MESSAGE 事件
     std::string log_text;        // 对于 LOG_MESSAGE 事件
+    int end_file_reason;
+    int end_file_error;
+    bool has_end_file;
     
     MPVEventMessage()
         : event_id(MPV_EVENT_NONE),
           property_format(MPV_FORMAT_NONE),
           double_value(0.0),
           int_value(0),
-          flag_value(0) {}
+          flag_value(0),
+          end_file_reason(0),
+          end_file_error(0),
+          has_end_file(false) {}
 };
 
 static std::map<int64_t, MPVInstance*> instances;
@@ -97,6 +102,11 @@ void eventLoop(MPVInstance* instance) {
             if (log_msg->text) {
                 msg->log_text = log_msg->text;
             }
+        } else if (event->event_id == MPV_EVENT_END_FILE && event->data) {
+            mpv_event_end_file* eef = static_cast<mpv_event_end_file*>(event->data);
+            msg->end_file_reason = static_cast<int>(eef->reason);
+            msg->end_file_error = static_cast<int>(eef->error);
+            msg->has_end_file = true;
         }
         
         // 通过 ThreadSafeFunction 发送事件到主线程（非阻塞，避免退出时死锁）
@@ -128,6 +138,11 @@ void eventLoop(MPVInstance* instance) {
                 obj.Set("logPrefix", Napi::String::New(env, msg->log_prefix));
                 obj.Set("logLevel", Napi::String::New(env, msg->log_level));
                 obj.Set("logText", Napi::String::New(env, msg->log_text));
+            }
+
+            if (msg->has_end_file) {
+                obj.Set("endFileReason", Napi::Number::New(env, msg->end_file_reason));
+                obj.Set("endFileError", Napi::Number::New(env, msg->end_file_error));
             }
             
             jsCallback.Call({obj});
