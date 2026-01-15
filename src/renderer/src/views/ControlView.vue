@@ -3,6 +3,11 @@
     <header class="header">
       <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
     </header>
+    <div v-if="isLoading" class="loading-overlay">
+      <div class="loading-content">
+        <span class="loading-text">加载中...</span>
+      </div>
+    </div>
     <div v-if="showPlaylist" class="playlist-panel">
       <div class="playlist-header">
         <span class="playlist-title">播放列表</span>
@@ -79,6 +84,7 @@ const currentTime = ref(0)
 const duration = ref(0)
 const volume = ref(100)
 const currentVideoName = ref<string>('')
+const isLoading = ref(false)
 
 interface PlaylistItem {
   name: string
@@ -123,6 +129,7 @@ const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
 }
 
 const handlePlayerState = (state: PlayerState) => {
+  isLoading.value = state.phase === 'loading'
   isPlaying.value = state.phase === 'playing'
   if (typeof state.duration === 'number') {
     duration.value = state.duration
@@ -247,6 +254,27 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   pointer-events: none;
+}
+
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.loading-content {
+  padding: 0.75rem 1.5rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.85);
+}
+
+.loading-text {
+  color: #ffffff;
+  font-size: 0.9rem;
 }
 
 .header {

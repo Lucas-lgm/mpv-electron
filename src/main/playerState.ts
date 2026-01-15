@@ -46,7 +46,7 @@ export class PlayerStateMachine extends EventEmitter {
 
   updateFromStatus(status: MPVStatus): void {
     const next: PlayerState = {
-      phase: this.derivePhase(status),
+      phase: status.phase ?? this.derivePhase(status),
       currentTime: status.position,
       duration: status.duration,
       volume: status.volume,
@@ -87,4 +87,3 @@ export class PlayerStateMachine extends EventEmitter {
     }
   }
 }
-

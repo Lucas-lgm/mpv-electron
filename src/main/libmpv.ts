@@ -61,6 +61,7 @@ export interface MPVStatus {
   duration: number
   volume: number
   path: string | null
+  phase?: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
 }
 
 export class LibMPVController extends EventEmitter {
@@ -70,7 +71,8 @@ export class LibMPVController extends EventEmitter {
     position: 0,
     duration: 0,
     volume: 100,
-    path: null
+    path: null,
+    phase: 'idle'
   }
 
   constructor() {
@@ -281,6 +283,11 @@ export class LibMPVController extends EventEmitter {
       }
       mpvBinding!.loadFile(this.instanceId, path)
       this.currentStatus.path = path
+      this.currentStatus.position = 0
+      this.currentStatus.duration = 0
+      this.currentStatus.paused = false
+      this.currentStatus.phase = 'loading'
+      this.emit('status', { ...this.currentStatus })
       this.emit('file-loaded', path)
     } catch (error) {
       throw new Error(`Failed to load file: ${error}`)
@@ -424,9 +431,10 @@ export class LibMPVController extends EventEmitter {
    * 处理事件（来自 C++ 的 ThreadSafeFunction）
    */
   private handleEvent(event: any): void {
-    // MPV 事件 ID 定义（从 client.h）
     const MPV_EVENT_PROPERTY_CHANGE = 22
     const MPV_EVENT_END_FILE = 7
+    const MPV_EVENT_START_FILE = 6
+    const MPV_EVENT_FILE_LOADED = 8
     const MPV_EVENT_SHUTDOWN = 1
     const MPV_END_FILE_REASON_EOF = 0
     const MPV_END_FILE_REASON_STOP = 2
@@ -461,13 +469,37 @@ export class LibMPVController extends EventEmitter {
             break
         }
 
+        if (!this.currentStatus.phase || this.currentStatus.phase === 'loading') {
+          if (!this.currentStatus.path) {
+            this.currentStatus.phase = 'idle'
+          } else if (this.currentStatus.paused) {
+            this.currentStatus.phase = 'paused'
+          } else {
+            this.currentStatus.phase = 'playing'
+          }
+        }
+
         this.emit('status', { ...this.currentStatus })
+        break
+      }
+      case MPV_EVENT_START_FILE: {
+        this.currentStatus.phase = 'loading'
+        this.emit('status', { ...this.currentStatus })
+        break
+      }
+      case MPV_EVENT_FILE_LOADED: {
+        if (this.currentStatus.path) {
+          this.currentStatus.phase = 'playing'
+          this.emit('status', { ...this.currentStatus })
+        }
         break
       }
       case MPV_EVENT_END_FILE: {
         const reason: number | null =
           typeof event?.endFileReason === 'number' ? event.endFileReason : null
         if (reason === MPV_END_FILE_REASON_STOP) {
+          this.currentStatus.phase = 'stopped'
+          this.emit('status', { ...this.currentStatus })
           this.emit('stopped')
           if (this.instanceId !== null && mpvBinding) {
             try {
@@ -475,12 +507,28 @@ export class LibMPVController extends EventEmitter {
             } catch (error) {
             }
           }
+        } else if (reason === MPV_END_FILE_REASON_EOF) {
+          this.currentStatus.phase = 'ended'
+          this.emit('status', { ...this.currentStatus })
+          this.emit('ended')
+        } else if (reason === MPV_END_FILE_REASON_ERROR) {
+          this.currentStatus.phase = 'error'
+          this.emit('status', { ...this.currentStatus })
+          this.emit('ended')
         } else {
+          this.currentStatus.phase = 'stopped'
+          this.emit('status', { ...this.currentStatus })
           this.emit('ended')
         }
         break
       }
       case MPV_EVENT_SHUTDOWN:
+        this.currentStatus.phase = 'idle'
+        this.currentStatus.path = null
+        this.currentStatus.position = 0
+        this.currentStatus.duration = 0
+        this.currentStatus.paused = false
+        this.emit('status', { ...this.currentStatus })
         this.emit('shutdown')
         break
     }
