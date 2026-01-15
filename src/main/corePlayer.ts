@@ -1,4 +1,4 @@
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, BrowserView, screen } from 'electron'
 import { PlayerStateMachine, type PlayerState, type PlayerPhase } from './playerState'
 import type { MPVStatus } from './libmpv'
 import { LibMPVController, isLibMPVAvailable } from './libmpv'
@@ -7,6 +7,7 @@ import { Timeline } from './timeline'
 
 export interface CorePlayer {
   setVideoWindow(window: BrowserWindow | null): void
+  setControlView(view: BrowserView | null): void
   play(filePath: string): Promise<void>
   pause(): Promise<void>
   resume(): Promise<void>
@@ -31,6 +32,7 @@ class CorePlayerImpl implements CorePlayer {
   private pendingResizeTimer: NodeJS.Timeout | null = null
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
+  private controlView: BrowserView | null = null
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -44,10 +46,7 @@ class CorePlayerImpl implements CorePlayer {
       interval: 100,
       getStatus: () => this.getStatus(),
       send: (payload) => {
-        const vw = this.videoWindow
-        if (vw && !vw.isDestroyed()) {
-          vw.webContents.send('video-time-update', payload)
-        }
+        this.sendToPlaybackUIs('video-time-update', payload)
       }
     })
     this.stateMachine.on('state', (st) => {
@@ -60,6 +59,9 @@ class CorePlayerImpl implements CorePlayer {
       this.videoWindow.removeAllListeners('resize')
     }
     this.videoWindow = window
+  }
+  setControlView(view: BrowserView | null) {
+    this.controlView = view
   }
 
   isUsingEmbeddedMode(): boolean {
@@ -173,9 +175,7 @@ class CorePlayerImpl implements CorePlayer {
     if (!videoWindow) return
     this.controller.on('status', (status: MPVStatus) => {
       this.updateFromMPVStatus(status)
-      if (videoWindow && !videoWindow.isDestroyed()) {
-        videoWindow.webContents.send('player-state', this.getPlayerState())
-      }
+      this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
     ;(this.controller as any).on('error', (error: any) => {
       if (error instanceof Error && error.message) {
@@ -183,25 +183,19 @@ class CorePlayerImpl implements CorePlayer {
       } else {
         this.setError('Unknown error')
       }
-      if (videoWindow && !videoWindow.isDestroyed()) {
-        videoWindow.webContents.send('player-error', {
-          message: error instanceof Error ? error.message : 'Unknown error'
-        })
-        videoWindow.webContents.send('player-state', this.getPlayerState())
-      }
+      this.sendToPlaybackUIs('player-error', {
+        message: error instanceof Error ? error.message : 'Unknown error'
+      })
+      this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
     ;(this.controller as any).on('ended', () => {
       this.stateMachine.setPhase('ended')
-      if (videoWindow && !videoWindow.isDestroyed()) {
-        videoWindow.webContents.send('video-ended')
-        videoWindow.webContents.send('player-state', this.getPlayerState())
-      }
+      this.sendToPlaybackUIs('video-ended')
+      this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
     ;(this.controller as any).on('stopped', () => {
       this.stateMachine.setPhase('stopped')
-      if (videoWindow && !videoWindow.isDestroyed()) {
-        videoWindow.webContents.send('player-state', this.getPlayerState())
-      }
+      this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
   }
 
@@ -239,10 +233,7 @@ class CorePlayerImpl implements CorePlayer {
     if (status) {
       this.updateFromMPVStatus(status as MPVStatus)
       await this.timeline?.broadcastTimeline({ currentTime: time, duration: status.duration })
-      const videoWindow = this.videoWindow
-      if (videoWindow && !videoWindow.isDestroyed()) {
-        videoWindow.webContents.send('player-state', this.getPlayerState())
-      }
+      this.sendToPlaybackUIs('player-state', this.getPlayerState())
     }
   }
 
@@ -284,6 +275,7 @@ class CorePlayerImpl implements CorePlayer {
         }
         this.controller = null
       }
+      this.controlView = null
     } finally {
       this.isCleaningUp = false
     }
@@ -311,6 +303,17 @@ class CorePlayerImpl implements CorePlayer {
 
   offPlayerState(listener: (state: PlayerState) => void) {
     this.stateMachine.off('state', listener)
+  }
+
+  private sendToPlaybackUIs(channel: string, payload?: any) {
+    const vw = this.videoWindow
+    if (vw && !vw.isDestroyed()) {
+      vw.webContents.send(channel, payload)
+    }
+    const cv = this.controlView
+    if (cv && !cv.webContents.isDestroyed()) {
+      cv.webContents.send(channel, payload)
+    }
   }
 }
 

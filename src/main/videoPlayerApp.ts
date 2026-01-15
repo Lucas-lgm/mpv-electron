@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, BrowserView, screen } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { WindowManager } from './windowManager'
@@ -113,6 +113,7 @@ export class VideoPlayerApp {
   readonly windowManager: WindowManager
   readonly playlist: PlaylistManager
   readonly config: ConfigManager
+  private controlView: BrowserView | null = null
 
   constructor() {
     this.windowManager = new WindowManager()
@@ -232,6 +233,7 @@ export class VideoPlayerApp {
       existing.show()
       existing.focus()
       existing.moveTop()
+      this.ensureControlView(existing)
       return existing
     }
 
@@ -251,11 +253,13 @@ export class VideoPlayerApp {
       title: '视频播放器 - 视频播放',
       route: '#/video',
       titleBarStyle: 'hiddenInset',
-      frame: false,
+      frame: true,
       alwaysOnTop: false,
       show: true,
       transparent: true
     })
+
+    this.ensureControlView(window)
 
     window.on('close', async (event) => {
       event.preventDefault()
@@ -285,6 +289,42 @@ export class VideoPlayerApp {
     }
 
     return window
+  }
+
+  private ensureControlView(window: BrowserWindow) {
+    if (this.controlView && !this.controlView.webContents.isDestroyed()) {
+      return
+    }
+    const preloadPath = join(__dirname, '../preload/preload.js')
+    const view = new BrowserView({
+      webPreferences: {
+        preload: preloadPath,
+        nodeIntegration: false,
+        contextIsolation: true,
+        backgroundThrottling: false
+      }
+    })
+    window.setBrowserView(view)
+    const bounds = window.getContentBounds()
+    view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height })
+    view.setAutoResize({ width: true, height: true })
+
+    if (process.env.NODE_ENV === 'development') {
+      const url = 'http://localhost:5173/#/control'
+      view.webContents.loadURL(url).catch(() => {})
+    } else {
+      view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
+        hash: 'control'
+      }).catch(() => {})
+    }
+
+    window.on('resize', () => {
+      const b = window.getContentBounds()
+      view.setBounds({ x: 0, y: 0, width: b.width, height: b.height })
+    })
+
+    this.controlView = view
+    corePlayer.setControlView(view)
   }
 
   init() {
