@@ -3,6 +3,29 @@
     <header class="header">
       <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
     </header>
+    <div v-if="showPlaylist" class="playlist-panel">
+      <div class="playlist-header">
+        <span class="playlist-title">播放列表</span>
+        <button class="playlist-close" @click="togglePlaylist">×</button>
+      </div>
+      <div class="playlist-body">
+        <div
+          v-if="playlist.length === 0"
+          class="playlist-empty"
+        >
+          暂无播放列表
+        </div>
+        <div
+          v-for="item in playlist"
+          :key="item.path"
+          :class="['playlist-item', { active: item.path === currentPath }]"
+          @click="playFromPlaylist(item)"
+        >
+          <div class="playlist-item-name">{{ item.name }}</div>
+          <div class="playlist-item-path">{{ item.path }}</div>
+        </div>
+      </div>
+    </div>
     <main class="playback-controls">
       <div class="control-bar">
         <div class="progress-wrapper">
@@ -30,6 +53,7 @@
             <span class="time-total">{{ formatTime(duration) }}</span>
           </div>
           <div class="control-right">
+            <button @click="togglePlaylist" class="btn-control small">📃</button>
             <span class="volume-icon">🔊</span>
             <input
               type="range"
@@ -56,6 +80,15 @@ const duration = ref(0)
 const volume = ref(100)
 const currentVideoName = ref<string>('')
 
+interface PlaylistItem {
+  name: string
+  path: string
+}
+
+const playlist = ref<PlaylistItem[]>([])
+const showPlaylist = ref(false)
+const currentPath = ref<string | null>(null)
+
 type PlayerState = {
   phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
   currentTime: number
@@ -77,6 +110,7 @@ const handleVideoEnded = () => {
 
 const handlePlayVideo = (file: { name: string; path: string }) => {
   currentVideoName.value = file.name
+  currentPath.value = file.path
 }
 
 const handlePlayerError = (payload: { message: string }) => {
@@ -90,13 +124,19 @@ const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
 
 const handlePlayerState = (state: PlayerState) => {
   isPlaying.value = state.phase === 'playing'
-  // 同步音量和时长，时间仍由 video-time-update 驱动
   if (typeof state.duration === 'number') {
     duration.value = state.duration
   }
   if (typeof state.volume === 'number') {
     volume.value = state.volume
   }
+  if (typeof state.path === 'string') {
+    currentPath.value = state.path
+  }
+}
+
+const handlePlaylistUpdated = (items: PlaylistItem[]) => {
+  playlist.value = items
 }
 
 const formatTime = (seconds: number): string => {
@@ -105,6 +145,19 @@ const formatTime = (seconds: number): string => {
   const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+const togglePlaylist = () => {
+  showPlaylist.value = !showPlaylist.value
+}
+
+const playFromPlaylist = (item: PlaylistItem) => {
+  if (window.electronAPI) {
+    window.electronAPI.send('play-video', {
+      name: item.name,
+      path: item.path
+    })
+  }
 }
 
 const togglePlayPause = () => {
@@ -159,6 +212,8 @@ onMounted(() => {
     window.electronAPI.on('player-error', handlePlayerError)
     window.electronAPI.on('player-embedded', handlePlayerEmbedded)
     window.electronAPI.on('player-state', handlePlayerState)
+    window.electronAPI.on('playlist-updated', handlePlaylistUpdated)
+    window.electronAPI.send('get-playlist')
   }
 })
 
@@ -170,6 +225,7 @@ onUnmounted(() => {
     window.electronAPI.removeListener('player-error', handlePlayerError)
     window.electronAPI.removeListener('player-embedded', handlePlayerEmbedded)
     window.electronAPI.removeListener('player-state', handlePlayerState)
+    window.electronAPI.removeListener('playlist-updated', handlePlaylistUpdated)
   }
 })
 </script>
@@ -199,6 +255,86 @@ onUnmounted(() => {
   font-size: 0.9rem;
   font-weight: 500;
   color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playlist-panel {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  bottom: 80px;
+  width: 280px;
+  background: rgba(0, 0, 0, 0.7);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: blur(12px);
+}
+
+.playlist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.playlist-title {
+  font-weight: 500;
+}
+
+.playlist-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+.playlist-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.playlist-empty {
+  padding: 12px;
+  font-size: 0.85rem;
+  color: #aaa;
+}
+
+.playlist-item {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  color: #ddd;
+  cursor: pointer;
+}
+
+.playlist-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.playlist-item.active {
+  background: #4f46e5;
+  color: #fff;
+}
+
+.playlist-item-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playlist-item-path {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  opacity: 0.7;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

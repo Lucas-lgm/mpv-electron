@@ -1,6 +1,7 @@
 import { ipcMain, dialog } from 'electron'
 import { windowManager } from './main'
 import { videoPlayerApp, PlaylistItem } from './videoPlayerApp'
+import { corePlayer } from './corePlayer'
 import { handlePlayMedia } from './playbackController'
 
 export function setupIpcHandlers() {
@@ -31,7 +32,21 @@ export function setupIpcHandlers() {
 
   // 处理播放视频
   ipcMain.on('play-video', async (event, file: { name: string; path: string }) => {
+    const currentList = videoPlayerApp.playlist.getList()
+    let nextList = currentList
+    if (!currentList.some(item => item.path === file.path)) {
+      nextList = [...currentList, { name: file.name, path: file.path }]
+      videoPlayerApp.playlist.setList(nextList)
+    }
     await handlePlayMedia(file)
+    if (nextList.length > 0) {
+      corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
+    }
+  })
+
+  ipcMain.on('get-playlist', (event) => {
+    const items = videoPlayerApp.playlist.getList()
+    event.reply('playlist-updated', items)
   })
 
   // 处理播放控制 - 暂停
@@ -46,7 +61,10 @@ export function setupIpcHandlers() {
 
   // 处理 URL 播放
   ipcMain.on('play-url', async (_event, url: string) => {
-    await handlePlayMedia({ path: url, name: url })
+    const item: PlaylistItem = { path: url, name: url }
+    videoPlayerApp.playlist.setList([item])
+    await handlePlayMedia(item)
+    corePlayer.broadcastToPlaybackUIs('playlist-updated', [item])
   })
 
   ipcMain.on('control-stop', async () => {
@@ -65,6 +83,7 @@ export function setupIpcHandlers() {
 
   ipcMain.on('set-playlist', async (_event, items: PlaylistItem[]) => {
     videoPlayerApp.playlist.setList(items)
+    corePlayer.broadcastToPlaybackUIs('playlist-updated', items)
   })
 
   ipcMain.on('play-playlist-current', async () => {

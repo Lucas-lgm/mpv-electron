@@ -19,6 +19,10 @@ class PlaylistManager {
     this.index = items.length > 0 ? 0 : -1
   }
 
+  getList(): PlaylistItem[] {
+    return this.list.slice()
+  }
+
   getCurrent(): PlaylistItem | null {
     if (this.index < 0 || this.index >= this.list.length) {
       return null
@@ -318,6 +322,13 @@ export class VideoPlayerApp {
         hash: 'control'
       }).catch(() => {})
     }
+
+    view.webContents.on('did-finish-load', () => {
+      const items = this.playlist.getList()
+      if (items.length > 0) {
+        corePlayer.broadcastToPlaybackUIs('playlist-updated', items)
+      }
+    })
 
     window.on('resize', () => {
       const b = window.getContentBounds()

@@ -19,6 +19,7 @@ export interface CorePlayer {
   getPlayerState(): PlayerState
   onPlayerState(listener: (state: PlayerState) => void): void
   offPlayerState(listener: (state: PlayerState) => void): void
+  broadcastToPlaybackUIs(channel: string, payload?: any): void
 }
 
 class CorePlayerImpl implements CorePlayer {
@@ -314,6 +315,10 @@ class CorePlayerImpl implements CorePlayer {
     if (cv && !cv.webContents.isDestroyed()) {
       cv.webContents.send(channel, payload)
     }
+  }
+
+  broadcastToPlaybackUIs(channel: string, payload?: any) {
+    this.sendToPlaybackUIs(channel, payload)
   }
 }
 
