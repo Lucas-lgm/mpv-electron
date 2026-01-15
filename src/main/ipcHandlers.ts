@@ -130,6 +130,23 @@ export function setupIpcHandlers() {
     await mpvManager.resume()
   })
 
+  ipcMain.on('play-url', async (_event, url: string) => {
+    const videoWindow = windowManager.getWindow('video')
+    if (videoWindow) {
+      mpvManager.setVideoWindow(videoWindow)
+    }
+    try {
+      await mpvManager.play(url)
+    } catch (error) {
+      const targetWindow = videoWindow || windowManager.getWindow('main')
+      if (targetWindow) {
+        targetWindow.webContents.send('mpv-error', {
+          message: error instanceof Error ? error.message : 'Unknown error'
+        })
+      }
+    }
+  })
+
   ipcMain.on('control-stop', async () => {
     await mpvManager.stop()
   })

@@ -5,6 +5,15 @@
       <button @click="selectVideoFile" class="btn-primary">选择视频文件</button>
     </header>
     <main class="content">
+      <div class="url-bar">
+        <input
+          v-model="url"
+          type="text"
+          placeholder="输入 http/https 视频地址"
+          class="url-input"
+        />
+        <button @click="playUrl" class="btn-url-play">播放 URL</button>
+      </div>
       <div v-if="videoFiles.length === 0" class="empty-state">
         <p>暂无视频文件</p>
         <p>点击上方按钮选择视频文件</p>
@@ -36,6 +45,7 @@ interface VideoFile {
 }
 
 const videoFiles = ref<VideoFile[]>([])
+const url = ref('')
 
 const selectVideoFile = () => {
   // 通过 IPC 打开文件选择对话框
@@ -52,6 +62,15 @@ const playVideo = (file: VideoFile) => {
       name: file.name,
       path: file.path
     })
+  }
+}
+
+const playUrl = () => {
+  const value = url.value.trim()
+  if (!value) return
+  if (!value.startsWith('http://') && !value.startsWith('https://')) return
+  if (window.electronAPI) {
+    window.electronAPI.send('play-url', value)
   }
 }
 
@@ -109,6 +128,40 @@ onMounted(() => {
   padding: 2rem;
 }
 
+.url-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.url-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid #3a3a3a;
+  background: #111;
+  color: #fff;
+  outline: none;
+}
+
+.url-input::placeholder {
+  color: #777;
+}
+
+.btn-url-play {
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: none;
+  background: #22c55e;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-url-play:hover {
+  background: #16a34a;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -161,4 +214,3 @@ onMounted(() => {
   white-space: nowrap;
 }
 </style>
-
