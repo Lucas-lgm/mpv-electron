@@ -209,7 +209,7 @@ onUnmounted(() => {
   right: 0;
   bottom: 0;
   display: block;
-  padding: 0 0 1rem;
+  padding: 0;
   pointer-events: auto;
   -webkit-app-region: no-drag;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
