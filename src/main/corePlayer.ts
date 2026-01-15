@@ -28,6 +28,9 @@ class CorePlayerImpl implements CorePlayer {
   private initPromise: Promise<void> | null = null
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
+  private pendingResizeTimer: NodeJS.Timeout | null = null
+  private lastPhysicalWidth: number = -1
+  private lastPhysicalHeight: number = -1
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -131,8 +134,37 @@ class CorePlayerImpl implements CorePlayer {
     }
     this.videoWindow.removeAllListeners('resize')
     this.videoWindow.on('resize', () => {
-      this.syncWindowSize().catch(() => {})
+      this.scheduleWindowSizeSync()
     })
+  }
+
+  private scheduleWindowSizeSync(): void {
+    if (this.pendingResizeTimer) {
+      clearTimeout(this.pendingResizeTimer)
+    }
+    this.pendingResizeTimer = setTimeout(() => {
+      this.pendingResizeTimer = null
+      this.syncWindowSizeThrottled().catch(() => {})
+    }, 16)
+  }
+
+  private async syncWindowSizeThrottled(): Promise<void> {
+    if (!this.videoWindow || this.videoWindow.isDestroyed() || !this.controller) {
+      return
+    }
+    const bounds = this.videoWindow.getContentBounds()
+    const display = screen.getDisplayMatching(this.videoWindow.getBounds())
+    const scaleFactor = display.scaleFactor
+    const width = Math.round(bounds.width * scaleFactor)
+    const height = Math.round(bounds.height * scaleFactor)
+    if (width === this.lastPhysicalWidth && height === this.lastPhysicalHeight) {
+      return
+    }
+    this.lastPhysicalWidth = width
+    this.lastPhysicalHeight = height
+    if (this.controller instanceof LibMPVController) {
+      await this.controller.setWindowSize(width, height)
+    }
   }
 
   private setupEventHandlers(): void {
@@ -241,6 +273,10 @@ class CorePlayerImpl implements CorePlayer {
     }
     this.isCleaningUp = true
     try {
+      if (this.pendingResizeTimer) {
+        clearTimeout(this.pendingResizeTimer)
+        this.pendingResizeTimer = null
+      }
       this.timeline?.dispose()
       if (this.controller) {
         if (this.controller instanceof LibMPVController) {
