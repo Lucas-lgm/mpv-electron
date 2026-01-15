@@ -12,7 +12,7 @@
           placeholder="输入 http/https 视频地址"
           class="url-input"
         />
-        <button @click="playUrl" class="btn-url-play">播放 URL</button>
+        <button @click="addUrlToList" class="btn-url-play">添加 URL</button>
       </div>
       <div v-if="videoFiles.length === 0" class="empty-state">
         <p>暂无视频文件</p>
@@ -47,6 +47,15 @@ interface VideoFile {
 const videoFiles = ref<VideoFile[]>([])
 const url = ref('')
 
+const syncPlaylist = (): void => {
+  if (!window.electronAPI) return
+  const items = videoFiles.value.map((file) => ({
+    name: file.name,
+    path: file.path
+  }))
+  window.electronAPI.send('set-playlist', items)
+}
+
 const selectVideoFile = () => {
   // 通过 IPC 打开文件选择对话框
   if (window.electronAPI) {
@@ -65,17 +74,21 @@ const playVideo = (file: VideoFile) => {
   }
 }
 
-const playUrl = () => {
+const addUrlToList = () => {
   const value = url.value.trim()
   if (!value) return
   if (!value.startsWith('http://') && !value.startsWith('https://')) return
-  if (window.electronAPI) {
-    window.electronAPI.send('play-url', value)
-  }
+  videoFiles.value.push({
+    name: value,
+    path: value
+  })
+  syncPlaylist()
+  url.value = ''
 }
 
 const handleVideoFileSelected = (file: VideoFile) => {
   videoFiles.value.push(file)
+  syncPlaylist()
 }
 
 onMounted(() => {
@@ -179,9 +192,9 @@ onUnmounted(() => {
 }
 
 .video-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
 .video-item {
@@ -192,6 +205,7 @@ onUnmounted(() => {
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
+  width: 100%;
 }
 
 .video-item:hover {
@@ -211,6 +225,9 @@ onUnmounted(() => {
 .video-name {
   font-weight: 600;
   margin-bottom: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .video-path {
