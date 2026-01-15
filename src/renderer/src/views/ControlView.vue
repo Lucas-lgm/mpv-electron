@@ -43,8 +43,8 @@
             <button @click="togglePlayPause" class="btn-control">
               {{ isPlaying ? '⏸️' : '▶️' }}
             </button>
-            <button @click="seekBackward" class="btn-control small">⏪</button>
-            <button @click="seekForward" class="btn-control small">⏩</button>
+            <button @click="playPrevFromPlaylist" class="btn-control small">⏪</button>
+            <button @click="playNextFromPlaylist" class="btn-control small">⏩</button>
             <button @click="stop" class="btn-control small">⏹️</button>
           </div>
           <div class="control-center">
@@ -167,14 +167,16 @@ const togglePlayPause = () => {
   }
 }
 
-const seekBackward = () => {
-  const newTime = Math.max(0, currentTime.value - 10)
-  seekTo(newTime)
+const playPrevFromPlaylist = () => {
+  if (window.electronAPI) {
+    window.electronAPI.send('play-playlist-prev')
+  }
 }
 
-const seekForward = () => {
-  const newTime = Math.min(duration.value, currentTime.value + 10)
-  seekTo(newTime)
+const playNextFromPlaylist = () => {
+  if (window.electronAPI) {
+    window.electronAPI.send('play-playlist-next')
+  }
 }
 
 const stop = () => {

@@ -38,6 +38,7 @@ export function setupIpcHandlers() {
       nextList = [...currentList, { name: file.name, path: file.path }]
       videoPlayerApp.playlist.setList(nextList)
     }
+    videoPlayerApp.playlist.setCurrentByPath(file.path)
     await handlePlayMedia(file)
     if (nextList.length > 0) {
       corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
@@ -63,6 +64,7 @@ export function setupIpcHandlers() {
   ipcMain.on('play-url', async (_event, url: string) => {
     const item: PlaylistItem = { path: url, name: url }
     videoPlayerApp.playlist.setList([item])
+    videoPlayerApp.playlist.setCurrentByPath(item.path)
     await handlePlayMedia(item)
     corePlayer.broadcastToPlaybackUIs('playlist-updated', [item])
   })

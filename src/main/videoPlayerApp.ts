@@ -23,6 +23,13 @@ class PlaylistManager {
     return this.list.slice()
   }
 
+  setCurrentByPath(path: string) {
+    const idx = this.list.findIndex((item) => item.path === path)
+    if (idx >= 0) {
+      this.index = idx
+    }
+  }
+
   getCurrent(): PlaylistItem | null {
     if (this.index < 0 || this.index >= this.list.length) {
       return null
@@ -31,22 +38,21 @@ class PlaylistManager {
   }
 
   next(): PlaylistItem | null {
-    if (this.list.length === 0) {
+    if (this.list.length === 0 || this.index < 0) {
       return null
     }
-    if (this.index < this.list.length - 1) {
-      this.index += 1
+    if (this.index >= this.list.length - 1) {
+      return null
     }
+    this.index += 1
     return this.getCurrent()
   }
 
   prev(): PlaylistItem | null {
-    if (this.list.length === 0) {
+    if (this.list.length === 0 || this.index <= 0) {
       return null
     }
-    if (this.index > 0) {
-      this.index -= 1
-    }
+    this.index -= 1
     return this.getCurrent()
   }
 }
