@@ -15,10 +15,7 @@ class MPVManager {
    * 设置视频窗口
    */
   setVideoWindow(window: BrowserWindow | null) {
-    // 如果之前有窗口，先移除监听
     if (this.videoWindow && !this.videoWindow.isDestroyed()) {
-      this.videoWindow.removeAllListeners('close')
-      this.videoWindow.removeAllListeners('closed')
       this.videoWindow.removeAllListeners('resize')
     }
     
@@ -46,13 +43,6 @@ class MPVManager {
     if (this.isCleaningUp) {
       console.warn('[MPVManager] Warning: A cleanup process is already running. Play request ignored.')
       return
-    }
-    // 如果已有控制器，先关闭
-    if (this.controller) {
-      if (this.controller instanceof LibMPVController) {
-        await this.controller.destroy()
-      }
-      this.controller = null
     }
 
     let windowId: number | undefined
@@ -97,8 +87,11 @@ class MPVManager {
       this.useLibMPV = true
       
       try {
-        this.controller = new LibMPVController()
-        await (this.controller as LibMPVController).initialize()
+        // 如无实例则创建，有实例则直接复用
+        if (!this.controller) {
+          this.controller = new LibMPVController()
+          await (this.controller as LibMPVController).initialize()
+        }
         
         // 设置窗口 ID（真正嵌入 + 创建 GL/render context）
         await (this.controller as LibMPVController).setWindowId(windowId)
@@ -314,7 +307,7 @@ class MPVManager {
   }
 
   /**
-   * 清理
+   * 清理（真正销毁 libmpv 实例，应用退出时调用）
    */
   async cleanup(): Promise<void> {
     if (this.isCleaningUp) {
@@ -322,10 +315,12 @@ class MPVManager {
     }
     this.isCleaningUp = true
     try {
-      // 然后停止播放，而不是销毁整个实例
       if (this.controller) {
-        await this.controller.stop()
-        console.log('[MPVManager] Cleanup: Called controller.stop() instead of destroy().')
+        if (this.controller instanceof LibMPVController) {
+          await this.controller.destroy()
+          console.log('[MPVManager] Cleanup: controller destroyed on app exit.')
+        }
+        this.controller = null
       }
     } finally {
       this.isCleaningUp = false
@@ -334,4 +329,3 @@ class MPVManager {
 }
 
 export const mpvManager = new MPVManager()
-

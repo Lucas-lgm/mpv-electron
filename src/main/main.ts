@@ -46,7 +46,12 @@ function createVideoWindow() {
       transparent: true // 必须透明才能看到底层 OpenGL 渲染（macOS 上透明窗口会失去边框，这是系统限制）
     })
 
-    window.on('close', () => {
+    window.on('close', async (event) => {
+      event.preventDefault()
+      // 2. 先停止 MPV 实例，确保资源释放
+      console.log(`[ACTION] Attempting to stop MPV instance before closing video window.`);
+      await mpvManager.stop()
+      window.hide()
       const timestamp = () => `[${new Date().toISOString()}]`;
       console.log(`${timestamp()} [EVENT] Video window 'close' event triggered.`);
 
@@ -68,12 +73,6 @@ function createVideoWindow() {
         console.log(`${timestamp()} [VERIFY]   - isFocused: ${mainWindow.isFocused()}`);
       }
       console.log(`${timestamp()} [SUCCESS] Main window restoration logic finished.`);
-
-      // 2. 然后，将清理工作放到后台执行，不阻塞主流程
-      console.log(`${timestamp()} [ACTION] Starting mpv cleanup in the background.`);
-      mpvManager.cleanup().catch((err) => {
-        console.error(`${timestamp()} [ERROR] mpv cleanup failed:`, err)
-      })
     })
     
     // 确保窗口显示
