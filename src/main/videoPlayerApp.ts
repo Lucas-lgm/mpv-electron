@@ -304,6 +304,7 @@ export class VideoPlayerApp {
         backgroundThrottling: false
       }
     })
+    view.setBackgroundColor('#00000000')
     window.setBrowserView(view)
     const bounds = window.getContentBounds()
     view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height })

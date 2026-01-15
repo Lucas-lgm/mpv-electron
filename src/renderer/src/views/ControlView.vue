@@ -1,8 +1,4 @@
-<template>
-  <div class="control-view">
-    <header class="header">
-      <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
-    </header>
+<template>  <div class="control-view">
     <main class="playback-controls">
       <div class="control-buttons">
         <button @click="togglePlayPause" class="btn-control">
@@ -172,41 +168,27 @@ onUnmounted(() => {
 .control-view {
   width: 100%;
   height: 100vh;
-  /* 关键：让 Electron 窗口内容透明，避免覆盖底层 OpenGL */
   background: transparent;
   display: flex;
   flex-direction: column;
-  pointer-events: none; /* 让点击事件透传到底层（如果以后要在 HTML 上操作，再调整） */
-}
-
-.header {
-  padding: 1.5rem 2rem;
-  background: rgba(42, 42, 42, 0.7);
-  border-bottom: 1px solid #3a3a3a;
-}
-
-.title {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: #fff;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  pointer-events: none;
 }
 
 .playback-controls {
-  flex: 1;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   padding: 2rem;
   gap: 1.5rem;
   max-width: 600px;
   margin: 0 auto;
   width: 100%;
-  pointer-events: auto; /* 控件本身仍然可以交互 */
+  pointer-events: auto;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
 }
 
 .control-buttons {
