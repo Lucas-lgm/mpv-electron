@@ -30,6 +30,18 @@ export function setupIpcHandlers() {
 
   // 处理播放视频
   ipcMain.on('play-video', async (event, file: { name: string; path: string }) => {
+    const timestamp = () => `[${new Date().toISOString()}]`;
+    console.log(`${timestamp()} [EVENT] 'play-video' event triggered for file: ${file.path}`);
+
+    // 记录主窗口状态
+    const mainWindow = windowManager.getWindow('main');
+    if (mainWindow) {
+      console.log(`${timestamp()} [INFO] Main window status before playing: visible=${mainWindow.isVisible()}, destroyed=${mainWindow.isDestroyed()}`);
+      // 通常在这里隐藏主窗口
+      mainWindow.hide();
+      console.log(`${timestamp()} [ACTION] Main window hidden.`);
+    }
+
     // 创建视频窗口（用于显示控制面板）
     createVideoWindow()
     
@@ -74,7 +86,7 @@ export function setupIpcHandlers() {
       try {
         // 使用 mpv 播放视频（会自动选择 libmpv 或 IPC 模式）
         console.log('[IPC] Starting MPV playback...')
-        await mpvManager.playVideo(file.path)
+        await mpvManager.play(file.path)
         
         // 通知窗口嵌入状态
         const isUsingLibMPV = mpvManager.isUsingLibMPV()
@@ -115,7 +127,7 @@ export function setupIpcHandlers() {
 
   // 处理播放控制 - 播放
   ipcMain.on('control-play', async () => {
-    await mpvManager.play()
+    await mpvManager.resume()
   })
 
   // 处理播放控制 - 跳转

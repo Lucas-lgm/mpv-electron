@@ -46,10 +46,33 @@ function createVideoWindow() {
       transparent: true // 必须透明才能看到底层 OpenGL 渲染（macOS 上透明窗口会失去边框，这是系统限制）
     })
 
-    window.on('close', async () => {
-      console.log('[Main] Video window closed, cleaning up mpv...')
-      await mpvManager.cleanup().catch(err => {
-        console.error('[Main] mpv cleanup error (window close):', err)
+    window.on('close', () => {
+      const timestamp = () => `[${new Date().toISOString()}]`;
+      console.log(`${timestamp()} [EVENT] Video window 'close' event triggered.`);
+
+      // 1. 立即恢复主窗口，这是同步操作，防止应用退出
+      console.log(`${timestamp()} [ACTION] Attempting to restore main window immediately.`);
+      const mainWindow = windowManager.getWindow('main')
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        console.log(`${timestamp()} [INFO] Main window not found or destroyed. Creating a new one.`);
+        createMainWindow()
+      } else {
+        if (!mainWindow.isVisible()) {
+          console.log(`${timestamp()} [INFO] Main window is hidden. Showing it now.`);
+          mainWindow.show();
+          console.log(`${timestamp()} [VERIFY] Checking main window state AFTER show() call:`);
+          console.log(`${timestamp()} [VERIFY]   - isVisible: ${mainWindow.isVisible()}`);
+          console.log(`${timestamp()} [VERIFY]   - bounds: ${JSON.stringify(mainWindow.getBounds())}`);
+        }
+        mainWindow.focus();
+        console.log(`${timestamp()} [VERIFY]   - isFocused: ${mainWindow.isFocused()}`);
+      }
+      console.log(`${timestamp()} [SUCCESS] Main window restoration logic finished.`);
+
+      // 2. 然后，将清理工作放到后台执行，不阻塞主流程
+      console.log(`${timestamp()} [ACTION] Starting mpv cleanup in the background.`);
+      mpvManager.cleanup().catch((err) => {
+        console.error(`${timestamp()} [ERROR] mpv cleanup failed:`, err)
       })
     })
     
@@ -96,21 +119,31 @@ app.whenReady().then(() => {
 export { createVideoWindow }
 
 app.on('window-all-closed', () => {
+  const timestamp = () => `[${new Date().toISOString()}]`;
+  console.log(`${timestamp()} [EVENT] 'window-all-closed' event triggered.`);
   // 异步清理 mpv，不阻塞主线程退出
   import('./mpvManager')
     .then(({ mpvManager }) => mpvManager.cleanup().catch(err => {
-      console.error('[Main] mpv cleanup error:', err)
+      console.error(`${timestamp()} [ERROR] mpv cleanup failed on window-all-closed:`, err)
     }))
 
-  // 不再区分 macOS，关掉最后一个窗口就退出
-  app.quit()
+  // 在非 macOS 平台上，关闭所有窗口时退出应用。
+  // 在 macOS 上，应用会保持活动状态。
+  if (process.platform !== 'darwin') {
+    console.log(`${timestamp()} [ACTION] Not on macOS, quitting app.`);
+    app.quit()
+  } else {
+    console.log(`${timestamp()} [INFO] On macOS, app remains active.`);
+  }
 })
 
 app.on('before-quit', () => {
+  const timestamp = () => `[${new Date().toISOString()}]`;
+  console.log(`${timestamp()} [EVENT] 'before-quit' event triggered. Application is exiting.`);
   // 应用退出前清理 mpv，同样异步甩出去
   import('./mpvManager')
     .then(({ mpvManager }) => mpvManager.cleanup().catch(err => {
-      console.error('[Main] mpv cleanup error (before-quit):', err)
+      console.error(`${timestamp()} [ERROR] mpv cleanup failed on before-quit:`, err)
     }))
 })
 

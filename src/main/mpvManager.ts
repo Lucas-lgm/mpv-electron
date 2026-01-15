@@ -1,7 +1,6 @@
 import { LibMPVController, isLibMPVAvailable } from './libmpv'
 import { BrowserWindow, screen } from 'electron'
 import { getNSViewPointer } from './nativeHelper'
-import { windowSync } from './windowSync'
 
 // 统一控制器类型：要么是 IPC 控制器，要么是 libmpv 控制器
 type Controller = LibMPVController
@@ -10,7 +9,7 @@ class MPVManager {
   private controller: Controller | null = null
   private videoWindow: BrowserWindow | null = null
   private useLibMPV: boolean = false
-  private embedMode: boolean = false // 暂时禁用嵌入模式，先确保 video 窗口显示
+  private isCleaningUp: boolean = false
 
   /**
    * 设置视频窗口
@@ -24,26 +23,6 @@ class MPVManager {
     }
     
     this.videoWindow = window
-    
-    // 为新窗口添加关闭监听，确保窗口关闭时立即停止渲染循环
-    if (window && !window.isDestroyed()) {
-      window.on('close', () => {
-        this.cleanup()
-      })
-      window.on('closed', () => {
-        // 窗口已关闭，清理引用
-        if (this.videoWindow === window) {
-          this.videoWindow = null
-        }
-      })
-    }
-  }
-
-  /**
-   * 设置是否使用嵌入模式
-   */
-  setEmbedMode(enabled: boolean) {
-    this.embedMode = enabled
   }
 
   /**
@@ -63,7 +42,11 @@ class MPVManager {
   /**
    * 启动 MPV 并播放视频
    */
-  async playVideo(filePath: string): Promise<void> {
+  async play(filePath: string): Promise<void> {
+    if (this.isCleaningUp) {
+      console.warn('[MPVManager] Warning: A cleanup process is already running. Play request ignored.')
+      return
+    }
     // 如果已有控制器，先关闭
     if (this.controller) {
       if (this.controller instanceof LibMPVController) {
@@ -288,9 +271,9 @@ class MPVManager {
   }
 
   /**
-   * 播放
+   * 恢复播放
    */
-  async play(): Promise<void> {
+  async resume(): Promise<void> {
     if (this.controller) {
       await this.controller.play()
     }
@@ -330,24 +313,23 @@ class MPVManager {
     return this.controller?.getStatus() || null
   }
 
-  // 渲染循环已移至原生代码，不再需要 JS 层面的循环
-
   /**
    * 清理
    */
   async cleanup(): Promise<void> {
-    // 先停止 windowSync，避免访问已销毁的窗口
-    windowSync.stop()
-    windowSync.cleanup()
-    
-    // 然后销毁 controller（会停止渲染循环）
-    if (this.controller) {
-      if (this.controller instanceof LibMPVController) {
-        await this.controller.destroy()
-      }
-      this.controller = null
+    if (this.isCleaningUp) {
+      return
     }
-    this.useLibMPV = false
+    this.isCleaningUp = true
+    try {
+      // 然后停止播放，而不是销毁整个实例
+      if (this.controller) {
+        await this.controller.stop()
+        console.log('[MPVManager] Cleanup: Called controller.stop() instead of destroy().')
+      }
+    } finally {
+      this.isCleaningUp = false
+    }
   }
 }
 
