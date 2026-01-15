@@ -130,6 +130,10 @@ export function setupIpcHandlers() {
     await mpvManager.resume()
   })
 
+  ipcMain.on('control-stop', async () => {
+    await mpvManager.stop()
+  })
+
   // 处理播放控制 - 跳转
   ipcMain.on('control-seek', async (event, time: number) => {
     await mpvManager.seek(time)
@@ -156,4 +160,3 @@ export function setupIpcHandlers() {
     }
   })
 }
-

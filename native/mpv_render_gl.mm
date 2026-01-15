@@ -41,7 +41,9 @@ struct GLRenderContext {
     std::thread* renderThread = nullptr;
     std::atomic<bool> renderThreadRunning;
     
-    GLRenderContext() : needRedraw(false), isDestroying(false), renderThreadRunning(false) {}
+    std::atomic<bool> forceBlackFrame;
+    
+    GLRenderContext() : needRedraw(false), isDestroying(false), renderThread(nullptr), renderThreadRunning(false), forceBlackFrame(false) {}
 };
 
 struct ScopedCGLock {
@@ -61,6 +63,7 @@ static std::mutex g_renderMutex;
 // forward declarations
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
+extern "C" void mpv_force_black_frame(int64_t instanceId);
 
 // ------------------ helper: dlsym for mpv GL ------------------
 static void *get_proc_address(void *ctx, const char *name) {
@@ -431,6 +434,8 @@ static void render_internal(GLRenderContext *rc) {
     
     if (w <= 0 || h <= 0) return;
     
+    bool forceBlack = rc->forceBlackFrame.load();
+    
     // 调试：记录渲染尺寸和视频参数
     static int lastRenderW = 0, lastRenderH = 0;
     if (w != lastRenderW || h != lastRenderH) {
@@ -466,16 +471,6 @@ static void render_internal(GLRenderContext *rc) {
     // 3. 视频大小：mpv 视频的原始尺寸（从 mpv 属性获取）
     // 4. keepaspect：mpv 属性，控制是否保持宽高比
     // 
-    // mpv 的工作流程：
-    // - 从 FBO 尺寸（w, h）获取窗口大小
-    // - 调用 mp_get_src_dst_rects 计算 letterbox（考虑 keepaspect 和视频尺寸）
-    // - 使用 dst_rect 渲染视频到正确的位置和尺寸
-    // 
-    // 所以我们需要：
-    // - viewport = 窗口大小（整个窗口）
-    // - FBO 尺寸 = 窗口大小（让 mpv 知道窗口尺寸）
-    // - mpv 会自动计算 dst_rect（letterbox 区域）并只在这个区域渲染视频
-    
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     
@@ -488,9 +483,6 @@ static void render_internal(GLRenderContext *rc) {
     fbo.w = w;  // 窗口宽度（像素）
     fbo.h = h;  // 窗口高度（像素）
     
-    // 按照 mpv 官方实现（libmpv_helper.swift）：
-    // OpenGL 渲染只需要传递 OPENGL_FBO 和 FLIP_Y
-    // 注意：MPV_RENDER_PARAM_SW_SIZE 只用于软件渲染（MPV_RENDER_API_TYPE_SW），不用于 OpenGL
     int flip_y = 1;
     
     mpv_render_param params[] = {
@@ -536,9 +528,24 @@ static void render_internal(GLRenderContext *rc) {
         }
     }
     
-    // 如果有新帧需要渲染，或者尺寸变化了，都进行渲染
-    // 尺寸变化时必须重新渲染，即使 mpv 没有新帧（因为 viewport 和 FBO 尺寸变了）
-    // mpv 会在 render 时检测到 FBO 尺寸变化，自动重新计算 letterbox
+    if (forceBlack) {
+        rc->forceBlackFrame.store(false);
+        
+        if (sizeChanged) {
+            rc->lastRenderedWidth = w;
+            rc->lastRenderedHeight = h;
+            NSLog(@"[mpv_render_gl] ✅ Render successful, size updated to %dx%d (black frame)", w, h);
+        }
+        
+        @try {
+            [rc->glContext flushBuffer];
+        } @catch (NSException *ex) {
+            NSLog(@"[mpv_render_gl] flushBuffer failed: %@", ex);
+        }
+        
+        return;
+    }
+    
     if (hasNewFrame || sizeChanged) {
         // 调试：记录渲染参数
         if (sizeChanged) {
@@ -546,27 +553,6 @@ static void render_internal(GLRenderContext *rc) {
                   w, h, fbo.w, fbo.h);
         }
         
-        // 渲染（传递新的 FBO 尺寸）
-        // mpv 的工作流程：
-        // 1. get_target_size -> wrap_fbo -> ra_gl_ctx_resize(fbo->w, fbo->h)
-        //    这会更新纹理尺寸，mpv 从 tex->params.w/h 获取 vp_w/vp_h
-        // 2. 如果 vp_w/vp_h 变化，调用 mp_get_src_dst_rects 计算 letterbox（考虑 keepaspect）
-        // 3. 调用 resize 更新渲染器的 dst_rect
-        // 4. gl_video_render_frame 使用 dst_rect 渲染视频到正确的位置和尺寸
-        //
-        // 关键：FBO 尺寸 = 视口大小 = 窗口大小
-        // mpv 会从 FBO 尺寸获取窗口大小，然后计算 letterbox
-        // 关键点总结：
-        // - 窗口大小 (w, h): Electron 传入的像素尺寸
-        // - 视口大小 (glViewport): (0, 0, w, h) - 整个窗口
-        // - FBO 尺寸 (fbo.w, fbo.h): (w, h) - 等于窗口大小，告诉 mpv 窗口尺寸
-        // - 视频大小: mpv 从属性获取 (640x360)
-        // - keepaspect: mpv 属性，控制是否保持宽高比
-        //
-        // mpv 会：
-        // 1. 从 FBO 尺寸获取窗口大小 (vp_w, vp_h)
-        // 2. 如果尺寸变化，调用 mp_get_src_dst_rects 计算 letterbox (考虑 keepaspect)
-        // 3. 使用 dst_rect 渲染视频到正确的位置和尺寸
         int res = mpv_render_context_render(rc->mpvRenderCtx, params);
         
         if (res < 0) {
@@ -595,8 +581,6 @@ static void render_internal(GLRenderContext *rc) {
     }
 }
 
-// ------------------ request render (exposed) ------------------
-// Mark needRedraw, render thread will handle it
 extern "C" void mpv_request_render(int64_t instanceId) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -608,7 +592,6 @@ extern "C" void mpv_request_render(int64_t instanceId) {
     
     if (!rc || rc->isDestroying.load()) return;
     
-    // 只标记需要重绘，渲染线程会处理
     rc->needRedraw.store(true);
 }
 
@@ -625,13 +608,25 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     
     if (!rc || rc->isDestroying.load() || !rc->glContext || !rc->mpvRenderCtx) return;
     
-    // 检查是否需要渲染（避免重复渲染）
     bool expected = true;
     if (!rc->needRedraw.compare_exchange_strong(expected, false)) {
-        // needRedraw 已经是 false，说明已经在渲染或刚渲染完，跳过
         return;
     }
     
-    // call internal renderer (在渲染线程中执行，context 已经是 current 的)
     render_internal(rc.get());
+}
+
+extern "C" void mpv_force_black_frame(int64_t instanceId) {
+    std::shared_ptr<GLRenderContext> rc = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        auto it = g_renderContexts.find(instanceId);
+        if (it == g_renderContexts.end()) return;
+        rc = it->second;
+    }
+    
+    if (!rc || rc->isDestroying.load()) return;
+    
+    rc->forceBlackFrame.store(true);
+    rc->needRedraw.store(true);
 }

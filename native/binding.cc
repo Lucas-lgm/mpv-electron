@@ -34,6 +34,7 @@ extern "C" struct GLRenderContext *mpv_create_gl_context_for_view(int64_t instan
 extern "C" void mpv_destroy_gl_context(int64_t instanceId);
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
+extern "C" void mpv_force_black_frame(int64_t instanceId);
 
 // 发送到 JS 的事件数据
 struct MPVEventMessage {
@@ -206,6 +207,31 @@ Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
     int height = info[2].As<Napi::Number>().Int32Value();
     
     mpv_set_window_size(id, width, height);
+    
+    return env.Undefined();
+}
+
+Napi::Value ClearToBlack(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    
+    {
+        std::lock_guard<std::mutex> lock(instancesMutex);
+        auto it = instances.find(id);
+        if (it == instances.end() || !it->second->ctx) {
+            Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+            return env.Null();
+        }
+    }
+    
+    mpv_force_black_frame(id);
     
     return env.Undefined();
 }
@@ -662,6 +688,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "attachView"), Napi::Function::New(env, AttachView));
     exports.Set(Napi::String::New(env, "renderFrame"), Napi::Function::New(env, RenderFrame));
     exports.Set(Napi::String::New(env, "setWindowSize"), Napi::Function::New(env, SetWindowSize));
+    exports.Set(Napi::String::New(env, "clearToBlack"), Napi::Function::New(env, ClearToBlack));
     
     return exports;
 }

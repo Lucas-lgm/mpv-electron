@@ -77,9 +77,8 @@ const seekForward = () => {
 
 const stop = () => {
   isPlaying.value = false
-  seekTo(0)
   if (window.electronAPI) {
-    window.electronAPI.send('control-pause')
+    window.electronAPI.send('control-stop')
   }
 }
 

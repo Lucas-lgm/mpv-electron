@@ -15,6 +15,7 @@ interface MPVBinding {
   setEventCallback(instanceId: number, callback: (event: any) => void): boolean
   attachView(instanceId: number, viewPtr: number): void
   setWindowSize(instanceId: number, width: number, height: number): void
+  clearToBlack(instanceId: number): void
   destroy(instanceId: number): boolean
 }
 
@@ -404,6 +405,17 @@ export class LibMPVController extends EventEmitter {
    */
   async stop(): Promise<void> {
     await this.command('stop')
+    if (this.instanceId === null) {
+      return
+    }
+    if (!mpvBinding) {
+      return
+    }
+    try {
+      mpvBinding.clearToBlack(this.instanceId)
+    } catch (error) {
+      console.warn('[libmpv] Failed to clear to black after stop:', error)
+    }
   }
 
   /**
@@ -454,6 +466,12 @@ export class LibMPVController extends EventEmitter {
       }
       case MPV_EVENT_END_FILE:
         this.emit('ended')
+        if (this.instanceId !== null && mpvBinding) {
+          try {
+            mpvBinding.clearToBlack(this.instanceId)
+          } catch (error) {
+          }
+        }
         break
       case MPV_EVENT_SHUTDOWN:
         this.emit('shutdown')
