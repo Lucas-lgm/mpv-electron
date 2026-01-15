@@ -1,5 +1,9 @@
-import { BrowserWindow } from 'electron'
-import { mpvManager } from './mpvManager'
+import { BrowserWindow, screen } from 'electron'
+import { PlayerStateMachine, type PlayerState, type PlayerPhase } from './playerState'
+import type { MPVStatus } from './libmpv'
+import { LibMPVController, isLibMPVAvailable } from './libmpv'
+import { getNSViewPointer } from './nativeHelper'
+import { Timeline } from './timeline'
 
 export interface CorePlayer {
   setVideoWindow(window: BrowserWindow | null): void
@@ -11,68 +15,295 @@ export interface CorePlayer {
   setVolume(volume: number): Promise<void>
   isUsingEmbeddedMode(): boolean
   cleanup(): Promise<void>
+  getPlayerState(): PlayerState
+  onPlayerState(listener: (state: PlayerState) => void): void
+  offPlayerState(listener: (state: PlayerState) => void): void
 }
 
-let backend: CorePlayer = {
+class CorePlayerImpl implements CorePlayer {
+  private controller: LibMPVController | null = null
+  private videoWindow: BrowserWindow | null = null
+  private useLibMPV: boolean = false
+  private isCleaningUp: boolean = false
+  private initPromise: Promise<void> | null = null
+  private stateMachine = new PlayerStateMachine()
+  private timeline: Timeline | null = null
+
+  constructor() {
+    if (isLibMPVAvailable()) {
+      this.controller = new LibMPVController()
+      this.initPromise = this.controller.initialize().catch(() => {
+        this.controller = null
+        this.initPromise = null
+      })
+    }
+    this.timeline = new Timeline({
+      interval: 100,
+      getStatus: () => this.getStatus(),
+      send: (payload) => {
+        const vw = this.videoWindow
+        if (vw && !vw.isDestroyed()) {
+          vw.webContents.send('video-time-update', payload)
+        }
+      }
+    })
+    this.stateMachine.on('state', (st) => {
+      this.timeline?.handlePlayerStateChange(st.phase)
+    })
+  }
+
   setVideoWindow(window: BrowserWindow | null) {
-    mpvManager.setVideoWindow(window)
-  },
-  async play(filePath: string) {
-    await mpvManager.play(filePath)
-  },
-  async pause() {
-    await mpvManager.pause()
-  },
-  async resume() {
-    await mpvManager.resume()
-  },
-  async stop() {
-    await mpvManager.stop()
-  },
-  async seek(time: number) {
-    await mpvManager.seek(time)
-  },
-  async setVolume(volume: number) {
-    await mpvManager.setVolume(volume)
-  },
-  isUsingEmbeddedMode() {
-    return mpvManager.isUsingLibMPV()
-  },
-  async cleanup() {
-    await mpvManager.cleanup()
+    if (this.videoWindow && !this.videoWindow.isDestroyed()) {
+      this.videoWindow.removeAllListeners('resize')
+    }
+    this.videoWindow = window
+  }
+
+  isUsingEmbeddedMode(): boolean {
+    return this.useLibMPV
+  }
+
+  async play(filePath: string): Promise<void> {
+    if (this.isCleaningUp) {
+      return
+    }
+    let windowId: number | undefined
+    this.stateMachine.setPhase('loading')
+    if (this.videoWindow && !this.videoWindow.isDestroyed()) {
+      try {
+        if (!this.videoWindow.isVisible()) {
+          this.videoWindow.show()
+        }
+        this.videoWindow.focus()
+        await new Promise(resolve => setTimeout(resolve, 300))
+        if (this.videoWindow.isDestroyed()) {
+        } else {
+          const windowHandle = getNSViewPointer(this.videoWindow)
+          if (windowHandle) {
+            windowId = windowHandle
+          }
+        }
+      } catch {
+      }
+    }
+    if (isLibMPVAvailable() && windowId) {
+      this.useLibMPV = true
+      try {
+        if (!this.controller) {
+          this.controller = new LibMPVController()
+          this.initPromise = this.controller.initialize()
+        }
+        if (this.initPromise) {
+          await this.initPromise
+          this.initPromise = null
+        }
+        await this.controller.setWindowId(windowId)
+        await this.syncWindowSize()
+        this.setupResizeHandler()
+        await this.controller.loadFile(filePath)
+        await this.syncWindowSize()
+        this.setupEventHandlers()
+        this.stateMachine.setPhase('playing')
+        return
+      } catch {
+        this.useLibMPV = false
+      }
+    }
+  }
+
+  private async syncWindowSize(): Promise<void> {
+    if (!this.videoWindow || this.videoWindow.isDestroyed() || !this.controller) {
+      return
+    }
+    const bounds = this.videoWindow.getContentBounds()
+    const display = screen.getDisplayMatching(this.videoWindow.getBounds())
+    const scaleFactor = display.scaleFactor
+    const width = Math.round(bounds.width * scaleFactor)
+    const height = Math.round(bounds.height * scaleFactor)
+    if (this.controller instanceof LibMPVController) {
+      await this.controller.setWindowSize(width, height)
+    }
+  }
+
+  private setupResizeHandler(): void {
+    if (!this.videoWindow || this.videoWindow.isDestroyed()) {
+      return
+    }
+    this.videoWindow.removeAllListeners('resize')
+    this.videoWindow.on('resize', () => {
+      this.syncWindowSize().catch(() => {})
+    })
+  }
+
+  private setupEventHandlers(): void {
+    if (!this.controller) return
+    const videoWindow = this.videoWindow
+    if (!videoWindow) return
+    this.controller.on('status', (status: MPVStatus) => {
+      this.updateFromMPVStatus(status)
+      if (videoWindow && !videoWindow.isDestroyed()) {
+        videoWindow.webContents.send('player-state', this.getPlayerState())
+      }
+    })
+    ;(this.controller as any).on('error', (error: any) => {
+      if (error instanceof Error && error.message) {
+        this.setError(error.message)
+      } else {
+        this.setError('Unknown error')
+      }
+      if (videoWindow && !videoWindow.isDestroyed()) {
+        videoWindow.webContents.send('player-error', {
+          message: error instanceof Error ? error.message : 'Unknown error'
+        })
+        videoWindow.webContents.send('player-state', this.getPlayerState())
+      }
+    })
+    ;(this.controller as any).on('ended', () => {
+      this.stateMachine.setPhase('ended')
+      if (videoWindow && !videoWindow.isDestroyed()) {
+        videoWindow.webContents.send('video-ended')
+        videoWindow.webContents.send('player-state', this.getPlayerState())
+      }
+    })
+    ;(this.controller as any).on('stopped', () => {
+      this.stateMachine.setPhase('stopped')
+      if (videoWindow && !videoWindow.isDestroyed()) {
+        videoWindow.webContents.send('player-state', this.getPlayerState())
+      }
+    })
+  }
+
+  async togglePause(): Promise<void> {
+    if (this.controller) {
+      await this.controller.togglePause()
+      const status = this.controller.getStatus()
+      if (status) {
+        this.updateFromMPVStatus(status as MPVStatus)
+      }
+    }
+  }
+
+  async pause(): Promise<void> {
+    if (this.controller) {
+      await this.controller.pause()
+      this.stateMachine.setPhase('paused')
+    }
+  }
+
+  async resume(): Promise<void> {
+    if (this.controller) {
+      await this.controller.play()
+      this.stateMachine.setPhase('playing')
+    }
+  }
+
+  async seek(time: number): Promise<void> {
+    if (!this.controller) {
+      return
+    }
+    this.timeline?.markSeek(time)
+    await this.controller.seek(time)
+    const status = this.controller.getStatus()
+    if (status) {
+      this.updateFromMPVStatus(status as MPVStatus)
+      await this.timeline?.broadcastTimeline({ currentTime: time, duration: status.duration })
+      const videoWindow = this.videoWindow
+      if (videoWindow && !videoWindow.isDestroyed()) {
+        videoWindow.webContents.send('player-state', this.getPlayerState())
+      }
+    }
+  }
+
+  async setVolume(volume: number): Promise<void> {
+    if (this.controller) {
+      await this.controller.setVolume(volume)
+      const status = this.controller.getStatus()
+      if (status) {
+        this.updateFromMPVStatus(status as MPVStatus)
+      }
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.controller) {
+      await this.controller.stop()
+      this.stateMachine.setPhase('stopped')
+    }
+  }
+
+  getStatus() {
+    return this.controller?.getStatus() || null
+  }
+
+  async cleanup(): Promise<void> {
+    if (this.isCleaningUp) {
+      return
+    }
+    this.isCleaningUp = true
+    try {
+      this.timeline?.dispose()
+      if (this.controller) {
+        if (this.controller instanceof LibMPVController) {
+          await this.controller.destroy()
+        }
+        this.controller = null
+      }
+    } finally {
+      this.isCleaningUp = false
+    }
+  }
+
+  updateFromMPVStatus(status: MPVStatus) {
+    this.stateMachine.updateFromStatus(status)
+  }
+
+  setPhase(phase: PlayerPhase) {
+    this.stateMachine.setPhase(phase)
+  }
+
+  setError(message: string) {
+    this.stateMachine.setError(message)
+  }
+
+  getPlayerState(): PlayerState {
+    return this.stateMachine.getState()
+  }
+
+  onPlayerState(listener: (state: PlayerState) => void) {
+    this.stateMachine.on('state', listener)
+  }
+
+  offPlayerState(listener: (state: PlayerState) => void) {
+    this.stateMachine.off('state', listener)
   }
 }
 
-export const corePlayer: CorePlayer = {
-  setVideoWindow(window: BrowserWindow | null) {
-    backend.setVideoWindow(window)
-  },
-  async play(filePath: string) {
-    await backend.play(filePath)
-  },
-  async pause() {
-    await backend.pause()
-  },
-  async resume() {
-    await backend.resume()
-  },
-  async stop() {
-    await backend.stop()
-  },
-  async seek(time: number) {
-    await backend.seek(time)
-  },
-  async setVolume(volume: number) {
-    await backend.setVolume(volume)
-  },
-  isUsingEmbeddedMode() {
-    return backend.isUsingEmbeddedMode()
-  },
-  async cleanup() {
-    await backend.cleanup()
-  }
-}
+export const corePlayer: CorePlayer = new CorePlayerImpl()
 
 export function setCorePlayerBackend(impl: CorePlayer) {
-  backend = impl
+  Object.assign(corePlayer, impl)
+}
+
+export function updateFromMPVStatus(status: MPVStatus) {
+  ;(corePlayer as CorePlayerImpl).updateFromMPVStatus(status)
+}
+
+export function setPhase(phase: PlayerPhase) {
+  ;(corePlayer as CorePlayerImpl).setPhase(phase)
+}
+
+export function getPlayerState(): PlayerState {
+  return corePlayer.getPlayerState()
+}
+
+export function onPlayerState(listener: (state: PlayerState) => void) {
+  corePlayer.onPlayerState(listener)
+}
+
+export function offPlayerState(listener: (state: PlayerState) => void) {
+  corePlayer.offPlayerState(listener)
+}
+
+export function setError(message: string) {
+  ;(corePlayer as CorePlayerImpl).setError(message)
 }
