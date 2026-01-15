@@ -1,6 +1,7 @@
-import { LibMPVController, isLibMPVAvailable } from './libmpv'
+import { LibMPVController, MPVStatus, isLibMPVAvailable } from './libmpv'
 import { BrowserWindow, screen } from 'electron'
 import { getNSViewPointer } from './nativeHelper'
+import { PlayerStateMachine } from './playerState'
 
 // 统一控制器类型：要么是 IPC 控制器，要么是 libmpv 控制器
 type Controller = LibMPVController
@@ -11,6 +12,7 @@ class MPVManager {
   private useLibMPV: boolean = false
   private isCleaningUp: boolean = false
   private initPromise: Promise<void> | null = null
+  private stateMachine = new PlayerStateMachine()
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -82,6 +84,10 @@ class MPVManager {
   getController(): Controller | null {
     return this.controller
   }
+
+  getPlayerState() {
+    return this.stateMachine.getState()
+  }
   
   /**
    * 检查是否使用 libmpv
@@ -100,6 +106,8 @@ class MPVManager {
     }
 
     let windowId: number | undefined
+
+    this.stateMachine.setPhase('loading')
 
     // 只要有 video 窗口，就尝试获取窗口句柄传给 MPV
     console.log('[MPVManager] Checking for video window...')
@@ -141,7 +149,6 @@ class MPVManager {
       this.useLibMPV = true
       
       try {
-        // 如无实例则创建，有实例则直接复用
         if (!this.controller) {
           this.controller = new LibMPVController()
           this.initPromise = (this.controller as LibMPVController).initialize()
@@ -152,24 +159,20 @@ class MPVManager {
           this.initPromise = null
         }
         
-        // 设置窗口 ID（真正嵌入 + 创建 GL/render context）
         await (this.controller as LibMPVController).setWindowId(windowId)
         console.log('[MPVManager] ✅ Render context created for Electron window')
         
-        // 设置初始窗口尺寸
         await this.syncWindowSize()
         
-        // 设置窗口大小变化监听
         this.setupResizeHandler()
         
-        // 加载并播放文件
         await (this.controller as LibMPVController).loadFile(filePath)
         
-        // 加载文件后，再次确认窗口尺寸
         await this.syncWindowSize()
         
-        // 设置事件监听
         this.setupEventHandlers()
+
+        this.stateMachine.setPhase('playing')
 
         return
       } catch (error) {
@@ -185,109 +188,109 @@ class MPVManager {
    */
   private setupEventHandlers(): void {
     if (!this.controller) return
-    
+
     const videoWindow = this.videoWindow
     if (!videoWindow) return
-    
-    // 监听状态更新
-    ;(this.controller as LibMPVController).on('status', (status: any) => {
+
+    ;(this.controller as LibMPVController).on('status', (status: MPVStatus) => {
+      this.stateMachine.updateFromStatus(status)
       if (videoWindow && !videoWindow.isDestroyed()) {
-        // 将时间信息发给渲染层
         videoWindow.webContents.send('video-time-update', {
           currentTime: status.position,
           duration: status.duration
         })
+        videoWindow.webContents.send('player-state', this.stateMachine.getState())
       }
     })
-    
-    // 监听错误
+
     ;(this.controller as any).on('error', (error: any) => {
       console.error('MPV controller error:', error)
+      if (error instanceof Error && error.message) {
+        this.stateMachine.setError(error.message)
+      } else {
+        this.stateMachine.setError('Unknown error')
+      }
       if (videoWindow && !videoWindow.isDestroyed()) {
-        videoWindow.webContents.send('mpv-error', {
+        videoWindow.webContents.send('player-error', {
           message: error instanceof Error ? error.message : 'Unknown error'
         })
+        videoWindow.webContents.send('player-state', this.stateMachine.getState())
       }
     })
-    
-    // 监听播放结束
+
     ;(this.controller as any).on('ended', () => {
       console.log('MPV playback ended')
+      this.stateMachine.setPhase('ended')
       if (videoWindow && !videoWindow.isDestroyed()) {
         videoWindow.webContents.send('video-ended')
+        videoWindow.webContents.send('player-state', this.stateMachine.getState())
       }
     })
-    
-    // 监听停止
+
     ;(this.controller as any).on('stopped', () => {
       console.log('MPV stopped')
+      this.stateMachine.setPhase('stopped')
+      if (videoWindow && !videoWindow.isDestroyed()) {
+        videoWindow.webContents.send('player-state', this.stateMachine.getState())
+      }
     })
   }
 
-  /**
-   * 暂停/播放
-   */
   async togglePause(): Promise<void> {
     if (this.controller) {
       await this.controller.togglePause()
+      const status = this.controller.getStatus()
+      if (status) {
+        this.stateMachine.updateFromStatus(status as MPVStatus)
+      }
     }
   }
 
-  /**
-   * 暂停
-   */
   async pause(): Promise<void> {
     if (this.controller) {
       await this.controller.pause()
+      this.stateMachine.setPhase('paused')
     }
   }
 
-  /**
-   * 恢复播放
-   */
   async resume(): Promise<void> {
     if (this.controller) {
       await this.controller.play()
+      this.stateMachine.setPhase('playing')
     }
   }
 
-  /**
-   * 跳转
-   */
   async seek(time: number): Promise<void> {
     if (this.controller) {
       await this.controller.seek(time)
+      const status = this.controller.getStatus()
+      if (status) {
+        this.stateMachine.updateFromStatus(status as MPVStatus)
+      }
     }
   }
 
-  /**
-   * 设置音量
-   */
   async setVolume(volume: number): Promise<void> {
     if (this.controller) {
       await this.controller.setVolume(volume)
+      const status = this.controller.getStatus()
+      if (status) {
+        this.stateMachine.updateFromStatus(status as MPVStatus)
+      }
     }
   }
 
-  /**
-   * 停止
-   */
   async stop(): Promise<void> {
     if (this.controller) {
       await this.controller.stop()
+      this.stateMachine.setPhase('stopped')
     }
   }
 
-  /**
-   * 获取状态
-   */
   getStatus() {
     return this.controller?.getStatus() || null
   }
 
-  /**
-   * 清理（真正销毁 libmpv 实例，应用退出时调用）
-   */
   async cleanup(): Promise<void> {
     if (this.isCleaningUp) {
       return

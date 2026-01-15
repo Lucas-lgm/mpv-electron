@@ -1,7 +1,7 @@
 <template>
   <div class="control-view">
     <header class="header">
-      <h1 class="title">{{ currentVideoName || 'MPV Player' }}</h1>
+      <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
     </header>
     <main class="playback-controls">
       <div class="control-buttons">
@@ -50,6 +50,29 @@ const currentTime = ref(0)
 const duration = ref(0)
 const volume = ref(100)
 const currentVideoName = ref<string>('')
+
+const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
+  currentTime.value = data.currentTime
+  duration.value = data.duration
+}
+
+const handleVideoEnded = () => {
+  isPlaying.value = false
+  currentTime.value = 0
+}
+
+const handlePlayVideo = (file: { name: string; path: string }) => {
+  currentVideoName.value = file.name
+}
+
+const handlePlayerError = (payload: { message: string }) => {
+  isPlaying.value = false
+  currentVideoName.value = `播放出错: ${payload.message}`
+}
+
+const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
+  console.log('player embedded mode:', payload)
+}
 
 const formatTime = (seconds: number): string => {
   if (!seconds || isNaN(seconds)) return '00:00'
@@ -104,27 +127,21 @@ const onVolumeChange = (event: Event) => {
 
 onMounted(() => {
   if (window.electronAPI) {
-    window.electronAPI.on('video-time-update', (data: { currentTime: number; duration: number }) => {
-      currentTime.value = data.currentTime
-      duration.value = data.duration
-    })
-    
-    window.electronAPI.on('video-ended', () => {
-      isPlaying.value = false
-      currentTime.value = 0
-    })
-
-    window.electronAPI.on('play-video', (file: { name: string; path: string }) => {
-      currentVideoName.value = file.name
-    })
+    window.electronAPI.on('video-time-update', handleVideoTimeUpdate)
+    window.electronAPI.on('video-ended', handleVideoEnded)
+    window.electronAPI.on('play-video', handlePlayVideo)
+    window.electronAPI.on('player-error', handlePlayerError)
+    window.electronAPI.on('player-embedded', handlePlayerEmbedded)
   }
 })
 
 onUnmounted(() => {
   if (window.electronAPI) {
-    window.electronAPI.removeListener('video-time-update', () => {})
-    window.electronAPI.removeListener('video-ended', () => {})
-    window.electronAPI.removeListener('play-video', () => {})
+    window.electronAPI.removeListener('video-time-update', handleVideoTimeUpdate)
+    window.electronAPI.removeListener('video-ended', handleVideoEnded)
+    window.electronAPI.removeListener('play-video', handlePlayVideo)
+    window.electronAPI.removeListener('player-error', handlePlayerError)
+    window.electronAPI.removeListener('player-embedded', handlePlayerEmbedded)
   }
 })
 </script>

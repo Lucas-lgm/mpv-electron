@@ -37,7 +37,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 interface VideoFile {
   name: string
@@ -74,12 +74,19 @@ const playUrl = () => {
   }
 }
 
+const handleVideoFileSelected = (file: VideoFile) => {
+  videoFiles.value.push(file)
+}
+
 onMounted(() => {
-  // 监听文件选择结果
   if (window.electronAPI) {
-    window.electronAPI.on('video-file-selected', (file: VideoFile) => {
-      videoFiles.value.push(file)
-    })
+    window.electronAPI.on('video-file-selected', handleVideoFileSelected)
+  }
+})
+
+onUnmounted(() => {
+  if (window.electronAPI) {
+    window.electronAPI.removeListener('video-file-selected', handleVideoFileSelected)
   }
 })
 </script>
