@@ -1,4 +1,8 @@
-<template>  <div class="control-view">
+<template>
+  <div class="control-view">
+    <header class="header">
+      <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
+    </header>
     <main class="playback-controls">
       <div class="control-buttons">
         <button @click="togglePlayPause" class="btn-control">
@@ -174,6 +178,26 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+.header {
+  padding: 0.5rem 1rem;
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-app-region: drag;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .playback-controls {
   position: absolute;
   left: 0;
@@ -188,6 +212,7 @@ onUnmounted(() => {
   margin: 0 auto;
   width: 100%;
   pointer-events: auto;
+  -webkit-app-region: no-drag;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
 }
 
