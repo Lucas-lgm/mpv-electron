@@ -171,6 +171,7 @@ export class VideoPlayerApp {
       await corePlayer.play(target.path)
       const volume = this.config.getVolume()
       await corePlayer.setVolume(volume)
+      await corePlayer.resume()
       const isEmbedded = corePlayer.isUsingEmbeddedMode()
       videoWindow.webContents.send('player-embedded', {
         embedded: isEmbedded,
