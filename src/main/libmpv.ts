@@ -159,7 +159,7 @@ export class LibMPVController extends EventEmitter {
             console.log(`[mpv] [${level}] ${prefix}: ${text.trim()}`)
           }
         }
-        // console.log('[libmpv] Event:', event)
+        console.log('[libmpv] Event:', event)
         this.handleEvent(event)
       })
       
@@ -457,6 +457,9 @@ export class LibMPVController extends EventEmitter {
         switch (name) {
           case 'pause':
             this.currentStatus.paused = !!value
+            if (this.currentStatus.path) {
+              this.currentStatus.phase = this.currentStatus.paused ? 'paused' : 'playing'
+            }
             break
           case 'time-pos':
             this.currentStatus.position = typeof value === 'number' ? value : 0
@@ -467,16 +470,6 @@ export class LibMPVController extends EventEmitter {
           case 'volume':
             this.currentStatus.volume = typeof value === 'number' ? value : 100
             break
-        }
-
-        if (!this.currentStatus.phase || this.currentStatus.phase === 'loading') {
-          if (!this.currentStatus.path) {
-            this.currentStatus.phase = 'idle'
-          } else if (this.currentStatus.paused) {
-            this.currentStatus.phase = 'paused'
-          } else {
-            this.currentStatus.phase = 'playing'
-          }
         }
 
         this.emit('status', { ...this.currentStatus })
