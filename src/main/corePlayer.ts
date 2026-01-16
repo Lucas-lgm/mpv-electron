@@ -21,6 +21,7 @@ export interface CorePlayer {
   offPlayerState(listener: (state: PlayerState) => void): void
   broadcastToPlaybackUIs(channel: string, payload?: any): void
   sendKey(key: string): Promise<void>
+  debugVideoState(): Promise<void>
 }
 
 class CorePlayerImpl implements CorePlayer {
@@ -298,8 +299,22 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   async sendKey(key: string): Promise<void> {
+    if (!this.controller) {
+      return
+    }
+    if (this.initPromise) {
+      try {
+        await this.initPromise
+        this.initPromise = null
+      } catch {
+      }
+    }
+    await this.controller.keypress(key)
+  }
+ 
+  async debugVideoState(): Promise<void> {
     if (this.controller) {
-      await this.controller.keypress(key)
+      await this.controller.debugVideoState()
     }
   }
 }

@@ -337,6 +337,10 @@ export class VideoPlayerApp {
       }
       
       // 仅在视频播放界面且不与系统快捷键冲突时发送给 MPV
+      if (input.shift && (input.key === 'H' || input.key === 'h')) {
+        corePlayer.debugVideoState().catch(() => {})
+        return
+      }
       corePlayer.sendKey(key)
     })
 
