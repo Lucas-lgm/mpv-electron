@@ -152,21 +152,6 @@ export class LibMPVController extends EventEmitter {
 
       // 设置事件回调
       mpvBinding!.setEventCallback(this.instanceId, (event: any) => {
-        // 处理日志消息
-        if (event.eventId === 2 && event.logText) { // MPV_EVENT_LOG_MESSAGE = 2
-          const prefix = event.logPrefix || ''
-          const level = event.logLevel || ''
-          const text = event.logText || ''
-          // 只输出与视频渲染相关的日志（过滤掉太多噪音）
-          if (text.includes('aspect') || text.includes('letterbox') || 
-              text.includes('Video display') || text.includes('Window size') ||
-              text.includes('Video borders') || text.includes('Video scale') ||
-              text.includes('dst_rect') || text.includes('viewport') ||
-              text.includes('resize') || text.includes('FBO') ||
-              text.includes('OSD borders')) {
-            console.log(`[mpv] [${level}] ${prefix}: ${text.trim()}`)
-          }
-        }
         this.handleEvent(event)
       })
       
@@ -208,9 +193,6 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      // 调试：记录尺寸设置
-      console.log(`[libmpv] Setting window size: ${width}x${height}`)
-      
       // 获取当前视频尺寸用于调试
       try {
         const vidWidth = await this.getProperty('width')
@@ -218,11 +200,9 @@ export class LibMPVController extends EventEmitter {
         if (vidWidth && vidHeight) {
           const vidAspect = Number(vidWidth) / Number(vidHeight)
           const winAspect = width / height
-          console.log(`[libmpv] Video: ${vidWidth}x${vidHeight} (aspect=${vidAspect.toFixed(2)}), Window: ${width}x${height} (aspect=${winAspect.toFixed(2)})`)
           
           // 如果宽高比不匹配，确保 keepaspect 已设置
           if (Math.abs(vidAspect - winAspect) > 0.01) {
-            console.log(`[libmpv] Aspect ratio mismatch, ensuring keepaspect is enabled`)
             await this.setProperty('keepaspect', true)
           }
         }
