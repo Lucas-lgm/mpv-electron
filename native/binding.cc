@@ -307,14 +307,16 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
         return env.Null();
     }
     
-    // 启用 mpv 日志（verbose 级别，可以看到 letterbox 计算等详细信息）
     mpv_request_log_messages(instance->ctx, "v");
     
-    // 在初始化后订阅我们关心的属性变化（忽略错误）
     mpv_observe_property(instance->ctx, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(instance->ctx, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(instance->ctx, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(instance->ctx, 0, "volume", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(instance->ctx, 0, "core-idle", MPV_FORMAT_FLAG);
+    mpv_observe_property(instance->ctx, 0, "idle-active", MPV_FORMAT_FLAG);
+    mpv_observe_property(instance->ctx, 0, "paused-for-cache", MPV_FORMAT_FLAG);
+    mpv_observe_property(instance->ctx, 0, "cache-buffering-state", MPV_FORMAT_INT64);
     
     instance->running = true;
     
