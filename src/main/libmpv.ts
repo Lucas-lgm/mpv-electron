@@ -15,7 +15,7 @@ interface MPVBinding {
   setEventCallback(instanceId: number, callback: (event: any) => void): boolean
   attachView(instanceId: number, viewPtr: number): void
   setWindowSize(instanceId: number, width: number, height: number): void
-  clearToBlack(instanceId: number): void
+  setForceBlackMode(instanceId: number, enabled: boolean): void
   destroy(instanceId: number): boolean
 }
 
@@ -282,12 +282,6 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      if (mpvBinding) {
-        try {
-          mpvBinding.clearToBlack(this.instanceId)
-        } catch (error) {
-        }
-      }
       mpvBinding!.loadFile(this.instanceId, path)
       this.currentStatus.path = path
       this.currentStatus.position = 0
@@ -419,12 +413,12 @@ export class LibMPVController extends EventEmitter {
     await this.setProperty('volume', Math.max(0, Math.min(100, volume)))
   }
 
-  clearToBlack(): void {
+  setForceBlackMode(enabled: boolean): void {
     if (this.instanceId === null || !mpvBinding) {
       return
     }
     try {
-      mpvBinding.clearToBlack(this.instanceId)
+      mpvBinding.setForceBlackMode(this.instanceId, enabled)
     } catch (error) {
     }
   }
@@ -513,6 +507,7 @@ export class LibMPVController extends EventEmitter {
         this.currentStatus.isNetworkBuffering = false
         this.currentStatus.networkBufferingPercent = 0
         this.currentStatus.phase = 'loading'
+        this.setForceBlackMode(false)
         this.emit('status', { ...this.currentStatus })
         break
       }
@@ -546,7 +541,7 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
           this.emit('stopped')
-          this.clearToBlack()
+          this.setForceBlackMode(true)
         } else if (reason === MPV_END_FILE_REASON_EOF) {
           this.currentStatus.phase = 'ended'
           this.currentStatus.isSeeking = false

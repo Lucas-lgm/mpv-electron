@@ -45,8 +45,15 @@ struct GLRenderContext {
     id frameObserver = nil;
     
     std::atomic<bool> forceBlackFrame;
+    std::atomic<bool> forceBlackMode;
     
-    GLRenderContext() : needRedraw(false), isDestroying(false), displayLink(nullptr), frameObserver(nil), forceBlackFrame(false) {}
+    GLRenderContext()
+        : needRedraw(false),
+          isDestroying(false),
+          displayLink(nullptr),
+          frameObserver(nil),
+          forceBlackFrame(false),
+          forceBlackMode(false) {}
 };
 
 struct ScopedCGLock {
@@ -66,7 +73,7 @@ static std::mutex g_renderMutex;
 // forward declarations
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
-extern "C" void mpv_force_black_frame(int64_t instanceId);
+extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 static void render_internal(GLRenderContext *rc);
 
 // ------------------ helper: dlsym for mpv GL ------------------
@@ -435,7 +442,7 @@ static void render_internal(GLRenderContext *rc) {
     
     if (w <= 0 || h <= 0) return;
     
-    bool forceBlack = rc->forceBlackFrame.load();
+    bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
     
     // 调试：记录渲染尺寸和视频参数
     static int lastRenderW = 0, lastRenderH = 0;
@@ -617,7 +624,7 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     render_internal(rc.get());
 }
 
-extern "C" void mpv_force_black_frame(int64_t instanceId) {
+extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_renderMutex);
@@ -628,6 +635,6 @@ extern "C" void mpv_force_black_frame(int64_t instanceId) {
     
     if (!rc || rc->isDestroying.load()) return;
     
-    rc->forceBlackFrame.store(true);
+    rc->forceBlackMode.store(enabled != 0);
     rc->needRedraw.store(true);
 }

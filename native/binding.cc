@@ -34,7 +34,7 @@ extern "C" struct GLRenderContext *mpv_create_gl_context_for_view(int64_t instan
 extern "C" void mpv_destroy_gl_context(int64_t instanceId);
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
-extern "C" void mpv_force_black_frame(int64_t instanceId);
+extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 
 struct MPVEventMessage {
     mpv_event_id event_id;
@@ -226,16 +226,18 @@ Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-Napi::Value ClearToBlack(const Napi::CallbackInfo& info) {
+// 创建 MPV 实例（不立即初始化，允许先设置选项）
+Napi::Value SetForceBlackMode(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
-    if (info.Length() < 1 || !info[0].IsNumber()) {
-        Napi::TypeError::New(env, "Expected (instanceId: number)")
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number, enabled: boolean)")
             .ThrowAsJavaScriptException();
         return env.Null();
     }
     
     int64_t id = info[0].As<Napi::Number>().Int64Value();
+    bool enabled = info[1].As<Napi::Boolean>().Value();
     
     {
         std::lock_guard<std::mutex> lock(instancesMutex);
@@ -246,12 +248,11 @@ Napi::Value ClearToBlack(const Napi::CallbackInfo& info) {
         }
     }
     
-    mpv_force_black_frame(id);
+    mpv_set_force_black_mode(id, enabled ? 1 : 0);
     
     return env.Undefined();
 }
 
-// 创建 MPV 实例（不立即初始化，允许先设置选项）
 Napi::Value Create(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -705,7 +706,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "attachView"), Napi::Function::New(env, AttachView));
     exports.Set(Napi::String::New(env, "renderFrame"), Napi::Function::New(env, RenderFrame));
     exports.Set(Napi::String::New(env, "setWindowSize"), Napi::Function::New(env, SetWindowSize));
-    exports.Set(Napi::String::New(env, "clearToBlack"), Napi::Function::New(env, ClearToBlack));
+    exports.Set(Napi::String::New(env, "setForceBlackMode"), Napi::Function::New(env, SetForceBlackMode));
     
     return exports;
 }
