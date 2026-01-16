@@ -129,6 +129,11 @@ export class VideoPlayerApp {
     this.windowManager = new WindowManager()
     this.playlist = new PlaylistManager()
     this.config = new ConfigManager()
+    corePlayer.onPlayerState((state) => {
+      if (state.phase === 'ended') {
+        this.playNextFromPlaylist().catch(() => {})
+      }
+    })
   }
 
   async play(target: PlaylistItem) {
@@ -211,7 +216,12 @@ export class VideoPlayerApp {
   }
 
   async resume() {
-    await corePlayer.resume()
+    const state = corePlayer.getPlayerState()
+    if (state.phase === 'ended') {
+      await this.playCurrentFromPlaylist()
+    } else {
+      await corePlayer.resume()
+    }
   }
 
   async stop() {

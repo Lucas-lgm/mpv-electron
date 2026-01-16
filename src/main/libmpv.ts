@@ -167,9 +167,6 @@ export class LibMPVController extends EventEmitter {
             console.log(`[mpv] [${level}] ${prefix}: ${text.trim()}`)
           }
         }
-        if (event.eventId === 22) {
-          console.log('[libmpv] Event:', event)
-        }
         this.handleEvent(event)
       })
       

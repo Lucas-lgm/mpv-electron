@@ -49,7 +49,11 @@
             :min="0"
             :max="duration || 100"
             :value="currentTime"
+            @mousedown="onSeekStart"
+            @touchstart.prevent="onSeekStart"
             @input="onSeek"
+            @mouseup="onSeekEnd"
+            @touchend.prevent="onSeekEnd"
             class="progress-bar"
           />
         </div>
@@ -98,6 +102,7 @@ const isLoading = ref(false)
 const isSeeking = ref(false)
 const isNetworkBuffering = ref(false)
 const networkBufferingPercent = ref<number | null>(null)
+const isScrubbing = ref(false)
 
 interface PlaylistItem {
   name: string
@@ -123,7 +128,9 @@ type PlayerState = {
 }
 
 const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
-  currentTime.value = data.currentTime
+  if (!isScrubbing.value) {
+    currentTime.value = data.currentTime
+  }
   duration.value = data.duration
 }
 
@@ -223,8 +230,13 @@ const stop = () => {
   }
 }
 
-const seekTo = (time: number) => {
-  currentTime.value = time
+const onSeekStart = () => {
+  isScrubbing.value = true
+}
+
+const onSeekEnd = () => {
+  isScrubbing.value = false
+  const time = currentTime.value
   if (window.electronAPI) {
     window.electronAPI.send('control-seek', time)
   }
@@ -232,7 +244,7 @@ const seekTo = (time: number) => {
 
 const onSeek = (event: Event) => {
   const target = event.target as HTMLInputElement
-  seekTo(parseFloat(target.value))
+  currentTime.value = parseFloat(target.value)
 }
 
 const onVolumeChange = (event: Event) => {
