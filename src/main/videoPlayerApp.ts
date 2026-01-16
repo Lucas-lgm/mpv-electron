@@ -217,9 +217,9 @@ export class VideoPlayerApp {
 
   async resume() {
     const state = corePlayer.getPlayerState()
-    if (state.phase === 'ended') {
+    if (state.phase === 'ended' || state.phase === 'stopped') {
       await this.playCurrentFromPlaylist()
-    } else {
+    } else if (state.phase === 'paused') {
       await corePlayer.resume()
     }
   }

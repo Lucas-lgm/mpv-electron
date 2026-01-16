@@ -213,14 +213,12 @@ class CorePlayerImpl implements CorePlayer {
   async pause(): Promise<void> {
     if (this.controller) {
       await this.controller.pause()
-      this.stateMachine.setPhase('paused')
     }
   }
 
   async resume(): Promise<void> {
     if (this.controller) {
       await this.controller.play()
-      this.stateMachine.setPhase('playing')
     }
   }
 
@@ -251,7 +249,6 @@ class CorePlayerImpl implements CorePlayer {
   async stop(): Promise<void> {
     if (this.controller) {
       await this.controller.stop()
-      this.stateMachine.setPhase('stopped')
     }
   }
 

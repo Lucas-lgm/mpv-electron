@@ -419,6 +419,16 @@ export class LibMPVController extends EventEmitter {
     await this.setProperty('volume', Math.max(0, Math.min(100, volume)))
   }
 
+  clearToBlack(): void {
+    if (this.instanceId === null || !mpvBinding) {
+      return
+    }
+    try {
+      mpvBinding.clearToBlack(this.instanceId)
+    } catch (error) {
+    }
+  }
+
   /**
    * 停止播放
    */
@@ -536,12 +546,7 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
           this.emit('stopped')
-          if (this.instanceId !== null && mpvBinding) {
-            try {
-              mpvBinding.clearToBlack(this.instanceId)
-            } catch (error) {
-            }
-          }
+          this.clearToBlack()
         } else if (reason === MPV_END_FILE_REASON_EOF) {
           this.currentStatus.phase = 'ended'
           this.currentStatus.isSeeking = false
