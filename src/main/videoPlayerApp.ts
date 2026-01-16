@@ -238,6 +238,10 @@ export class VideoPlayerApp {
     await corePlayer.setVolume(volume)
   }
 
+  async sendKey(key: string) {
+    await corePlayer.sendKey(key)
+  }
+
   createMainWindow() {
     this.windowManager.createWindow({
       id: 'main',
@@ -248,7 +252,7 @@ export class VideoPlayerApp {
     })
   }
 
-  createVideoWindow() {
+  createVideoWindow(): BrowserWindow | undefined {
     const existing = this.windowManager.getWindow('video')
     if (existing && !existing.isDestroyed()) {
       existing.show()
@@ -281,6 +285,60 @@ export class VideoPlayerApp {
     })
 
     this.ensureControlView(window)
+
+    // 在主进程处理按键，避免前端焦点问题
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+
+      // 忽略单独的修饰键
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(input.key)) return
+      // 忽略 F12 (开发者工具) 和 F5 (刷新)
+      if (input.key === 'F12' || input.key === 'F5') return
+
+      const keyMap: Record<string, string> = {
+        ' ': 'SPACE',
+        'ArrowLeft': 'LEFT',
+        'ArrowRight': 'RIGHT',
+        'ArrowUp': 'UP',
+        'ArrowDown': 'DOWN',
+        'Enter': 'ENTER',
+        'Escape': 'ESC',
+        'Backspace': 'BS',
+        'Tab': 'TAB',
+        'Insert': 'INS',
+        'Delete': 'DEL',
+        'Home': 'HOME',
+        'End': 'END',
+        'PageUp': 'PGUP',
+        'PageDown': 'PGDWN',
+        // 媒体键
+        'MediaPlayPause': 'PLAYPAUSE',
+        'MediaStop': 'STOP',
+        'MediaTrackNext': 'NEXT',
+        'MediaTrackPrevious': 'PREV',
+        'MediaVolumeUp': 'VOLUME_UP',
+        'MediaVolumeDown': 'VOLUME_DOWN',
+        'MediaVolumeMute': 'MUTE'
+      }
+
+      let key = keyMap[input.key] || input.key
+
+      // 处理修饰键
+      const modifiers: string[] = []
+      if (input.control) modifiers.push('Ctrl')
+      if (input.alt) modifiers.push('Alt')
+      if (input.meta) modifiers.push('Meta')
+      if (input.shift && (key.length > 1 || key === 'SPACE' || key === 'TAB')) {
+        modifiers.push('Shift')
+      }
+
+      if (modifiers.length > 0) {
+        key = `${modifiers.join('+')}+${key}`
+      }
+      
+      // 仅在视频播放界面且不与系统快捷键冲突时发送给 MPV
+      corePlayer.sendKey(key)
+    })
 
     window.on('close', async (event) => {
       event.preventDefault()

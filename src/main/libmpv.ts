@@ -133,6 +133,14 @@ export class LibMPVController extends EventEmitter {
         // 忽略，可能不存在
       }
       
+      try {
+        await this.setOption('input-default-bindings', true)
+        await this.setOption('input-vo-keyboard', true)
+        await this.setOption('input-media-keys', true)
+      } catch (error) {
+        // 忽略
+      }
+
       // 现在初始化（初始化后不能再设置 vo 和 wid）
       mpvBinding!.initialize(this.instanceId)
       
@@ -340,6 +348,21 @@ export class LibMPVController extends EventEmitter {
       mpvBinding!.setProperty(this.instanceId, name, value)
     } catch (error) {
       throw new Error(`Failed to set property ${name}: ${error}`)
+    }
+  }
+
+  /**
+   * 发送按键事件
+   */
+  async keypress(key: string): Promise<void> {
+    if (this.instanceId === null) {
+      console.warn('[libmpv] Cannot send keypress: MPV instance not initialized')
+      return
+    }
+    try {
+      await this.command('keypress', key)
+    } catch (error) {
+      console.warn(`[libmpv] Failed to send keypress ${key}:`, error)
     }
   }
 

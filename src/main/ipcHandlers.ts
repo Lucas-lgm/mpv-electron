@@ -100,6 +100,10 @@ export function setupIpcHandlers() {
     await videoPlayerApp.playPrevFromPlaylist()
   })
 
+  ipcMain.on('control-keypress', async (_event, key: string) => {
+    await videoPlayerApp.sendKey(key)
+  })
+
   // 视频时间更新 - 转发到视频窗口（控制面板已集成在视频窗口中）
   ipcMain.on('video-time-update', (event, data: { currentTime: number; duration: number }) => {
     const videoWindow = windowManager.getWindow('video')
