@@ -219,7 +219,7 @@ export class VideoPlayerApp {
     const state = corePlayer.getPlayerState()
     if (state.phase === 'ended' || state.phase === 'stopped') {
       await this.playCurrentFromPlaylist()
-    } else if (state.phase === 'paused') {
+    } else {
       await corePlayer.resume()
     }
   }
