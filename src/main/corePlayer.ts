@@ -74,7 +74,6 @@ class CorePlayerImpl implements CorePlayer {
       return
     }
     let windowId: number | undefined
-    this.stateMachine.setPhase('loading')
     if (this.videoWindow && !this.videoWindow.isDestroyed()) {
       try {
         if (!this.videoWindow.isVisible()) {
@@ -175,26 +174,6 @@ class CorePlayerImpl implements CorePlayer {
     if (!videoWindow) return
     this.controller.on('status', (status: MPVStatus) => {
       this.updateFromMPVStatus(status)
-      this.sendToPlaybackUIs('player-state', this.getPlayerState())
-    })
-    ;(this.controller as any).on('error', (error: any) => {
-      if (error instanceof Error && error.message) {
-        this.setError(error.message)
-      } else {
-        this.setError('Unknown error')
-      }
-      this.sendToPlaybackUIs('player-error', {
-        message: error instanceof Error ? error.message : 'Unknown error'
-      })
-      this.sendToPlaybackUIs('player-state', this.getPlayerState())
-    })
-    ;(this.controller as any).on('ended', () => {
-      this.stateMachine.setPhase('ended')
-      this.sendToPlaybackUIs('video-ended')
-      this.sendToPlaybackUIs('player-state', this.getPlayerState())
-    })
-    ;(this.controller as any).on('stopped', () => {
-      this.stateMachine.setPhase('stopped')
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
   }
