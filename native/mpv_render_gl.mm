@@ -410,8 +410,6 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     });
 }
 
-// 不再需要查询视频尺寸，让 mpv 自己处理 keepaspect
-
 // ------------------ core render (must run on main thread) ------------------
 static void render_internal(GLRenderContext *rc) {
     if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
@@ -450,31 +448,6 @@ static void render_internal(GLRenderContext *rc) {
     
     bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
     
-    // 调试：记录渲染尺寸和视频参数
-    static int lastRenderW = 0, lastRenderH = 0;
-    if (w != lastRenderW || h != lastRenderH) {
-        // 获取视频尺寸用于调试
-        int64_t vid_w = 0, vid_h = 0;
-        bool haveVidSize = false;
-        if (rc->mpvHandle) {
-            if (mpv_get_property(rc->mpvHandle, "width", MPV_FORMAT_INT64, &vid_w) >= 0 &&
-                mpv_get_property(rc->mpvHandle, "height", MPV_FORMAT_INT64, &vid_h) >= 0) {
-                haveVidSize = (vid_w > 0 && vid_h > 0);
-            }
-        }
-        
-        if (haveVidSize) {
-            double aspect = (double)vid_w / (double)vid_h;
-            double winAspect = (double)w / (double)h;
-            NSLog(@"[mpv_render_gl] Rendering: window=%dx%d (aspect=%.2f), video=%lldx%lld (aspect=%.2f)", 
-                  w, h, winAspect, (long long)vid_w, (long long)vid_h, aspect);
-        } else {
-            NSLog(@"[mpv_render_gl] Rendering: window=%dx%d (video size unknown)", w, h);
-        }
-        lastRenderW = w;
-        lastRenderH = h;
-    }
-    
     // 渲染在后台线程执行，不需要检查主线程
     // 确保 OpenGL context 在当前线程是 current 的（渲染线程已经设置）
     // 注意：render_internal 现在在渲染线程中调用，context 已经是 current 的
@@ -512,43 +485,12 @@ static void render_internal(GLRenderContext *rc) {
     uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
     bool hasNewFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
     
-    // 调试日志：记录关键参数
-    if (sizeChanged) {
-        // 获取视频尺寸用于调试
-        int64_t vid_w = 0, vid_h = 0;
-        bool haveVidSize = false;
-        if (rc->mpvHandle) {
-            if (mpv_get_property(rc->mpvHandle, "width", MPV_FORMAT_INT64, &vid_w) >= 0 &&
-                mpv_get_property(rc->mpvHandle, "height", MPV_FORMAT_INT64, &vid_h) >= 0) {
-                haveVidSize = (vid_w > 0 && vid_h > 0);
-            }
-        }
-        
-        int keepaspect = 0;
-        if (rc->mpvHandle) {
-            mpv_get_property(rc->mpvHandle, "keepaspect", MPV_FORMAT_FLAG, &keepaspect);
-        }
-        
-        if (haveVidSize) {
-            double vid_aspect = (double)vid_w / (double)vid_h;
-            double win_aspect = (double)w / (double)h;
-            NSLog(@"[mpv_render_gl] Size changed: %dx%d -> %dx%d", 
-                  rc->lastRenderedWidth, rc->lastRenderedHeight, w, h);
-            NSLog(@"[mpv_render_gl] Parameters: window=%dx%d (aspect=%.2f), video=%lldx%lld (aspect=%.2f), keepaspect=%d", 
-                  w, h, win_aspect, (long long)vid_w, (long long)vid_h, vid_aspect, keepaspect);
-        } else {
-            NSLog(@"[mpv_render_gl] Size changed: %dx%d -> %dx%d (video size unknown)", 
-                  rc->lastRenderedWidth, rc->lastRenderedHeight, w, h);
-        }
-    }
-    
     if (forceBlack) {
         rc->forceBlackFrame.store(false);
         
         if (sizeChanged) {
             rc->lastRenderedWidth = w;
             rc->lastRenderedHeight = h;
-            NSLog(@"[mpv_render_gl] ✅ Render successful, size updated to %dx%d (black frame)", w, h);
         }
         
         @try {
@@ -561,12 +503,6 @@ static void render_internal(GLRenderContext *rc) {
     }
     
     if (hasNewFrame || sizeChanged) {
-        // 调试：记录渲染参数
-        if (sizeChanged) {
-            NSLog(@"[mpv_render_gl] Rendering: viewport=%dx%d, FBO=%dx%d", 
-                  w, h, fbo.w, fbo.h);
-        }
-        
         int res = mpv_render_context_render(rc->mpvRenderCtx, params);
         
         if (res < 0) {
@@ -577,7 +513,6 @@ static void render_internal(GLRenderContext *rc) {
             if (sizeChanged) {
                 rc->lastRenderedWidth = w;
                 rc->lastRenderedHeight = h;
-                NSLog(@"[mpv_render_gl] ✅ Render successful, size updated to %dx%d", w, h);
             }
             
             // 只有在成功渲染后才 flush（在渲染线程中执行，不会阻塞主线程）
@@ -586,11 +521,6 @@ static void render_internal(GLRenderContext *rc) {
             } @catch (NSException *ex) {
                 NSLog(@"[mpv_render_gl] flushBuffer failed: %@", ex);
             }
-        }
-    } else {
-        // 调试：记录为什么跳过了渲染
-        if (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight) {
-            NSLog(@"[mpv_render_gl] Skipping render: size changed but no new frame (this shouldn't happen)");
         }
     }
 }
