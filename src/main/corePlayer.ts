@@ -109,7 +109,6 @@ class CorePlayerImpl implements CorePlayer {
         await this.controller.loadFile(filePath)
         await this.syncWindowSize()
         this.setupEventHandlers()
-        this.stateMachine.setPhase('playing')
         return
       } catch {
         this.useLibMPV = false
