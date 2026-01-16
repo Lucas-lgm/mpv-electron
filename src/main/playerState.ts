@@ -10,6 +10,11 @@ export interface PlayerState {
   volume: number
   path: string | null
   error: string | null
+  isSeeking: boolean
+  isCoreIdle: boolean
+  isIdleActive: boolean
+  isNetworkBuffering: boolean
+  networkBufferingPercent: number
 }
 
 export class PlayerStateMachine extends EventEmitter {
@@ -19,7 +24,12 @@ export class PlayerStateMachine extends EventEmitter {
     duration: 0,
     volume: 100,
     path: null,
-    error: null
+    error: null,
+    isSeeking: false,
+    isCoreIdle: false,
+    isIdleActive: false,
+    isNetworkBuffering: false,
+    networkBufferingPercent: 0
   }
 
   getState(): PlayerState {
@@ -51,7 +61,12 @@ export class PlayerStateMachine extends EventEmitter {
       duration: status.duration,
       volume: status.volume,
       path: status.path,
-      error: this.state.error
+      error: this.state.error,
+      isSeeking: status.isSeeking ?? false,
+      isCoreIdle: status.isCoreIdle ?? false,
+      isIdleActive: status.isIdleActive ?? false,
+      isNetworkBuffering: status.isNetworkBuffering ?? false,
+      networkBufferingPercent: status.networkBufferingPercent ?? this.state.networkBufferingPercent
     }
     this.setState(next)
   }
@@ -60,14 +75,17 @@ export class PlayerStateMachine extends EventEmitter {
     if (this.state.phase === 'error') {
       return 'error'
     }
+    if (this.state.phase === 'paused') {
+      return 'paused'
+    }
+    if (this.state.phase === 'stopped') {
+      return 'stopped'
+    }
     if (!status.path) {
       return 'idle'
     }
     if (status.duration > 0 && status.position >= status.duration) {
       return 'ended'
-    }
-    if (status.paused) {
-      return 'paused'
     }
     return 'playing'
   }
@@ -81,7 +99,10 @@ export class PlayerStateMachine extends EventEmitter {
       prev.duration !== next.duration ||
       prev.volume !== next.volume ||
       prev.path !== next.path ||
-      prev.error !== next.error
+      prev.error !== next.error ||
+      prev.isSeeking !== next.isSeeking ||
+      prev.isNetworkBuffering !== next.isNetworkBuffering ||
+      prev.networkBufferingPercent !== next.networkBufferingPercent
     ) {
       this.emit('state', this.getState())
     }

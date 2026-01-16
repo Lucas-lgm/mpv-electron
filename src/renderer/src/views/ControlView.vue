@@ -5,7 +5,17 @@
     </header>
     <div v-if="isLoading" class="loading-overlay">
       <div class="loading-content">
-        <span class="loading-text">加载中...</span>
+        <span class="loading-text">
+          {{
+            isNetworkBuffering
+              ? networkBufferingPercent !== null
+                ? `网络缓冲中... ${networkBufferingPercent}%`
+                : '网络缓冲中...'
+              : isSeeking
+                ? '正在跳转...'
+                : '加载中...'
+          }}
+        </span>
       </div>
     </div>
     <div v-if="showPlaylist" class="playlist-panel">
@@ -85,6 +95,9 @@ const duration = ref(0)
 const volume = ref(100)
 const currentVideoName = ref<string>('')
 const isLoading = ref(false)
+const isSeeking = ref(false)
+const isNetworkBuffering = ref(false)
+const networkBufferingPercent = ref<number | null>(null)
 
 interface PlaylistItem {
   name: string
@@ -102,6 +115,11 @@ type PlayerState = {
   volume: number
   path: string | null
   error: string | null
+  isSeeking: boolean
+  isCoreIdle: boolean
+  isIdleActive: boolean
+  isNetworkBuffering: boolean
+  networkBufferingPercent: number
 }
 
 const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
@@ -129,7 +147,12 @@ const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
 }
 
 const handlePlayerState = (state: PlayerState) => {
-  isLoading.value = state.phase === 'loading'
+  console.log('state:', state)
+  isSeeking.value = !!state.isSeeking
+  isNetworkBuffering.value = !!state.isNetworkBuffering
+  networkBufferingPercent.value =
+    typeof state.networkBufferingPercent === 'number' ? state.networkBufferingPercent : null
+  isLoading.value = state.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
   isPlaying.value = state.phase === 'playing'
   if (typeof state.duration === 'number') {
     duration.value = state.duration

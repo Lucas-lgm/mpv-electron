@@ -283,6 +283,7 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   updateFromMPVStatus(status: MPVStatus) {
+    console.log('status', status);
     this.stateMachine.updateFromStatus(status)
   }
 

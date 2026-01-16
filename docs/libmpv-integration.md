@@ -170,6 +170,88 @@ class MPVManager {
 - `shutdown`: MPV 关闭
 - `destroyed`: 实例已销毁
 
+## 播放状态模型与 mpv 事件映射
+
+### 主状态 phase
+
+当前主进程里有两层状态：
+
+- `MPVStatus`（libmpv.ts 内部）
+  - `position: number`
+  - `duration: number`
+  - `volume: number`
+  - `path: string | null`
+  - `phase?: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'`
+  - `isSeeking?: boolean`
+  - `isCoreIdle?: boolean`
+  - `isIdleActive?: boolean`
+- `PlayerState`（playerState.ts，对外暴露给渲染进程）
+  - `phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'`
+  - `currentTime: number`
+  - `duration: number`
+  - `volume: number`
+  - `path: string | null`
+  - `error: string | null`
+  - `isSeeking: boolean`
+  - `isCoreIdle: boolean`
+  - `isIdleActive: boolean`
+
+`PlayerState` 的 `phase` 优先使用 libmpv 层填充的 `MPVStatus.phase`，如果缺失再根据 position、duration 等兜底推导。
+
+### mpv 事件 → phase 映射
+
+基于 mpv 官方头文件 `include/mpv/client.h` 和文档：
+
+- 打开文件与启动播放
+  - `loadFile()` 调用后：先将 `phase` 设为 `loading`
+  - `MPV_EVENT_START_FILE` (`event_id = 6`)：`phase = 'loading'`
+  - `MPV_EVENT_FILE_LOADED` (`event_id = 8`) 且有 `path`：`phase = 'playing'`
+- 暂停与继续
+  - `MPV_EVENT_PROPERTY_CHANGE` (`event_id = 22`) 且 `name = 'pause'`
+    - `value = true` 且有 `path`：`phase = 'paused'`
+    - `value = false` 且有 `path`：`phase = 'playing'`
+- Seek 相关
+  - `MPV_EVENT_SEEK` (`event_id = 20`) 且有 `path`：`phase = 'loading'`
+  - `MPV_EVENT_PLAYBACK_RESTART` (`event_id = 21`) 且有 `path`：`phase = 'playing'`
+- 结束、停止、错误
+  - `MPV_EVENT_END_FILE` (`event_id = 7`) 根据 `endFileReason`：
+    - `EOF`：`phase = 'ended'`
+    - `STOP`：`phase = 'stopped'`
+    - `ERROR`：`phase = 'error'`
+    - 其他情况：`phase = 'stopped'`
+- 关闭与 idle
+  - `MPV_EVENT_SHUTDOWN` (`event_id = 1`)：
+    - `phase = 'idle'`
+    - 清空 `path`、重置 `position`、`duration`
+
+### 辅助状态
+
+在当前实现中，已经基于 mpv 的事件和属性实现了一些辅助状态，用于细化 UX：
+
+- `seeking`
+  - 来源：`MPV_EVENT_SEEK` 与 `MPV_EVENT_PLAYBACK_RESTART` 成对出现
+  - 实现：
+    - 收到 `SEEK` 时：`isSeeking = true`，`phase = 'loading'`
+    - 收到 `PLAYBACK_RESTART` 或 `FILE_LOADED` 或 `END_FILE` 时：`isSeeking = false`
+- `coreIdle`
+  - 来源：`core-idle` 属性（通过 `MPV_EVENT_PROPERTY_CHANGE` 回调）
+  - 实现：
+    - 收到 `name = 'core-idle'` 的 property-change：`isCoreIdle = !!value`
+- `idleActive`
+  - 来源：`idle-active` 属性（通过 `MPV_EVENT_PROPERTY_CHANGE` 回调）
+  - 实现：
+    - 收到 `name = 'idle-active'` 的 property-change：`isIdleActive = !!value`
+
+这些辅助状态不一定要体现在 `phase` 字段中，可以作为单独的布尔字段或次级状态，与主 `phase` 组合使用。例如：
+
+- 主状态：`phase = 'playing' | 'paused' | 'loading' | 'ended' | ...`
+- 辅助状态：
+  - `isSeeking: boolean`
+  - `isCoreIdle: boolean`
+  - `isIdleActive: boolean`
+
+这样可以在不破坏现有状态机的前提下，为渲染进程提供更多细节，用于控制 loading 遮罩、seek 中指示、网络缓冲提示等。
+
 ## 故障排除
 
 ### 构建失败

@@ -56,23 +56,31 @@ try {
 }
 
 export interface MPVStatus {
-  paused: boolean
   position: number
   duration: number
   volume: number
   path: string | null
   phase?: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
+  isSeeking?: boolean
+  isCoreIdle?: boolean
+  isIdleActive?: boolean
+  isNetworkBuffering?: boolean
+  networkBufferingPercent?: number
 }
 
 export class LibMPVController extends EventEmitter {
   private instanceId: number | null = null
   private currentStatus: MPVStatus = {
-    paused: false,
     position: 0,
     duration: 0,
     volume: 100,
     path: null,
-    phase: 'idle'
+    phase: 'idle',
+    isSeeking: false,
+    isCoreIdle: false,
+    isIdleActive: false,
+    isNetworkBuffering: false,
+    networkBufferingPercent: 0
   }
 
   constructor() {
@@ -112,12 +120,12 @@ export class LibMPVController extends EventEmitter {
       }
       
       // 启用 mpv 日志（verbose 级别，可以看到 letterbox 计算等详细信息）
-      try {
-        await this.setOption('log-level', 'v')
-        console.log('[libmpv] ✅ Enabled mpv verbose logging')
-      } catch (error) {
-        console.warn('[libmpv] Failed to set log-level:', error)
-      }
+      // try {
+      //   await this.setOption('log-level', 'v')
+      //   console.log('[libmpv] ✅ Enabled mpv verbose logging')
+      // } catch (error) {
+      //   console.warn('[libmpv] Failed to set log-level:', error)
+      // }
       
       try {
         await this.setOption('no-osd-bar', true)
@@ -159,7 +167,9 @@ export class LibMPVController extends EventEmitter {
             console.log(`[mpv] [${level}] ${prefix}: ${text.trim()}`)
           }
         }
-        console.log('[libmpv] Event:', event)
+        if (event.eventId === 22) {
+          console.log('[libmpv] Event:', event)
+        }
         this.handleEvent(event)
       })
       
@@ -285,10 +295,9 @@ export class LibMPVController extends EventEmitter {
       this.currentStatus.path = path
       this.currentStatus.position = 0
       this.currentStatus.duration = 0
-      this.currentStatus.paused = false
-      this.currentStatus.phase = 'loading'
-      this.emit('status', { ...this.currentStatus })
-      this.emit('file-loaded', path)
+      this.currentStatus.isSeeking = false
+      this.currentStatus.isNetworkBuffering = false
+      this.currentStatus.networkBufferingPercent = 0
     } catch (error) {
       throw new Error(`Failed to load file: ${error}`)
     }
@@ -436,6 +445,8 @@ export class LibMPVController extends EventEmitter {
     const MPV_EVENT_START_FILE = 6
     const MPV_EVENT_FILE_LOADED = 8
     const MPV_EVENT_SHUTDOWN = 1
+    const MPV_EVENT_SEEK = 20
+    const MPV_EVENT_PLAYBACK_RESTART = 21
     const MPV_END_FILE_REASON_EOF = 0
     const MPV_END_FILE_REASON_STOP = 2
     const MPV_END_FILE_REASON_QUIT = 3
@@ -453,12 +464,14 @@ export class LibMPVController extends EventEmitter {
           return
         }
 
-        // 根据属性名更新 currentStatus
         switch (name) {
           case 'pause':
-            this.currentStatus.paused = !!value
             if (this.currentStatus.path) {
-              this.currentStatus.phase = this.currentStatus.paused ? 'paused' : 'playing'
+              this.currentStatus.phase = value ? 'paused' : 'playing'
+              if (!value) {
+                this.currentStatus.isNetworkBuffering = false
+                this.currentStatus.networkBufferingPercent = 0
+              }
             }
             break
           case 'time-pos':
@@ -470,21 +483,50 @@ export class LibMPVController extends EventEmitter {
           case 'volume':
             this.currentStatus.volume = typeof value === 'number' ? value : 100
             break
+          case 'core-idle':
+            this.currentStatus.isCoreIdle = !!value
+            break
+          case 'idle-active':
+            this.currentStatus.isIdleActive = !!value
+            break
+          case 'paused-for-cache':
+            this.currentStatus.isNetworkBuffering = !!value
+            break
+          case 'cache-buffering-state':
+            this.currentStatus.networkBufferingPercent =
+              typeof value === 'number' ? value : this.currentStatus.networkBufferingPercent
+            break
         }
 
         this.emit('status', { ...this.currentStatus })
         break
       }
       case MPV_EVENT_START_FILE: {
+        this.currentStatus.isSeeking = false
+        this.currentStatus.isNetworkBuffering = false
+        this.currentStatus.networkBufferingPercent = 0
         this.currentStatus.phase = 'loading'
         this.emit('status', { ...this.currentStatus })
         break
       }
       case MPV_EVENT_FILE_LOADED: {
-        if (this.currentStatus.path) {
+        this.currentStatus.isSeeking = false
+        this.currentStatus.isNetworkBuffering = false
+        this.currentStatus.networkBufferingPercent = 0
+        if (this.currentStatus.phase !== 'paused') {
           this.currentStatus.phase = 'playing'
-          this.emit('status', { ...this.currentStatus })
         }
+        this.emit('status', { ...this.currentStatus })
+        break
+      }
+      case MPV_EVENT_SEEK: {
+        this.currentStatus.isSeeking = true
+        this.emit('status', { ...this.currentStatus })
+        break
+      }
+      case MPV_EVENT_PLAYBACK_RESTART: {
+        this.currentStatus.isSeeking = false
+        this.emit('status', { ...this.currentStatus })
         break
       }
       case MPV_EVENT_END_FILE: {
@@ -492,6 +534,9 @@ export class LibMPVController extends EventEmitter {
           typeof event?.endFileReason === 'number' ? event.endFileReason : null
         if (reason === MPV_END_FILE_REASON_STOP) {
           this.currentStatus.phase = 'stopped'
+          this.currentStatus.isSeeking = false
+          this.currentStatus.isNetworkBuffering = false
+          this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
           this.emit('stopped')
           if (this.instanceId !== null && mpvBinding) {
@@ -502,14 +547,23 @@ export class LibMPVController extends EventEmitter {
           }
         } else if (reason === MPV_END_FILE_REASON_EOF) {
           this.currentStatus.phase = 'ended'
+          this.currentStatus.isSeeking = false
+          this.currentStatus.isNetworkBuffering = false
+          this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
           this.emit('ended')
         } else if (reason === MPV_END_FILE_REASON_ERROR) {
           this.currentStatus.phase = 'error'
+          this.currentStatus.isSeeking = false
+          this.currentStatus.isNetworkBuffering = false
+          this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
           this.emit('ended')
         } else {
           this.currentStatus.phase = 'stopped'
+          this.currentStatus.isSeeking = false
+          this.currentStatus.isNetworkBuffering = false
+          this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
           this.emit('ended')
         }
@@ -520,7 +574,9 @@ export class LibMPVController extends EventEmitter {
         this.currentStatus.path = null
         this.currentStatus.position = 0
         this.currentStatus.duration = 0
-        this.currentStatus.paused = false
+        this.currentStatus.isSeeking = false
+        this.currentStatus.isNetworkBuffering = false
+        this.currentStatus.networkBufferingPercent = 0
         this.emit('status', { ...this.currentStatus })
         this.emit('shutdown')
         break

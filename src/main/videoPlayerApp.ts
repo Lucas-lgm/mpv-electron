@@ -323,6 +323,7 @@ export class VideoPlayerApp {
     if (process.env.NODE_ENV === 'development') {
       const url = 'http://localhost:5173/#/control'
       view.webContents.loadURL(url).catch(() => {})
+      view.webContents.openDevTools({ mode: 'detach' })
     } else {
       view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
         hash: 'control'

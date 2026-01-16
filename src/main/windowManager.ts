@@ -83,11 +83,9 @@ export class WindowManager {
 
     // 根据路由加载不同的页面（hash 模式）
     if (process.env.NODE_ENV === 'development') {
-      // 开发模式：确保路由以 # 开头
       const route = config.route || '#/'
       const url = `http://localhost:5173/${route.startsWith('#') ? route : '#' + route}`
       window.loadURL(url)
-      // 只在主窗口打开 DevTools
       if (config.id === 'main') {
         window.webContents.openDevTools()
       }
@@ -132,4 +130,3 @@ export class WindowManager {
     this.windows.clear()
   }
 }
-
