@@ -180,6 +180,12 @@ static bool createGLForView(GLRenderContext *rc) {
     [ctx setView:rc->view];
     [ctx makeCurrentContext];
     
+    // Enable vsync swap to synchronize with display refresh rate
+    {
+        GLint swapInt = 1;
+        [ctx setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
+    }
+    
     // 关键：开启 Retina 支持，并更新 context
     [rc->view setWantsBestResolutionOpenGLSurface:YES];
     [ctx update];
