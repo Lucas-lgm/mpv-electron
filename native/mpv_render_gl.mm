@@ -97,6 +97,20 @@ static void set_layer_colorspace_if_supported(CALayer *layer, CGColorSpaceRef cs
     }
 }
 
+static CALayer *get_render_layer(GLRenderContext *rc) {
+    if (!rc || !rc->view) return nil;
+    CALayer *root = rc->view.layer;
+    if (!root) return nil;
+    if (root.sublayers) {
+        for (CALayer *sub in root.sublayers) {
+            if ([sub isKindOfClass:[CAOpenGLLayer class]]) {
+                return sub;
+            }
+        }
+    }
+    return root;
+}
+
 static void log_hdr_config(GLRenderContext *rc) {
     if (!rc || !rc->mpvHandle) return;
     
@@ -136,8 +150,8 @@ static void log_hdr_config(GLRenderContext *rc) {
     
     BOOL wantsEDR = NO;
     CGFloat contentsScale = 0.0;
-    if (rc->view.layer) {
-        CALayer *layer = rc->view.layer;
+    CALayer *layer = get_render_layer(rc);
+    if (layer) {
         if (@available(macOS 14.0, *)) {
             wantsEDR = layer.wantsExtendedDynamicRangeContent;
         }
@@ -222,10 +236,10 @@ static void update_hdr_mode(GLRenderContext *rc) {
     }
     
     if (shouldEnable) {
-        CALayer *layer = rc->view.layer;
+        CALayer *layer = get_render_layer(rc);
         if (!layer) {
             [rc->view setWantsLayer:YES];
-            layer = rc->view.layer;
+            layer = get_render_layer(rc);
         }
         if (layer) {
             if (@available(macOS 14.0, *)) {
@@ -263,7 +277,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
         
         rc->hdrActive = true;
     } else {
-        CALayer *layer = rc->view.layer;
+        CALayer *layer = get_render_layer(rc);
         if (layer) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = NO;
@@ -406,8 +420,13 @@ static bool createGLForView(GLRenderContext *rc) {
         [ctx setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
     }
     
-    // 关键：开启 Retina 支持，并更新 context
+    // 关键：开启 Retina 支持和 EDR OpenGL surface，并更新 context
     [rc->view setWantsBestResolutionOpenGLSurface:YES];
+    if (@available(macOS 10.15, *)) {
+        if ([rc->view respondsToSelector:@selector(setWantsExtendedDynamicRangeOpenGLSurface:)]) {
+            [(id)rc->view setWantsExtendedDynamicRangeOpenGLSurface:YES];
+        }
+    }
     [ctx update];
     
     rc->glContext = ctx;
@@ -647,56 +666,14 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     });
 }
 
-// ------------------ core render (must run on main thread) ------------------
-static void render_internal(GLRenderContext *rc) {
+static void render_frame_with_size(GLRenderContext *rc, int w, int h) {
     if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
-    
-    ScopedCGLock lock([rc->glContext CGLContextObj]);
-    
-    // 使用存储的尺寸（由 Electron 通过 mpv_set_window_size 更新）
-    // 如果存储的尺寸无效，才从 NSView 读取作为 fallback
-    int w = 0, h = 0;
-    {
-        std::lock_guard<std::mutex> sl(rc->sizeMutex);
-        w = rc->width;
-        h = rc->height;
-    }
-    
-    // fallback: 如果存储的尺寸无效，从 NSView 读取（仅作为最后手段）
-    if (w <= 0 || h <= 0) {
-        @try {
-            NSRect bounds = [rc->view bounds];
-            NSSize backing = [rc->view convertSizeToBacking:bounds.size];
-            int bw = (int)backing.width;
-            int bh = (int)backing.height;
-            if (bw > 0 && bh > 0) {
-                w = bw;
-                h = bh;
-                // 更新存储的尺寸
-                rc->width = w;
-                rc->height = h;
-            }
-        } @catch (NSException *ex) {
-            return;
-        }
-    }
-    
     if (w <= 0 || h <= 0) return;
     
     update_hdr_mode(rc);
     
     bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
     
-    // 渲染在后台线程执行，不需要检查主线程
-    // 确保 OpenGL context 在当前线程是 current 的（渲染线程已经设置）
-    // 注意：render_internal 现在在渲染线程中调用，context 已经是 current 的
-    
-    // 关键参数说明：
-    // 1. 窗口大小（w, h）：Electron 传入的像素尺寸
-    // 2. 视口大小（viewport）：OpenGL 渲染区域，应该等于窗口大小
-    // 3. 视频大小：mpv 视频的原始尺寸（从 mpv 属性获取）
-    // 4. keepaspect：mpv 属性，控制是否保持宽高比
-    // 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     
@@ -717,10 +694,8 @@ static void render_internal(GLRenderContext *rc) {
         { MPV_RENDER_PARAM_INVALID, nullptr }
     };
     
-    // 检查尺寸是否变化（通过比较当前尺寸和上次渲染尺寸）
     bool sizeChanged = (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight);
     
-    // 通知 mpv 尺寸/状态变化
     uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
     bool hasNewFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
     
@@ -748,13 +723,11 @@ static void render_internal(GLRenderContext *rc) {
             NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)", 
                   res, w, h, fbo.w, fbo.h);
         } else {
-            // 更新上次渲染的尺寸
             if (sizeChanged) {
                 rc->lastRenderedWidth = w;
                 rc->lastRenderedHeight = h;
             }
             
-            // 只有在成功渲染后才 flush（在渲染线程中执行，不会阻塞主线程）
             @try {
                 [rc->glContext flushBuffer];
             } @catch (NSException *ex) {
@@ -762,6 +735,40 @@ static void render_internal(GLRenderContext *rc) {
             }
         }
     }
+}
+
+static void render_internal(GLRenderContext *rc) {
+    if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
+    
+    ScopedCGLock lock([rc->glContext CGLContextObj]);
+    
+    int w = 0, h = 0;
+    {
+        std::lock_guard<std::mutex> sl(rc->sizeMutex);
+        w = rc->width;
+        h = rc->height;
+    }
+    
+    if (w <= 0 || h <= 0) {
+        @try {
+            NSRect bounds = [rc->view bounds];
+            NSSize backing = [rc->view convertSizeToBacking:bounds.size];
+            int bw = (int)backing.width;
+            int bh = (int)backing.height;
+            if (bw > 0 && bh > 0) {
+                w = bw;
+                h = bh;
+                rc->width = w;
+                rc->height = h;
+            }
+        } @catch (NSException *ex) {
+            return;
+        }
+    }
+    
+    if (w <= 0 || h <= 0) return;
+    
+    render_frame_with_size(rc, w, h);
 }
 
 extern "C" void mpv_request_render(int64_t instanceId) {
