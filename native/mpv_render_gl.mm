@@ -181,18 +181,14 @@ static void set_render_icc_profile(GLRenderContext *rc);
         { MPV_RENDER_PARAM_INVALID, nullptr }
     };
 
-    uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
-    bool hasNewFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
     bool sizeChanged = (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight);
-    if (hasNewFrame || sizeChanged) {
-        int res = mpv_render_context_render(rc->mpvRenderCtx, params);
-        if (res < 0) {
-            NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)",
-                  res, w, h, fbo.w, fbo.h);
-        } else if (sizeChanged) {
-            rc->lastRenderedWidth = w;
-            rc->lastRenderedHeight = h;
-        }
+    int res = mpv_render_context_render(rc->mpvRenderCtx, params);
+    if (res < 0) {
+        NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)",
+              res, w, h, fbo.w, fbo.h);
+    } else if (sizeChanged) {
+        rc->lastRenderedWidth = w;
+        rc->lastRenderedHeight = h;
     }
 
     glFlush();
