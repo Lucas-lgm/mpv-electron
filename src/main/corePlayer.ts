@@ -22,6 +22,7 @@ export interface CorePlayer {
   broadcastToPlaybackUIs(channel: string, payload?: any): void
   sendKey(key: string): Promise<void>
   debugVideoState(): Promise<void>
+  debugHdrStatus(): Promise<void>
   setHdrEnabled(enabled: boolean): void
 }
 
@@ -322,6 +323,12 @@ class CorePlayerImpl implements CorePlayer {
   async debugVideoState(): Promise<void> {
     if (this.controller) {
       await this.controller.debugVideoState()
+    }
+  }
+
+  async debugHdrStatus(): Promise<void> {
+    if (this.controller) {
+      await this.controller.debugHdrStatus()
     }
   }
 }

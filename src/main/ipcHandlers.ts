@@ -108,6 +108,11 @@ export function setupIpcHandlers() {
     await videoPlayerApp.sendKey(key)
   })
 
+  ipcMain.on('debug-hdr-status', async () => {
+    await corePlayer.debugVideoState()
+    await corePlayer.debugHdrStatus()
+  })
+
   // 视频时间更新 - 转发到视频窗口（控制面板已集成在视频窗口中）
   ipcMain.on('video-time-update', (event, data: { currentTime: number; duration: number }) => {
     const videoWindow = windowManager.getWindow('video')

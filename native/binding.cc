@@ -36,6 +36,7 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
+extern "C" void mpv_debug_hdr_status(int64_t instanceId);
 
 struct MPVEventMessage {
     mpv_event_id event_id;
@@ -276,6 +277,31 @@ Napi::Value SetHdrMode(const Napi::CallbackInfo& info) {
     
     mpv_set_hdr_mode(id, enabled ? 1 : 0);
     
+    return env.Undefined();
+}
+
+Napi::Value DebugHdrStatus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+
+    {
+        std::lock_guard<std::mutex> lock(instancesMutex);
+        auto it = instances.find(id);
+        if (it == instances.end() || !it->second->ctx) {
+            Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+            return env.Null();
+        }
+    }
+
+    mpv_debug_hdr_status(id);
+
     return env.Undefined();
 }
 
@@ -736,6 +762,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "setWindowSize"), Napi::Function::New(env, SetWindowSize));
     exports.Set(Napi::String::New(env, "setForceBlackMode"), Napi::Function::New(env, SetForceBlackMode));
     exports.Set(Napi::String::New(env, "setHdrMode"), Napi::Function::New(env, SetHdrMode));
+    exports.Set(Napi::String::New(env, "debugHdrStatus"), Napi::Function::New(env, DebugHdrStatus));
     
     return exports;
 }

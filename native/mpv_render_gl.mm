@@ -97,6 +97,41 @@ static void set_layer_colorspace_if_supported(CALayer *layer, CGColorSpaceRef cs
     }
 }
 
+static CFStringRef get_colorspace_name_by_symbol(const char *symbolName) {
+    if (!symbolName) return nullptr;
+    void *sym = dlsym(RTLD_DEFAULT, symbolName);
+    if (!sym) return nullptr;
+    CFStringRef *p = (CFStringRef *)sym;
+    return p ? *p : nullptr;
+}
+
+static CGColorSpaceRef create_hdr_pq_colorspace_for_primaries(const char *primaries) {
+    if (!primaries) return nullptr;
+
+    if (strcmp(primaries, "display-p3") == 0) {
+        CFStringRef name = get_colorspace_name_by_symbol("kCGColorSpaceDisplayP3_PQ");
+        if (!name) {
+            name = get_colorspace_name_by_symbol("kCGColorSpaceDisplayP3_PQ_EOTF");
+        }
+        if (name) return CGColorSpaceCreateWithName(name);
+        return nullptr;
+    }
+
+    if (strcmp(primaries, "bt.2020") == 0) {
+        CFStringRef name = get_colorspace_name_by_symbol("kCGColorSpaceITUR_2100_PQ");
+        if (!name) {
+            name = get_colorspace_name_by_symbol("kCGColorSpaceITUR_2020_PQ");
+        }
+        if (!name) {
+            name = get_colorspace_name_by_symbol("kCGColorSpaceITUR_2020_PQ_EOTF");
+        }
+        if (name) return CGColorSpaceCreateWithName(name);
+        return nullptr;
+    }
+
+    return nullptr;
+}
+
 static CALayer *get_render_layer(GLRenderContext *rc) {
     if (!rc || !rc->view) return nil;
     CALayer *root = rc->view.layer;
@@ -213,13 +248,26 @@ static void update_hdr_mode(GLRenderContext *rc) {
     if (sigPeakErr < 0) {
         sigPeak = -1.0;
     }
-    NSLog(@"[mpv_hdr] update_hdr_mode: userEnabled=%d primaries=%s gamma=%s sig-peak=%.2f shouldEnable=%d hdrActive=%d",
+    // 获取显示器信息用于调试
+    CGFloat edr = 1.0;
+    NSScreen *screen = nil;
+    if (rc->view.window) {
+        screen = rc->view.window.screen;
+    }
+    if (screen) {
+        if (@available(macOS 10.15, *)) {
+            edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+        }
+    }
+    
+    NSLog(@"[mpv_hdr] update_hdr_mode: userEnabled=%d primaries=%s gamma=%s sig-peak=%.2f shouldEnable=%d hdrActive=%d edr=%.2f",
           userEnabled ? 1 : 0,
           primariesLog,
           gammaLog,
           sigPeak,
           shouldEnable ? 1 : 0,
-          rc->hdrActive ? 1 : 0);
+          rc->hdrActive ? 1 : 0,
+          edr);
     
     if (shouldEnable == rc->hdrActive) {
         if (primaries) mpv_free(primaries);
@@ -237,6 +285,13 @@ static void update_hdr_mode(GLRenderContext *rc) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = YES;
             }
+            if (primaries) {
+                CGColorSpaceRef cs = create_hdr_pq_colorspace_for_primaries(primaries);
+                if (cs) {
+                    set_layer_colorspace_if_supported(layer, cs);
+                    CGColorSpaceRelease(cs);
+                }
+            }
         }
         
         int iccAuto = 0;
@@ -248,9 +303,19 @@ static void update_hdr_mode(GLRenderContext *rc) {
             mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
         }
 
-        mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "linear");
         mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
-        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        int64_t targetPeakNits = 0;
+        if (edr > 1.0) {
+            targetPeakNits = (int64_t)llround(80.0 * edr);
+            if (targetPeakNits < 400) targetPeakNits = 400;
+            if (targetPeakNits > 2000) targetPeakNits = 2000;
+        }
+        if (targetPeakNits > 0) {
+            mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakNits);
+        } else {
+            mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        }
         mpv_set_property_string(rc->mpvHandle, "tone-mapping", "auto");
         
         rc->hdrActive = true;
@@ -811,4 +876,61 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
     rc->hdrUserEnabled.store(enabled != 0);
     NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
     rc->needRedraw.store(true);
+}
+
+// ------------------ HDR 调试函数 ------------------
+extern "C" void mpv_debug_hdr_status(int64_t instanceId) {
+    std::shared_ptr<GLRenderContext> rc = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        auto it = g_renderContexts.find(instanceId);
+        if (it == g_renderContexts.end()) return;
+        rc = it->second;
+    }
+    
+    if (!rc || !rc->mpvHandle) return;
+    
+    // 获取当前视频参数
+    char *primaries = mpv_get_property_string(rc->mpvHandle, "video-params/primaries");
+    char *gamma = mpv_get_property_string(rc->mpvHandle, "video-params/gamma");
+    double sigPeak = 0.0;
+    mpv_get_property(rc->mpvHandle, "video-params/sig-peak", MPV_FORMAT_DOUBLE, &sigPeak);
+    
+    // 获取当前 mpv 配置
+    char *targetPrim = mpv_get_property_string(rc->mpvHandle, "target-prim");
+    char *targetTrc = mpv_get_property_string(rc->mpvHandle, "target-trc");
+    char *targetPeak = mpv_get_property_string(rc->mpvHandle, "target-peak");
+    char *toneMapping = mpv_get_property_string(rc->mpvHandle, "tone-mapping");
+    
+    // 获取显示器信息
+    CGFloat edr = 1.0;
+    if (rc->view.window && rc->view.window.screen) {
+        if (@available(macOS 10.15, *)) {
+            edr = rc->view.window.screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+        }
+    }
+    
+    NSLog(@"[mpv_hdr_debug] ======= HDR 状态调试信息 =======");
+    NSLog(@"[mpv_hdr_debug] 视频参数: primaries=%s, gamma=%s, sig-peak=%.2f", 
+          primaries ? primaries : "(null)", 
+          gamma ? gamma : "(null)", 
+          sigPeak);
+    NSLog(@"[mpv_hdr_debug] MPV 配置: target-prim=%s, target-trc=%s, target-peak=%s, tone-mapping=%s",
+          targetPrim ? targetPrim : "(null)",
+          targetTrc ? targetTrc : "(null)", 
+          targetPeak ? targetPeak : "(null)",
+          toneMapping ? toneMapping : "(null)");
+    NSLog(@"[mpv_hdr_debug] 显示器 EDR 能力: %.2f", edr);
+    NSLog(@"[mpv_hdr_debug] 用户设置: enabled=%d, active=%d", 
+          rc->hdrUserEnabled.load() ? 1 : 0, 
+          rc->hdrActive ? 1 : 0);
+    NSLog(@"[mpv_hdr_debug] ================================");
+    
+    // 清理内存
+    if (primaries) mpv_free(primaries);
+    if (gamma) mpv_free(gamma);
+    if (targetPrim) mpv_free(targetPrim);
+    if (targetTrc) mpv_free(targetTrc);
+    if (targetPeak) mpv_free(targetPeak);
+    if (toneMapping) mpv_free(toneMapping);
 }

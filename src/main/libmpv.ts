@@ -17,6 +17,7 @@ interface MPVBinding {
   setWindowSize(instanceId: number, width: number, height: number): void
   setForceBlackMode(instanceId: number, enabled: boolean): void
   setHdrMode(instanceId: number, enabled: boolean): void
+  debugHdrStatus(instanceId: number): void
   destroy(instanceId: number): boolean
 }
 
@@ -366,6 +367,19 @@ export class LibMPVController extends EventEmitter {
       console.log('============================')
     } catch (error) {
       console.error('[libmpv] Failed to debug video state:', error)
+    }
+  }
+
+  async debugHdrStatus(): Promise<void> {
+    if (this.instanceId === null) {
+      console.warn('[libmpv] Cannot debug HDR: MPV instance not initialized')
+      return
+    }
+
+    try {
+      mpvBinding!.debugHdrStatus(this.instanceId)
+    } catch (error) {
+      console.warn('[libmpv] Failed to debug HDR status:', error)
     }
   }
 
