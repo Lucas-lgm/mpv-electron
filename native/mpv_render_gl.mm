@@ -174,6 +174,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
     
     bool userEnabled = rc->hdrUserEnabled.load();
     bool shouldEnable = false;
+    bool isHdr = false;
     
     char *primaries = nullptr;
     char *gamma = nullptr;
@@ -203,6 +204,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
                 }
                 if (edr > 1.0) {
                     shouldEnable = true;
+                    isHdr = true;
                 }
             }
         }
@@ -237,7 +239,43 @@ static void update_hdr_mode(GLRenderContext *rc) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = YES;
             }
+
+            CGColorSpaceRef cs = nullptr;
+            if (primaries) {
+                if (strcmp(primaries, "display-p3") == 0) {
+                    if (@available(macOS 10.15.4, *)) {
+                        cs = CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3_PQ);
+                    } else {
+                        cs = CGColorSpaceCreateWithName(kCGColorSpaceDisplayP3_PQ_EOTF);
+                    }
+                } else if (strcmp(primaries, "bt.2020") == 0) {
+                    if (@available(macOS 11.0, *)) {
+                        cs = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
+                    } else if (@available(macOS 10.15.4, *)) {
+                        cs = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2020_PQ);
+                    } else {
+                        cs = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2020_PQ_EOTF);
+                    }
+                }
+            }
+            if (cs) {
+                set_layer_colorspace_if_supported(layer, cs);
+                CGColorSpaceRelease(cs);
+            }
         }
+        
+        int iccAuto = 0;
+        int screenshotTag = 1;
+        mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+        if (primaries) {
+            mpv_set_property_string(rc->mpvHandle, "target-prim", primaries);
+        } else {
+            mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
+        }
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
+        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
+        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
         
         rc->hdrActive = true;
     } else {
@@ -246,7 +284,33 @@ static void update_hdr_mode(GLRenderContext *rc) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = NO;
             }
+
+            CGColorSpaceRef cs = nullptr;
+            NSScreen *screen = nil;
+            if (rc->view.window) {
+                screen = rc->view.window.screen;
+            }
+            if (screen && screen.colorSpace) {
+                cs = screen.colorSpace.CGColorSpace;
+            } else {
+                cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            }
+            if (cs) {
+                set_layer_colorspace_if_supported(layer, cs);
+                if (!(screen && screen.colorSpace && cs == screen.colorSpace.CGColorSpace)) {
+                    CGColorSpaceRelease(cs);
+                }
+            }
         }
+        
+        int iccAuto = 0;
+        int screenshotTag = 0;
+        mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+        mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "auto");
+        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
+        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
         
         rc->hdrActive = false;
     }
