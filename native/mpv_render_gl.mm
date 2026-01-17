@@ -42,6 +42,7 @@ struct GLRenderContext {
     
     // render scheduling flag (atomic)
     std::atomic<bool> needRedraw;
+    std::atomic<bool> displayScheduled;
     std::atomic<bool> isDestroying;
     
     // CVDisplayLink
@@ -65,6 +66,7 @@ struct GLRenderContext {
           lastRenderedWidth(0),
           lastRenderedHeight(0),
           needRedraw(false),
+          displayScheduled(false),
           isDestroying(false),
           displayLink(nullptr),
           frameObserver(nil),
@@ -128,6 +130,7 @@ static void set_render_icc_profile(GLRenderContext *rc);
     CGLSetCurrentContext(ctx);
 
     rc->needRedraw.store(false);
+    rc->displayScheduled.store(false);
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -543,7 +546,6 @@ static void runOnMainAsync(dispatch_block_t block) {
 
 // ------------------ mpv update callback ------------------
 // Called by mpv on arbitrary thread. We must not do GL here.
-// Just mark needRedraw, CVDisplayLink will handle it.
 static void on_mpv_redraw(void *ctx) {
     int64_t instanceId = (int64_t)(intptr_t)ctx;
     std::shared_ptr<GLRenderContext> rc = nullptr;
@@ -557,7 +559,6 @@ static void on_mpv_redraw(void *ctx) {
     if (!rc || rc->isDestroying.load()) return;
     
     rc->needRedraw.store(true);
-    mpv_request_render(instanceId);
 }
 
 // ------------------ CVDisplayLink Callback ------------------
@@ -573,6 +574,9 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     @autoreleasepool {
         if (rc->mpvRenderCtx) {
             mpv_render_context_report_swap(rc->mpvRenderCtx);
+        }
+        if (rc->needRedraw.load()) {
+            mpv_request_render(rc->instanceId);
         }
     }
     return kCVReturnSuccess;
@@ -914,6 +918,8 @@ extern "C" void mpv_request_render(int64_t instanceId) {
     if (!rc || rc->isDestroying.load()) return;
     
     rc->needRedraw.store(true);
+    bool wasScheduled = rc->displayScheduled.exchange(true);
+    if (wasScheduled) return;
     runOnMainAsync(^{
         std::shared_ptr<GLRenderContext> inner = nullptr;
         {
@@ -924,7 +930,6 @@ extern "C" void mpv_request_render(int64_t instanceId) {
         if (!inner || inner->isDestroying.load()) return;
         if (inner->glLayer) {
             [inner->glLayer setNeedsDisplay];
-            [inner->glLayer displayIfNeeded];
         }
     });
 }
@@ -947,7 +952,7 @@ extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
     if (!rc || rc->isDestroying.load()) return;
     
     rc->forceBlackMode.store(enabled != 0);
-    rc->needRedraw.store(true);
+    mpv_request_render(instanceId);
 }
 
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
@@ -963,7 +968,7 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
     
     rc->hdrUserEnabled.store(enabled != 0);
     NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
-    rc->needRedraw.store(true);
+    mpv_request_render(instanceId);
 }
 
 // ------------------ HDR 调试函数 ------------------
