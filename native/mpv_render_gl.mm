@@ -394,14 +394,14 @@ static void update_hdr_mode(GLRenderContext *rc) {
         }
     }
     
-    NSLog(@"[mpv_hdr] update_hdr_mode: userEnabled=%d primaries=%s gamma=%s sig-peak=%.2f shouldEnable=%d hdrActive=%d edr=%.2f",
-          userEnabled ? 1 : 0,
-          primariesLog,
-          gammaLog,
-          sigPeak,
-          shouldEnable ? 1 : 0,
-          rc->hdrActive ? 1 : 0,
-          edr);
+    // NSLog(@"[mpv_hdr] update_hdr_mode: userEnabled=%d primaries=%s gamma=%s sig-peak=%.2f shouldEnable=%d hdrActive=%d edr=%.2f",
+    //       userEnabled ? 1 : 0,
+    //       primariesLog,
+    //       gammaLog,
+    //       sigPeak,
+    //       shouldEnable ? 1 : 0,
+    //       rc->hdrActive ? 1 : 0,
+    //       edr);
     
     if (shouldEnable == rc->hdrActive) {
         if (primaries) mpv_free(primaries);
