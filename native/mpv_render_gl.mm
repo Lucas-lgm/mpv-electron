@@ -43,6 +43,7 @@ struct GLRenderContext {
     // render scheduling flag (atomic)
     std::atomic<bool> needRedraw;
     std::atomic<bool> displayScheduled;
+    std::atomic<bool> resizeScheduled;
     std::atomic<bool> isDestroying;
     
     // CVDisplayLink
@@ -56,6 +57,7 @@ struct GLRenderContext {
     
     std::atomic<bool> hdrUserEnabled;
     bool hdrActive;
+    std::atomic<uint64_t> lastHdrUpdateMs;
 
     std::mutex iccMutex;
     std::vector<uint8_t> iccProfileBytes;
@@ -67,13 +69,15 @@ struct GLRenderContext {
           lastRenderedHeight(0),
           needRedraw(false),
           displayScheduled(false),
+          resizeScheduled(false),
           isDestroying(false),
           displayLink(nullptr),
           frameObserver(nil),
           forceBlackFrame(false),
           forceBlackMode(false),
           hdrUserEnabled(true),
-          hdrActive(false) {}
+          hdrActive(false),
+          lastHdrUpdateMs(0) {}
 };
 
 struct ScopedCGLock {
@@ -147,7 +151,12 @@ static void set_render_icc_profile(GLRenderContext *rc);
         return;
     }
 
-    update_hdr_mode(rc);
+    uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
+    uint64_t lastMs = rc->lastHdrUpdateMs.load();
+    if (lastMs == 0 || nowMs - lastMs > 250) {
+        rc->lastHdrUpdateMs.store(nowMs);
+        update_hdr_mode(rc);
+    }
 
     GLint fboBinding = 0;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fboBinding);
@@ -254,15 +263,6 @@ static CGColorSpaceRef create_hdr_pq_colorspace_for_primaries(const char *primar
         return nullptr;
     }
 
-    return nullptr;
-}
-
-static CGColorSpaceRef create_extended_linear_srgb_colorspace() {
-    CFStringRef name = get_colorspace_name_by_symbol("kCGColorSpaceExtendedLinearSRGB");
-    if (!name) {
-        name = get_colorspace_name_by_symbol("kCGColorSpaceLinearSRGB");
-    }
-    if (name) return CGColorSpaceCreateWithName(name);
     return nullptr;
 }
 
@@ -854,8 +854,12 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     }
     
     if (!rc) return;
-    
+
+    bool wasScheduled = rc->resizeScheduled.exchange(true);
+    if (wasScheduled) return;
+
     runOnMainAsync(^{
+        rc->resizeScheduled.store(false);
         if (rc->isDestroying) return;
         if (!rc->view) return;
         
@@ -963,6 +967,7 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
     if (!rc || rc->isDestroying.load()) return;
     
     rc->hdrUserEnabled.store(enabled != 0);
+    rc->lastHdrUpdateMs.store(0);
     NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
     mpv_request_render(instanceId);
 }
