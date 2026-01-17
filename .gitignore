@@ -37,3 +37,4 @@ native/Debug/
 build/Release/
 build/Debug/
 *.node
+docs/
