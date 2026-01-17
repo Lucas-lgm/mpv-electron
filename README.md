@@ -1,28 +1,38 @@
 # mpv-player
 
-基于 Electron + Vue + TypeScript 的桌面播放器，使用 libmpv（native addon）在 macOS 上进行视频渲染。
+An Electron + Vue + TypeScript desktop player that embeds libmpv via a native addon, with a focus on getting macOS HDR (EDR/PQ) output to look correct.
 
-## 特性
+If you're working on “Electron + libmpv embedding (render API)” or “macOS HDR (PQ) semantics done right”, this repo is a practical, reusable reference implementation.
+
+## Highlights
 
 - Electron + Vue3 UI
-- libmpv render API（native addon）嵌入到窗口视图
-- macOS HDR：基于 CAOpenGLLayer 的 EDR/PQ 语义配置
-- 内置 HDR 状态调试入口（IPC 一键打印 mpv + native 状态）
+- libmpv render API embedding (native addon)
+- macOS HDR pipeline: CAOpenGLLayer + PQ colorspace + EDR enablement
+- One-shot HDR debug print via IPC (mpv properties + native layer/display state)
 
-## 环境要求
+## Status
 
-- Node.js（推荐 20.x）
-- macOS（HDR/EDR 相关逻辑主要面向 macOS）
-- Xcode Command Line Tools（构建 native addon 需要 clang / make）
-- Python（node-gyp 需要）
+- Primary target: macOS
+- Native rendering: OpenGL (CAOpenGLLayer)
+- This repo is actively used to validate HDR behavior against real displays and HDR sources
 
-## 快速开始
+## Quick Start
+
+Requirements:
+
+- Node.js (recommended 20.x)
+- macOS (HDR/EDR logic is macOS-focused)
+- Xcode Command Line Tools (clang/make for node-gyp)
+- Python (required by node-gyp)
+
+Install:
 
 ```bash
 npm install
 ```
 
-如果安装 Electron 较慢，可手动指定镜像：
+If Electron download is slow:
 
 ```bash
 # macOS/Linux
@@ -34,76 +44,77 @@ $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
 npm install
 ```
 
-## 构建 native（libmpv binding）
+Build native addon:
 
 ```bash
 npm run build:native
 ```
 
-产物默认在：
-
-- `native/build/Release/mpv_binding.node`
-
-## 开发运行
+Dev:
 
 ```bash
 npm run dev
 ```
 
-构建生产版本：
+Build:
 
 ```bash
 npm run build
 ```
 
-## macOS HDR（实现要点）
+## macOS HDR (What matters)
 
-在 macOS 上，“HDR 看起来正确”不仅取决于 mpv 的 `target-*` 配置，更取决于系统是否把你的渲染表面识别为 HDR/EDR。
+On macOS, “HDR looks correct” is not only about mpv `target-*` options. It heavily depends on whether the system recognizes your render surface as HDR/EDR and applies the correct PQ semantics.
 
-本项目目前采用的关键做法：
+What we do here:
 
-- 使用 `CAOpenGLLayer` 作为渲染 layer
-- HDR 激活时：
-  - 对 layer 开启 EDR（`wantsExtendedDynamicRangeContent`，按系统可用性保护）
-  - 给 layer 设置 PQ colorspace（例如 DisplayP3_PQ / ITUR_2100_PQ）
-  - 同步 mpv 侧的 `target-trc=pq`、`target-prim` 等
-- HDR 检测与切换逻辑集中在 native 侧
+- Use `CAOpenGLLayer` as the render surface
+- When HDR is active:
+  - Enable EDR on the layer (guarded by OS availability)
+  - Set a PQ colorspace on the layer (e.g. DisplayP3_PQ / ITUR_2100_PQ)
+  - Align mpv settings (`target-trc=pq`, `target-prim`, etc.)
+- Centralize HDR detection/switching in native code
 
-核心实现见：
+Key implementation:
 
 - [native/mpv_render_gl.mm](native/mpv_render_gl.mm)
 
-## HDR 状态调试（IPC 一键打印）
+## HDR Debug (IPC one-shot print)
 
-渲染进程可发送 IPC `debug-hdr-status`，主进程会打印：
+Send IPC `debug-hdr-status` and the main process prints:
 
-- mpv 侧：`video-params/*`、`target-*`、`tone-mapping` 等
-- native 侧：当前屏幕 EDR 能力、layer 的 EDR/PQ 配置等
+- mpv-side: `video-params/*`, `target-*`, `tone-mapping`, etc.
+- native-side: display EDR capability and layer EDR/PQ state
 
-入口代码：
+Entry points:
 
 - [src/main/ipcHandlers.ts](src/main/ipcHandlers.ts)
 - [src/main/corePlayer.ts](src/main/corePlayer.ts)
 - [src/main/libmpv.ts](src/main/libmpv.ts)
 - [native/binding.cc](native/binding.cc)
 
-## 项目结构
+## Project Layout
 
 ```
 .
-├── native/                 # node-gyp native addon（libmpv binding + 渲染）
+├── native/                 # node-gyp native addon (libmpv binding + rendering)
 ├── src/
-│   ├── main/               # Electron 主进程
-│   ├── preload/            # preload
-│   └── renderer/           # Vue 渲染进程
-├── NATIVE_DEVELOPMENT.md   # native 开发记录
+│   ├── main/               # Electron main process
+│   ├── preload/            # preload scripts
+│   └── renderer/           # Vue renderer
+├── NATIVE_DEVELOPMENT.md   # native dev notes
 ├── electron.vite.config.ts
 ├── tsconfig*.json
 └── package.json
 ```
 
-## 常见问题
+## Contributing
 
-### vue-tsc 崩溃
+- Issues/PRs are welcome, especially for macOS HDR, color management, and embedding stability.
+- When reporting HDR issues, include the output of `debug-hdr-status` and your display model / macOS version.
 
-本项目将 `typescript` 固定在 `5.3.3`，避免与 `vue-tsc@1.x` 的已知兼容性问题。
+## FAQ
+
+### vue-tsc crash
+
+This project pins `typescript` to `5.3.3` to avoid known compatibility issues with `vue-tsc@1.x`.
