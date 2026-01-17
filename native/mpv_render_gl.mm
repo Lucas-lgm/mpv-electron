@@ -100,14 +100,6 @@ static void set_layer_colorspace_if_supported(CALayer *layer, CGColorSpaceRef cs
 static CALayer *get_render_layer(GLRenderContext *rc) {
     if (!rc || !rc->view) return nil;
     CALayer *root = rc->view.layer;
-    if (!root) return nil;
-    if (root.sublayers) {
-        for (CALayer *sub in root.sublayers) {
-            if ([sub isKindOfClass:[CAOpenGLLayer class]]) {
-                return sub;
-            }
-        }
-    }
     return root;
 }
 
@@ -245,35 +237,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = YES;
             }
-            if (@available(macOS 11.0, *)) {
-                CFStringRef csName = NULL;
-                if (primaries && strcmp(primaries, "display-p3") == 0) {
-                    csName = kCGColorSpaceDisplayP3_PQ_EOTF;
-                } else if (primaries && strcmp(primaries, "bt.2020") == 0) {
-                    csName = kCGColorSpaceITUR_2100_PQ;
-                }
-                if (csName) {
-                    CGColorSpaceRef cs = CGColorSpaceCreateWithName(csName);
-                    if (cs) {
-                        set_layer_colorspace_if_supported(layer, cs);
-                        layer.contentsScale = rc->view.window.backingScaleFactor;
-                        CGColorSpaceRelease(cs);
-                    }
-                }
-            }
         }
-        
-        int iccAuto = 0;
-        mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
-        if (primaries) {
-            mpv_set_property_string(rc->mpvHandle, "target-prim", primaries);
-        }
-        mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
-        int screenshotTag = 1;
-        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
-        
-        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
         
         rc->hdrActive = true;
     } else {
@@ -282,25 +246,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = NO;
             }
-            if (@available(macOS 11.0, *)) {
-                CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-                if (cs) {
-                    set_layer_colorspace_if_supported(layer, cs);
-                    layer.contentsScale = rc->view.window.backingScaleFactor;
-                    CGColorSpaceRelease(cs);
-                }
-            }
         }
-        
-        int iccAuto = 1;
-        mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
-        mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
-        mpv_set_property_string(rc->mpvHandle, "target-trc", "auto");
-        int screenshotTag = 0;
-        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
-        
-        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
         
         rc->hdrActive = false;
     }
@@ -395,7 +341,8 @@ static bool createGLForView(GLRenderContext *rc) {
     
     NSOpenGLPixelFormatAttribute attrs[] = {
         NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
-        NSOpenGLPFAColorSize,     24,
+        NSOpenGLPFAColorSize,     64,
+        NSOpenGLPFAColorFloat,
         NSOpenGLPFADepthSize,     16,
         NSOpenGLPFAAccelerated,
         NSOpenGLPFADoubleBuffer,
@@ -524,17 +471,6 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
         
         if (![rc->view wantsLayer]) {
             [rc->view setWantsLayer:YES];
-        }
-        
-        CALayer *existingLayer = [rc->view layer];
-        if (existingLayer && ![existingLayer isKindOfClass:[CAOpenGLLayer class]]) {
-            // Create a CAOpenGLLayer subclass similar to IINA's ViewLayer is too heavy to port directly.
-            // Instead, attach a basic CAOpenGLLayer as sublayer to ensure proper HDR handling path.
-            CAOpenGLLayer *glLayer = [[CAOpenGLLayer alloc] init];
-            glLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-            glLayer.frame = existingLayer.bounds;
-            glLayer.asynchronous = NO;
-            [existingLayer addSublayer:glLayer];
         }
     }
     rc->mpvHandle = mpv;
