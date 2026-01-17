@@ -1,4 +1,6 @@
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
+#import <objc/message.h>
 #import <OpenGL/gl3.h>
 #import <OpenGL/OpenGL.h>
 #import <CoreVideo/CoreVideo.h>
@@ -28,7 +30,7 @@ struct GLRenderContext {
     // pixel size (width/height) used for rendering (单位：像素)
     int width = 0;
     int height = 0;
-    std::mutex sizeMutex; // protect width/height
+    std::mutex sizeMutex;
     
     // 上次渲染的尺寸（用于检测尺寸变化）
     int lastRenderedWidth = 0;
@@ -47,13 +49,22 @@ struct GLRenderContext {
     std::atomic<bool> forceBlackFrame;
     std::atomic<bool> forceBlackMode;
     
+    std::atomic<bool> hdrUserEnabled;
+    bool hdrActive;
+    
     GLRenderContext()
-        : needRedraw(false),
+        : width(0),
+          height(0),
+          lastRenderedWidth(0),
+          lastRenderedHeight(0),
+          needRedraw(false),
           isDestroying(false),
           displayLink(nullptr),
           frameObserver(nil),
           forceBlackFrame(false),
-          forceBlackMode(false) {}
+          forceBlackMode(false),
+          hdrUserEnabled(true),
+          hdrActive(false) {}
 };
 
 struct ScopedCGLock {
@@ -66,15 +77,225 @@ struct ScopedCGLock {
     }
 };
 
-// globals
 static std::map<int64_t, std::shared_ptr<GLRenderContext>> g_renderContexts;
 static std::mutex g_renderMutex;
 
-// forward declarations
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
+extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
 static void render_internal(GLRenderContext *rc);
+
+static void set_layer_colorspace_if_supported(CALayer *layer, CGColorSpaceRef cs) {
+    if (!layer || !cs) return;
+    if ([layer respondsToSelector:@selector(setColorspace:)]) {
+        typedef void (*SetColorSpaceIMP)(id, SEL, CGColorSpaceRef);
+        SetColorSpaceIMP imp = (SetColorSpaceIMP)[layer methodForSelector:@selector(setColorspace:)];
+        if (imp) {
+            imp(layer, @selector(setColorspace:), cs);
+        }
+    }
+}
+
+static void log_hdr_config(GLRenderContext *rc) {
+    if (!rc || !rc->mpvHandle) return;
+    
+    int iccAuto = -1;
+    int screenshotTag = -1;
+    int targetPeakInt = 0;
+    char *targetPrim = nullptr;
+    char *targetTrc = nullptr;
+    char *targetPeakStr = nullptr;
+    char *toneMapping = nullptr;
+    
+    mpv_get_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+    mpv_get_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
+    mpv_get_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakInt);
+    targetPrim = mpv_get_property_string(rc->mpvHandle, "target-prim");
+    targetTrc = mpv_get_property_string(rc->mpvHandle, "target-trc");
+    targetPeakStr = mpv_get_property_string(rc->mpvHandle, "target-peak");
+    toneMapping = mpv_get_property_string(rc->mpvHandle, "tone-mapping");
+    
+    const char *primariesCfg = targetPrim ? targetPrim : "(null)";
+    const char *trcCfg = targetTrc ? targetTrc : "(null)";
+    const char *peakCfg = targetPeakStr ? targetPeakStr : "(null)";
+    const char *toneCfg = toneMapping ? toneMapping : "(null)";
+    
+    CGFloat edr = 1.0;
+    NSScreen *screen = nil;
+    if (rc->view && rc->view.window) {
+        screen = rc->view.window.screen;
+    }
+    if (screen) {
+        if (@available(macOS 10.15, *)) {
+            edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+        } else {
+            edr = 1.0;
+        }
+    }
+    
+    BOOL wantsEDR = NO;
+    CGFloat contentsScale = 0.0;
+    if (rc->view.layer) {
+        CALayer *layer = rc->view.layer;
+        if (@available(macOS 14.0, *)) {
+            wantsEDR = layer.wantsExtendedDynamicRangeContent;
+        }
+        contentsScale = layer.contentsScale;
+    }
+    
+    NSLog(@"[mpv_hdr_cfg] icc-profile-auto=%d target-prim=%s target-trc=%s screenshot-tag-colorspace=%d target-peak-int=%d target-peak-str=%s tone-mapping=%s edr=%.3f wantsEDR=%d contentsScale=%.2f hdrActive=%d",
+          iccAuto,
+          primariesCfg,
+          trcCfg,
+          screenshotTag,
+          targetPeakInt,
+          peakCfg,
+          toneCfg,
+          edr,
+          wantsEDR ? 1 : 0,
+          contentsScale,
+          rc->hdrActive ? 1 : 0);
+    
+    if (targetPrim) mpv_free(targetPrim);
+    if (targetTrc) mpv_free(targetTrc);
+    if (targetPeakStr) mpv_free(targetPeakStr);
+    if (toneMapping) mpv_free(toneMapping);
+}
+
+static void update_hdr_mode(GLRenderContext *rc) {
+    if (!rc || !rc->mpvHandle || !rc->view) return;
+    
+    bool userEnabled = rc->hdrUserEnabled.load();
+    bool shouldEnable = false;
+    
+    char *primaries = nullptr;
+    char *gamma = nullptr;
+    double sigPeak = 0.0;
+    int sigPeakErr = mpv_get_property(rc->mpvHandle, "video-params/sig-peak", MPV_FORMAT_DOUBLE, &sigPeak);
+    
+    if (userEnabled) {
+        primaries = mpv_get_property_string(rc->mpvHandle, "video-params/primaries");
+        gamma = mpv_get_property_string(rc->mpvHandle, "video-params/gamma");
+        
+        if (primaries && gamma) {
+            bool isHdrGamma = strcmp(gamma, "hlg") == 0 || strcmp(gamma, "pq") == 0;
+            bool isSdrPrimaries = strcmp(primaries, "bt.709") == 0;
+            
+            if (isHdrGamma && !isSdrPrimaries) {
+                CGFloat edr = 1.0;
+                NSScreen *screen = nil;
+                if (rc->view.window) {
+                    screen = rc->view.window.screen;
+                }
+                if (screen) {
+                    if (@available(macOS 10.15, *)) {
+                        edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+                    } else {
+                        edr = 1.0;
+                    }
+                }
+                if (edr > 1.0) {
+                    shouldEnable = true;
+                }
+            }
+        }
+    }
+    
+    const char *primariesLog = primaries ? primaries : "(null)";
+    const char *gammaLog = gamma ? gamma : "(null)";
+    if (sigPeakErr < 0) {
+        sigPeak = -1.0;
+    }
+    NSLog(@"[mpv_hdr] update_hdr_mode: userEnabled=%d primaries=%s gamma=%s sig-peak=%.2f shouldEnable=%d hdrActive=%d",
+          userEnabled ? 1 : 0,
+          primariesLog,
+          gammaLog,
+          sigPeak,
+          shouldEnable ? 1 : 0,
+          rc->hdrActive ? 1 : 0);
+    
+    if (shouldEnable == rc->hdrActive) {
+        if (primaries) mpv_free(primaries);
+        if (gamma) mpv_free(gamma);
+        return;
+    }
+    
+    if (shouldEnable) {
+        CALayer *layer = rc->view.layer;
+        if (!layer) {
+            [rc->view setWantsLayer:YES];
+            layer = rc->view.layer;
+        }
+        if (layer) {
+            if (@available(macOS 14.0, *)) {
+                layer.wantsExtendedDynamicRangeContent = YES;
+            }
+            if (@available(macOS 11.0, *)) {
+                CFStringRef csName = NULL;
+                if (primaries && strcmp(primaries, "display-p3") == 0) {
+                    csName = kCGColorSpaceDisplayP3_PQ_EOTF;
+                } else if (primaries && strcmp(primaries, "bt.2020") == 0) {
+                    csName = kCGColorSpaceITUR_2100_PQ;
+                }
+                if (csName) {
+                    CGColorSpaceRef cs = CGColorSpaceCreateWithName(csName);
+                    if (cs) {
+                        set_layer_colorspace_if_supported(layer, cs);
+                        layer.contentsScale = rc->view.window.backingScaleFactor;
+                        CGColorSpaceRelease(cs);
+                    }
+                }
+            }
+        }
+        
+        int iccAuto = 0;
+        mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+        if (primaries) {
+            mpv_set_property_string(rc->mpvHandle, "target-prim", primaries);
+        }
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
+        int screenshotTag = 1;
+        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
+        
+        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
+        
+        rc->hdrActive = true;
+    } else {
+        CALayer *layer = rc->view.layer;
+        if (layer) {
+            if (@available(macOS 14.0, *)) {
+                layer.wantsExtendedDynamicRangeContent = NO;
+            }
+            if (@available(macOS 11.0, *)) {
+                CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+                if (cs) {
+                    set_layer_colorspace_if_supported(layer, cs);
+                    layer.contentsScale = rc->view.window.backingScaleFactor;
+                    CGColorSpaceRelease(cs);
+                }
+            }
+        }
+        
+        int iccAuto = 1;
+        mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+        mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "auto");
+        int screenshotTag = 0;
+        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
+        
+        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
+        
+        rc->hdrActive = false;
+    }
+    
+    if (primaries) mpv_free(primaries);
+    if (gamma) mpv_free(gamma);
+    
+    log_hdr_config(rc);
+}
 
 // ------------------ helper: dlsym for mpv GL ------------------
 static void *get_proc_address(void *ctx, const char *name) {
@@ -176,7 +397,6 @@ static bool createGLForView(GLRenderContext *rc) {
         return false;
     }
     
-    // Associate the context with the view (must be on main thread)
     [ctx setView:rc->view];
     [ctx makeCurrentContext];
     
@@ -280,7 +500,24 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
     auto rc = std::make_shared<GLRenderContext>();
     NSView *view = reinterpret_cast<NSView*>(nsViewPtr);
     rc->view = view;
-    if (rc->view) [rc->view retain]; // Retain view to prevent dangling pointer
+    if (rc->view) {
+        [rc->view retain]; // Retain view to prevent dangling pointer
+        
+        if (![rc->view wantsLayer]) {
+            [rc->view setWantsLayer:YES];
+        }
+        
+        CALayer *existingLayer = [rc->view layer];
+        if (existingLayer && ![existingLayer isKindOfClass:[CAOpenGLLayer class]]) {
+            // Create a CAOpenGLLayer subclass similar to IINA's ViewLayer is too heavy to port directly.
+            // Instead, attach a basic CAOpenGLLayer as sublayer to ensure proper HDR handling path.
+            CAOpenGLLayer *glLayer = [[CAOpenGLLayer alloc] init];
+            glLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+            glLayer.frame = existingLayer.bounds;
+            glLayer.asynchronous = NO;
+            [existingLayer addSublayer:glLayer];
+        }
+    }
     rc->mpvHandle = mpv;
     
     // create GL and read initial size - must be on main thread
@@ -446,6 +683,8 @@ static void render_internal(GLRenderContext *rc) {
     
     if (w <= 0 || h <= 0) return;
     
+    update_hdr_mode(rc);
+    
     bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
     
     // 渲染在后台线程执行，不需要检查主线程
@@ -467,8 +706,8 @@ static void render_internal(GLRenderContext *rc) {
     mpv_opengl_fbo fbo;
     memset(&fbo, 0, sizeof(fbo));
     fbo.fbo = drawFbo != 0 ? (int)drawFbo : 0;
-    fbo.w = w;  // 窗口宽度（像素）
-    fbo.h = h;  // 窗口高度（像素）
+    fbo.w = w;
+    fbo.h = h;
     
     int flip_y = 1;
     
@@ -572,5 +811,21 @@ extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
     if (!rc || rc->isDestroying.load()) return;
     
     rc->forceBlackMode.store(enabled != 0);
+    rc->needRedraw.store(true);
+}
+
+extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
+    std::shared_ptr<GLRenderContext> rc = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        auto it = g_renderContexts.find(instanceId);
+        if (it == g_renderContexts.end()) return;
+        rc = it->second;
+    }
+    
+    if (!rc || rc->isDestroying.load()) return;
+    
+    rc->hdrUserEnabled.store(enabled != 0);
+    NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
     rc->needRedraw.store(true);
 }

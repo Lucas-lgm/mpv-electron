@@ -22,6 +22,7 @@ export interface CorePlayer {
   broadcastToPlaybackUIs(channel: string, payload?: any): void
   sendKey(key: string): Promise<void>
   debugVideoState(): Promise<void>
+  setHdrEnabled(enabled: boolean): void
 }
 
 class CorePlayerImpl implements CorePlayer {
@@ -69,6 +70,12 @@ class CorePlayerImpl implements CorePlayer {
 
   isUsingEmbeddedMode(): boolean {
     return this.useLibMPV
+  }
+
+  setHdrEnabled(enabled: boolean): void {
+    if (this.controller) {
+      this.controller.setHdrEnabled(enabled)
+    }
   }
 
   async play(filePath: string): Promise<void> {

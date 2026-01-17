@@ -73,6 +73,9 @@
           </div>
           <div class="control-right">
             <button @click="togglePlaylist" class="btn-control small">📃</button>
+            <button @click="toggleHdr" class="btn-control small">
+              {{ hdrEnabled ? 'HDR' : 'SDR' }}
+            </button>
             <span class="volume-icon">🔊</span>
             <input
               type="range"
@@ -112,6 +115,7 @@ interface PlaylistItem {
 const playlist = ref<PlaylistItem[]>([])
 const showPlaylist = ref(false)
 const currentPath = ref<string | null>(null)
+const hdrEnabled = ref(true)
 
 type PlayerState = {
   phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
@@ -193,6 +197,13 @@ const formatTime = (seconds: number): string => {
 
 const togglePlaylist = () => {
   showPlaylist.value = !showPlaylist.value
+}
+
+const toggleHdr = () => {
+  hdrEnabled.value = !hdrEnabled.value
+  if (window.electronAPI) {
+    window.electronAPI.send('control-hdr', hdrEnabled.value)
+  }
 }
 
 const playFromPlaylist = (item: PlaylistItem) => {

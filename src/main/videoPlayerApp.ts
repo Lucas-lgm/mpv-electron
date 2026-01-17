@@ -238,6 +238,10 @@ export class VideoPlayerApp {
     await corePlayer.setVolume(volume)
   }
 
+  async setHdrEnabled(enabled: boolean) {
+    corePlayer.setHdrEnabled(enabled)
+  }
+
   async sendKey(key: string) {
     await corePlayer.sendKey(key)
   }

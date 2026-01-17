@@ -16,6 +16,7 @@ interface MPVBinding {
   attachView(instanceId: number, viewPtr: number): void
   setWindowSize(instanceId: number, width: number, height: number): void
   setForceBlackMode(instanceId: number, enabled: boolean): void
+  setHdrMode(instanceId: number, enabled: boolean): void
   destroy(instanceId: number): boolean
 }
 
@@ -70,6 +71,7 @@ export interface MPVStatus {
 
 export class LibMPVController extends EventEmitter {
   private instanceId: number | null = null
+  private hdrEnabled = true
   private currentStatus: MPVStatus = {
     position: 0,
     duration: 0,
@@ -180,6 +182,7 @@ export class LibMPVController extends EventEmitter {
     try {
       // B 方案：使用 render API，把 libmpv 绑定到 Electron 的 NSView 上
       mpvBinding!.attachView(this.instanceId, windowId)
+      mpvBinding!.setHdrMode(this.instanceId, this.hdrEnabled)
       this.emit('window-set', windowId)
     } catch (error) {
       throw new Error(`Failed to set window ID: ${error}`)
@@ -223,6 +226,12 @@ export class LibMPVController extends EventEmitter {
     } catch (error) {
       console.error('[libmpv] Failed to set window size:', error)
     }
+  }
+
+  setHdrEnabled(enabled: boolean): void {
+    this.hdrEnabled = enabled
+    if (!mpvBinding || this.instanceId === null) return
+    mpvBinding.setHdrMode(this.instanceId, enabled)
   }
 
   /**

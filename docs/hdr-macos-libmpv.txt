@@ -1,0 +1,156 @@
+IINA 与本项目在 macOS 上启用 HDR/EDR 的要点总结
+
+一、IINA 的整体架构
+
+1. 渲染路径
+- 使用 libmpv render API，后端为 OpenGL（MPV_RENDER_API_TYPE_OPENGL）
+- VideoView 是一个 NSView，但挂的是自定义 CAOpenGLLayer（ViewLayer）
+- ViewLayer 负责：
+  - 创建 CGLPixelFormat/CGLContext
+  - 在 draw(inCGLContext:) 里调用 mpv_render_context_render 渲染到当前 FBO
+
+2. Layer 层特性
+- VideoView 初始化时：
+  - layer = videoLayer（ViewLayer 实例）
+  - wantsLayer = true（layer-backed）
+  - wantsBestResolutionOpenGLSurface = true（Retina 像素级渲染）
+  - wantsExtendedDynamicRangeOpenGLSurface = true（允许 EDR）
+- ViewLayer 初始化时：
+  - 根据像素格式选择 8bit 或 16bit framebuffer
+  - 当 bufferDepth > 8 时：
+    - contentsFormat = .RGBA16Float（为 HDR 预留高精度）
+- ViewLayer 是真正挂在 Core Animation 上的 CAOpenGLLayer，后续可以设置：
+  - wantsExtendedDynamicRangeContent
+  - colorspace（CGColorSpace 的 HDR/EDR 色彩空间）
+
+二、IINA 的 HDR/EDR 启用逻辑
+
+1. HDR 检测入口（VideoView.refreshEdrMode）
+- 前置条件：
+  - 播放器主窗口和视频状态已加载
+  - 当前显示器 ID 已知
+- 调用 requestEdrMode() 决定是否启用 EDR
+  - edrEnabled:
+    - true：成功进入 HDR/EDR 模式
+    - false：不启用 HDR，回退到 ICC profile / SDR
+    - nil：显示器支持 EDR，但用户关闭了 HDR 开关
+
+2. requestEdrMode 的判断流程
+- 从 mpv 读取视频色彩信息：
+  - video-params/primaries
+  - video-params/gamma
+  - video-params/sig-peak
+- 判断是否为 HDR 源：
+  - gamma 必须是 "hlg" 或 "pq"
+  - primaries 通常是 "display-p3" 或 "bt.2020"
+- 根据 primaries/gamma 选择合适的 CGColorSpace 名称：
+  - display-p3 + pq -> CGColorSpace.displayP3_PQ 或 displayP3_PQ_EOTF
+  - bt.2020 + pq -> CGColorSpace.itur_2100_PQ / itur_2020_PQ_EOTF
+  - bt.709 直接判定为 SDR，不走 HDR 分支
+- 检测当前屏幕是否支持 EDR：
+  - screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
+  - 不满足则记录日志并返回 false
+- 检查 IINA 自己的“启用 HDR 支持”开关：
+  - 若用户关闭 HDR，则返回 nil（代表显示器支持，但当前不启用）
+
+3. 真正打开 HDR/EDR 的关键步骤
+- 在判定可用且用户开启 HDR 后：
+  - videoLayer.wantsExtendedDynamicRangeContent = true
+  - videoLayer.colorspace = CGColorSpace(name: 选出的 HDR colorspace)
+- mpv 侧同步设置目标色彩空间：
+  - icc-profile-auto = no（禁用 ICC 自动管理）
+  - target-prim = 源视频 primaries（如 display-p3 / bt.2020）
+  - target-trc = "pq"
+    - PQ 视频保持 PQ
+    - HLG 视频在 mpv 内部转换为 PQ
+  - screenshot-tag-colorspace = yes（截图保留 HDR 色彩信息）
+
+4. Tone mapping 控制
+- IINA 提供 GUI 选项：
+  - 启用/禁用 tone mapping（Enable tone mapping）
+  - target-peak（nits），可设为 0 让 IINA 自动探测
+- 若启用 tone mapping：
+  - 当 target-peak 为 0：
+    - 使用 CoreDisplay_DisplayCreateInfoDictionary(displayID) 读取显示器信息
+    - 尝试取：
+      - NonReferencePeakHDRLuminance（Apple Silicon）
+      - DisplayBacklight（Intel）
+    - 若都不存在，则假定 HDR400（target-peak=400）
+  - 从偏好中读取 tone-mapping 算法（如 mobius、reinhard 等），映射到 mpv 字符串
+  - 设置：
+    - target-peak = 探测或用户指定的 nits
+    - tone-mapping = 对应算法名
+- 若关闭 tone mapping：
+  - target-peak = "auto"
+  - tone-mapping 设为 ""（禁用）
+
+三、与本项目当前实现的差异
+
+1. 本项目当前路径
+- Electron 主进程 + native addon：
+  - 使用 mpv render API + MPV_RENDER_API_TYPE_OPENGL
+  - 在 native/mpv_render_gl.mm 中：
+    - 创建 NSOpenGLContext
+    - 将其绑定到 Electron 提供的 NSView
+    - 在 OpenGL FBO 中调用 mpv_render_context_render
+- 这是“裸 NSOpenGLContext + NSView”，没有使用 CAOpenGLLayer，也没有在 layer 上声明 HDR colorspace。
+
+2. 已做的 mpv 侧配置（libmpv.ts 中）
+- 设置 vo=libmpv，走嵌入模式，不弹出 mpv 自己窗口
+- 试图设置：
+  - target-trc = pq
+  - target-prim = bt.2020
+  - tone-mapping = clip
+  - hdr-compute-peak = no
+  - target-peak = 1000
+  - gamut-mapping-mode = clip
+- 这些改变了 mpv 内部的色彩处理，但输出仍画在一个被 macOS 当作 SDR 的 GL surface 上，系统并不知道它是 HDR。
+
+3. 目前缺失的关键环节
+- 没有 CAOpenGLLayer 或等价的 Core Animation layer：
+  - 无法在 layer 上设置 wantsExtendedDynamicRangeContent/colorspace
+  - 无法通过 contentsFormat 指定半精度 HDR framebuffer
+- 没有基于视频属性的 HDR 判断逻辑：
+  - 未动态读取 video-params/gamma、primaries、sig-peak
+  - 未按源色彩空间调整 target-prim/target-trc
+- 没有基于显示器能力的自动 target-peak 探测：
+  - 未使用 CoreDisplay_DisplayCreateInfoDictionary 读取 NonReferencePeakHDRLuminance / DisplayBacklight
+
+四、本项目若想达到 IINA 类似 HDR 效果的建议路线
+
+1. 保持 OpenGL，靠近 IINA 的实现
+- 目标：沿用现有 render API + gl 回调架构，同时增加：
+  - 一个 CAOpenGLLayer，专门承载 OpenGL 输出
+  - EDR / HDR colorspace 设置，与 mpv 选项联动
+- 具体思路：
+  - 定义类似 IINA 的 ViewLayer（CAOpenGLLayer）：
+    - 内部持有 CGLContext/CGLPixelFormat
+    - 在 draw(inCGLContext:) 中构造 mpv_opengl_fbo + mpv_render_param，调用 mpv_render_context_render
+    - 按像素格式选择 bufferDepth，并将 contentsFormat 设为 RGBA16Float（若支持）
+  - 在 Electron 的 NSView 上挂这个 layer，而不是直接 NSOpenGLContext
+  - 在 JS/TS 侧保留 vo=libmpv 与 HDR 相关 mpv 选项，但真正决定 HDR 的时机下移到 native：
+    - 根据 mpv 属性（gamma/primaries）判断是否 HDR
+    - 屏幕支持 EDR 时：
+      - 设置 layer.wantsExtendedDynamicRangeContent = true
+      - 设置 layer.colorspace 为对应的 CGColorSpace（如 displayP3_PQ / itur_2100_PQ）
+    - 同步设置 mpv 的 target-prim/target-trc/icc-profile-auto 等
+
+2. 若未来迁移到 Metal
+- 另一条路线是改用 CAMetalLayer + Vulkan/Metal 后端：
+  - 使用 libplacebo 或 mpv 的 Metal 支持
+  - 在 CAMetalLayer 上设置 HDR 色彩空间
+- 这条路线工程量更大，但更符合 Apple 当前的图形栈方向。
+- IINA 当前证明：在 macOS 上，OpenGL + CAOpenGLLayer + 正确的 colorspace/EDR 配置已经可以获得足够好的 HDR 效果，并不强制要求 Metal。
+
+五、总结
+
+- IINA 的 HDR 效果好，原因是：
+  - 显示层（CAOpenGLLayer + EDR + HDR colorspace）和 mpv 层（target-*、tone-mapping）两边都做了完整的适配；
+  - 能够基于“视频是否 HDR”“显示器是否支持 EDR”“用户是否开启 HDR”三方面动态切换模式，并自动探测 display peak nits。
+- 本项目目前只在 mpv 选项层面做了一部分工作，而缺少对 Core Animation / EDR 的集成，系统仍然在用 SDR 路径显示 GL surface，因此视觉上类似“tone mapping 过度”或“亮度不够 HDR”。
+- 若要接近 IINA 的体验，即使不改用 Metal，也需要引入与 ViewLayer 类似的 CAOpenGLLayer，实现：
+  - HDR 源检测
+  - EDR 支持检测
+  - layer HDR colorspace 设置
+  - mpv target-* 配合与 tone-mapping 策略。 
+

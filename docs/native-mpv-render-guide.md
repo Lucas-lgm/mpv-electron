@@ -72,6 +72,19 @@ fbo.h = height;
 1. **初始化**:
    - Electron 获取窗口句柄 (`getNSViewPointer`)。
    - Native 创建 `NSOpenGLContext`，绑定 View，开启 Retina，启动渲染线程。
+   - 为了在 HDR 屏上获得更接近 IINA 的效果，Native 还会：
+     - 确保 `NSView` 开启 `wantsLayer`，并在其主 layer 上挂载一个 `CAOpenGLLayer` 子层，作为视频渲染的宿主；
+     - 在 HDR 模式下，根据 `video-params/primaries` 和 `video-params/gamma` 决定是否启用 HDR：
+       - 仅当 `gamma` 为 `hlg`/`pq` 且 `primaries` 不是 `bt.709` 时才认为是 HDR；
+       - 检查当前屏幕的 `maximumPotentialExtendedDynamicRangeColorComponentValue` 大于 1 才开启；
+     - 启用 HDR 时：
+       - 将 `icc-profile-auto` 设为 `no`，使用 mpv 自己的目标色彩空间；
+       - 根据 `primaries` 设置 `target-prim`（例如 `bt.2020`）、`target-trc=pq`；
+       - 设置 `screenshot-tag-colorspace=yes`；
+       - 在 layer 上开启 `wantsExtendedDynamicRangeContent` 并将 colorspace 设置为 HDR 对应的 `CGColorSpace`（如 `ITUR_2100_PQ`）；
+     - 关闭 HDR 时：
+       - 恢复 `icc-profile-auto=yes`、`target-prim=auto`、`target-trc=auto`、`screenshot-tag-colorspace=no`；
+       - 关闭 `wantsExtendedDynamicRangeContent`，将 layer colorspace 设回 sRGB。
 
 2. **Resize 事件**:
    - Electron: `window.on('resize')` -> `libmpv.setWindowSize(w, h)`
@@ -85,6 +98,20 @@ fbo.h = height;
    - 构建 `mpv_opengl_fbo` (使用最新尺寸)。
    - 调用 `mpv_render_context_render`。
    - `glSwapAPPLE` / `CGLFlushDrawable` 上屏。
+
+### 3.1 HDR 效果偏灰的已知差异
+
+- **现象**: 在部分 HDR 片源上，即便 mpv 端配置与 IINA 基本一致（`icc-profile-auto=0`、`target-prim=bt.2020`、`target-trc=pq`、`tone-mapping=auto`，屏幕 EDR 值约为 16），画面仍然比 IINA 明显偏灰、对比度不足。
+- **已确认一致的部分**:
+  - mpv 目标色彩空间、tone-mapping 选项与 IINA HDR 分支对齐；
+  - 屏幕的 EDR 能力开启，且对应 layer 的 `wantsExtendedDynamicRangeContent=YES`；
+  - HDR 判定逻辑（基于 `video-params/primaries` / `gamma`）与 IINA 一致。
+- **潜在差异点**:
+  - IINA 使用的是专门的 `CAOpenGLLayer` 子类 (`ViewLayer`) 作为渲染宿主，并与其内部的 CGL 上下文紧密耦合；
+  - 当前实现仍然基于 Electron 提供的 `NSView + NSOpenGLContext` 模式，`CAOpenGLLayer` 仅作为附加子层使用，底层渲染路径与 IINA 仍存在结构性差异。
+- **结论**:
+  - mpv 层和 HDR 配置已经尽可能对齐 IINA，目前观察到的“偏灰”主要来自渲染管线（view/layer 架构）差异；
+  - 要实现与 IINA 基本一致的 HDR 效果，需要进一步向 IINA 的 `VideoView + ViewLayer` 架构靠拢，而不仅仅是调整 mpv 的单个配置项。
 
 ## 4. 相关文件
 

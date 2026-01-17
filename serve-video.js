@@ -206,7 +206,23 @@ function createServer(rootDir, port) {
           return;
         }
         
-        // 对于片段文件和其他文件，使用流式传输（更高效）
+        const { headers, statusCode: finalStatusCode } = buildHeaders(
+          mimeType,
+          fileStats.size,
+          fileStats,
+          isPlaylist,
+          isSegment,
+          statusCode,
+          start,
+          end
+        );
+
+        if (finalStatusCode === 304) {
+          res.writeHead(304, headers);
+          res.end();
+          return;
+        }
+
         const stream = fs.createReadStream(filePath, { start, end: end + 1 });
         
         stream.on('error', (err) => {
@@ -219,14 +235,10 @@ function createServer(rootDir, port) {
           }
         });
         
-        // 设置响应头并管道传输
-        const headers = buildHeaders(mimeType, fileStats.size, fileStats, isPlaylist, isSegment, statusCode, start, end);
-        
-        res.writeHead(statusCode, headers);
+        res.writeHead(finalStatusCode, headers);
         stream.pipe(res);
       }
       
-      // 构建响应头的辅助函数
       function buildHeaders(mimeType, contentLength, fileStats, isPlaylist, isSegment, statusCode, start, end) {
         const headers = {
           'Content-Type': mimeType,
@@ -238,6 +250,7 @@ function createServer(rootDir, port) {
           'Connection': 'keep-alive',
           'Keep-Alive': 'timeout=5, max=1000',
         };
+        let effectiveStatusCode = statusCode;
         
         // 如果是范围请求，添加 Content-Range 头
         if (statusCode === 206) {
@@ -257,33 +270,40 @@ function createServer(rootDir, port) {
           headers['ETag'] = etag;
           
           if (req.headers['if-none-match'] === etag) {
-            res.writeHead(304, headers);
-            res.end();
-            return null; // 表示已处理
+            effectiveStatusCode = 304;
           }
         } else {
           headers['Cache-Control'] = 'public, max-age=3600';
         }
         
-        return headers;
+        return { headers, statusCode: effectiveStatusCode };
       }
       
-      // 服务内容的辅助函数（用于播放列表）
       function serveContent(content, contentLength, mimeType, fileStats, isPlaylist, isSegment, statusCode, start, end) {
-        const headers = buildHeaders(mimeType, contentLength, fileStats, isPlaylist, isSegment, statusCode, start, end);
-        
-        if (headers === null) {
-          return; // 304 已处理
+        const { headers, statusCode: finalStatusCode } = buildHeaders(
+          mimeType,
+          contentLength,
+          fileStats,
+          isPlaylist,
+          isSegment,
+          statusCode,
+          start,
+          end
+        );
+
+        if (finalStatusCode === 304) {
+          res.writeHead(304, headers);
+          res.end();
+          return;
         }
         
-        // 处理 OPTIONS 请求（CORS 预检）
         if (req.method === 'OPTIONS') {
           res.writeHead(200, headers);
           res.end();
           return;
         }
 
-        res.writeHead(statusCode, headers);
+        res.writeHead(finalStatusCode, headers);
         res.end(content);
       }
   });

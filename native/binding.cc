@@ -35,6 +35,7 @@ extern "C" void mpv_destroy_gl_context(int64_t instanceId);
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
+extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
 
 struct MPVEventMessage {
     mpv_event_id event_id;
@@ -226,7 +227,6 @@ Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// 创建 MPV 实例（不立即初始化，允许先设置选项）
 Napi::Value SetForceBlackMode(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -252,6 +252,34 @@ Napi::Value SetForceBlackMode(const Napi::CallbackInfo& info) {
     
     return env.Undefined();
 }
+
+Napi::Value SetHdrMode(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number, enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    bool enabled = info[1].As<Napi::Boolean>().Value();
+    
+    {
+        std::lock_guard<std::mutex> lock(instancesMutex);
+        auto it = instances.find(id);
+        if (it == instances.end() || !it->second->ctx) {
+            Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+            return env.Null();
+        }
+    }
+    
+    mpv_set_hdr_mode(id, enabled ? 1 : 0);
+    
+    return env.Undefined();
+}
+
+// 创建 MPV 实例（不立即初始化，允许先设置选项）
 
 Napi::Value Create(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -707,6 +735,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "renderFrame"), Napi::Function::New(env, RenderFrame));
     exports.Set(Napi::String::New(env, "setWindowSize"), Napi::Function::New(env, SetWindowSize));
     exports.Set(Napi::String::New(env, "setForceBlackMode"), Napi::Function::New(env, SetForceBlackMode));
+    exports.Set(Napi::String::New(env, "setHdrMode"), Napi::Function::New(env, SetHdrMode));
     
     return exports;
 }

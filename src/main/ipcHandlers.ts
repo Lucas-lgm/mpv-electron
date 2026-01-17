@@ -83,6 +83,10 @@ export function setupIpcHandlers() {
     await videoPlayerApp.setVolume(volume)
   })
 
+  ipcMain.on('control-hdr', async (_event, enabled: boolean) => {
+    await videoPlayerApp.setHdrEnabled(enabled)
+  })
+
   ipcMain.on('set-playlist', async (_event, items: PlaylistItem[]) => {
     videoPlayerApp.playlist.setList(items)
     corePlayer.broadcastToPlaybackUIs('playlist-updated', items)
