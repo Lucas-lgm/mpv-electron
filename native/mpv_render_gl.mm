@@ -13,6 +13,7 @@
 #include <unistd.h>  // for usleep
 #include <thread>
 #include <memory>
+#include <vector>
 
 extern "C" {
 #include <mpv/client.h>
@@ -23,9 +24,12 @@ extern "C" {
 // ------------------ Context struct ------------------
 struct GLRenderContext {
     NSView *view = nil;
-    NSOpenGLContext *glContext = nil;
+    CAOpenGLLayer *glLayer = nil;
+    CGLContextObj cglContext = nil;
+    CGLPixelFormatObj cglPixelFormat = nil;
     mpv_render_context *mpvRenderCtx = nullptr;
     mpv_handle *mpvHandle = nullptr;
+    int64_t instanceId = 0;
     
     // pixel size (width/height) used for rendering (单位：像素)
     int width = 0;
@@ -51,6 +55,9 @@ struct GLRenderContext {
     
     std::atomic<bool> hdrUserEnabled;
     bool hdrActive;
+
+    std::mutex iccMutex;
+    std::vector<uint8_t> iccProfileBytes;
     
     GLRenderContext()
         : width(0),
@@ -84,7 +91,126 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
-static void render_internal(GLRenderContext *rc);
+static void update_hdr_mode(GLRenderContext *rc);
+static void set_render_icc_profile(GLRenderContext *rc);
+
+@interface MPVOpenGLLayer : CAOpenGLLayer
+@property(nonatomic, assign) GLRenderContext *renderCtx;
+@end
+
+@implementation MPVOpenGLLayer
+- (BOOL)canDrawInCGLContext:(CGLContextObj)ctx
+                pixelFormat:(CGLPixelFormatObj)pf
+               forLayerTime:(CFTimeInterval)t
+                displayTime:(const CVTimeStamp *)ts {
+    (void)ctx;
+    (void)pf;
+    (void)t;
+    (void)ts;
+    GLRenderContext *rc = self.renderCtx;
+    if (!rc || rc->isDestroying.load()) return NO;
+    if (!rc->mpvRenderCtx) return YES;
+    return rc->needRedraw.load();
+}
+
+- (void)drawInCGLContext:(CGLContextObj)ctx
+             pixelFormat:(CGLPixelFormatObj)pf
+            forLayerTime:(CFTimeInterval)t
+             displayTime:(const CVTimeStamp *)ts {
+    (void)pf;
+    (void)t;
+    (void)ts;
+
+    GLRenderContext *rc = self.renderCtx;
+    if (!rc || rc->isDestroying.load() || !ctx) return;
+
+    ScopedCGLock lock(ctx);
+    CGLSetCurrentContext(ctx);
+
+    rc->needRedraw.store(false);
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    if (!rc->mpvRenderCtx) {
+        glFlush();
+        return;
+    }
+
+    bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
+    if (forceBlack) {
+        rc->forceBlackFrame.store(false);
+        glFlush();
+        return;
+    }
+
+    update_hdr_mode(rc);
+
+    GLint fboBinding = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fboBinding);
+
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    int w = (int)viewport[2];
+    int h = (int)viewport[3];
+    if (w <= 0 || h <= 0) {
+        glFlush();
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> sl(rc->sizeMutex);
+        rc->width = w;
+        rc->height = h;
+    }
+
+    mpv_opengl_fbo fbo;
+    memset(&fbo, 0, sizeof(fbo));
+    fbo.fbo = fboBinding != 0 ? (int)fboBinding : 0;
+    fbo.w = w;
+    fbo.h = h;
+
+    int flip_y = 1;
+
+    mpv_render_param params[] = {
+        { MPV_RENDER_PARAM_OPENGL_FBO, &fbo },
+        { MPV_RENDER_PARAM_FLIP_Y, &flip_y },
+        { MPV_RENDER_PARAM_INVALID, nullptr }
+    };
+
+    uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
+    bool hasNewFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
+    bool sizeChanged = (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight);
+    if (hasNewFrame || sizeChanged) {
+        int res = mpv_render_context_render(rc->mpvRenderCtx, params);
+        if (res < 0) {
+            NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)",
+                  res, w, h, fbo.w, fbo.h);
+        } else if (sizeChanged) {
+            rc->lastRenderedWidth = w;
+            rc->lastRenderedHeight = h;
+        }
+    }
+
+    glFlush();
+}
+
+- (CGLPixelFormatObj)copyCGLPixelFormatForDisplayMask:(uint32_t)mask {
+    (void)mask;
+    GLRenderContext *rc = self.renderCtx;
+    if (!rc || !rc->cglPixelFormat) return [super copyCGLPixelFormatForDisplayMask:mask];
+    CGLRetainPixelFormat(rc->cglPixelFormat);
+    return rc->cglPixelFormat;
+}
+
+- (CGLContextObj)copyCGLContextForPixelFormat:(CGLPixelFormatObj)pf {
+    (void)pf;
+    GLRenderContext *rc = self.renderCtx;
+    if (!rc || !rc->cglContext) return [super copyCGLContextForPixelFormat:pf];
+    CGLRetainContext(rc->cglContext);
+    return rc->cglContext;
+}
+@end
 
 static void set_layer_colorspace_if_supported(CALayer *layer, CGColorSpaceRef cs) {
     if (!layer || !cs) return;
@@ -132,10 +258,19 @@ static CGColorSpaceRef create_hdr_pq_colorspace_for_primaries(const char *primar
     return nullptr;
 }
 
+static CGColorSpaceRef create_extended_linear_srgb_colorspace() {
+    CFStringRef name = get_colorspace_name_by_symbol("kCGColorSpaceExtendedLinearSRGB");
+    if (!name) {
+        name = get_colorspace_name_by_symbol("kCGColorSpaceLinearSRGB");
+    }
+    if (name) return CGColorSpaceCreateWithName(name);
+    return nullptr;
+}
+
 static CALayer *get_render_layer(GLRenderContext *rc) {
     if (!rc || !rc->view) return nil;
-    CALayer *root = rc->view.layer;
-    return root;
+    if (rc->glLayer) return rc->glLayer;
+    return rc->view.layer;
 }
 
 static void log_hdr_config(GLRenderContext *rc) {
@@ -285,12 +420,10 @@ static void update_hdr_mode(GLRenderContext *rc) {
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = YES;
             }
-            if (primaries) {
-                CGColorSpaceRef cs = create_hdr_pq_colorspace_for_primaries(primaries);
-                if (cs) {
-                    set_layer_colorspace_if_supported(layer, cs);
-                    CGColorSpaceRelease(cs);
-                }
+            CGColorSpaceRef cs = create_hdr_pq_colorspace_for_primaries(primaries);
+            if (cs) {
+                set_layer_colorspace_if_supported(layer, cs);
+                CGColorSpaceRelease(cs);
             }
         }
         
@@ -302,21 +435,10 @@ static void update_hdr_mode(GLRenderContext *rc) {
         } else {
             mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
         }
-
-        mpv_set_property_string(rc->mpvHandle, "target-trc", "linear");
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
         mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
-        int64_t targetPeakNits = 0;
-        if (edr > 1.0) {
-            targetPeakNits = (int64_t)llround(80.0 * edr);
-            if (targetPeakNits < 400) targetPeakNits = 400;
-            if (targetPeakNits > 2000) targetPeakNits = 2000;
-        }
-        if (targetPeakNits > 0) {
-            mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakNits);
-        } else {
-            mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-        }
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "auto");
+        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
         
         rc->hdrActive = true;
     } else {
@@ -344,7 +466,8 @@ static void update_hdr_mode(GLRenderContext *rc) {
             }
         }
         
-        int iccAuto = 0;
+        set_render_icc_profile(rc);
+        int iccAuto = 1;
         int screenshotTag = 0;
         mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
         mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
@@ -360,6 +483,41 @@ static void update_hdr_mode(GLRenderContext *rc) {
     if (gamma) mpv_free(gamma);
     
     log_hdr_config(rc);
+}
+
+static void set_render_icc_profile(GLRenderContext *rc) {
+    if (!rc || !rc->mpvRenderCtx || !rc->view) return;
+    NSScreen *screen = nil;
+    if (rc->view.window) {
+        screen = rc->view.window.screen;
+    }
+    if (!screen) {
+        screen = [NSScreen mainScreen];
+    }
+    NSColorSpace *cs = nil;
+    if (screen && screen.colorSpace) {
+        cs = screen.colorSpace;
+    } else {
+        cs = [NSColorSpace sRGBColorSpace];
+    }
+    NSData *icc = cs.ICCProfileData;
+    if (!icc || icc.length <= 0) return;
+
+    {
+        std::lock_guard<std::mutex> lock(rc->iccMutex);
+        rc->iccProfileBytes.assign((const uint8_t *)icc.bytes, (const uint8_t *)icc.bytes + icc.length);
+    }
+
+    mpv_byte_array arr;
+    memset(&arr, 0, sizeof(arr));
+    {
+        std::lock_guard<std::mutex> lock(rc->iccMutex);
+        if (rc->iccProfileBytes.empty()) return;
+        arr.data = rc->iccProfileBytes.data();
+        arr.size = rc->iccProfileBytes.size();
+    }
+    mpv_render_param param = { MPV_RENDER_PARAM_ICC_PROFILE, &arr };
+    mpv_render_context_set_parameter(rc->mpvRenderCtx, param);
 }
 
 // ------------------ helper: dlsym for mpv GL ------------------
@@ -398,8 +556,8 @@ static void on_mpv_redraw(void *ctx) {
     
     if (!rc || rc->isDestroying.load()) return;
     
-    // 只标记需要重绘，DisplayLink 会处理
     rc->needRedraw.store(true);
+    mpv_request_render(instanceId);
 }
 
 // ------------------ CVDisplayLink Callback ------------------
@@ -411,77 +569,86 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
                                     void *displayLinkContext) {
     GLRenderContext *rc = (GLRenderContext *)displayLinkContext;
     if (!rc || rc->isDestroying.load()) return kCVReturnSuccess;
-    
+
     @autoreleasepool {
-        // Check if we need to render
-        bool forceRender = false;
-        
-        // Check mpv update
         if (rc->mpvRenderCtx) {
-            uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
-            if (flags & MPV_RENDER_UPDATE_FRAME) {
-                forceRender = true;
-            }
-        }
-        
-        if (rc->needRedraw.load() || forceRender) {
-            // Reset flag if it was true
-            rc->needRedraw.store(false);
-            
-            // Set context current for this thread (safe with ScopedCGLock in render_internal)
-            if (rc->glContext) {
-                [rc->glContext makeCurrentContext];
-            }
-            
-            render_internal(rc);
+            mpv_render_context_report_swap(rc->mpvRenderCtx);
         }
     }
-    
     return kCVReturnSuccess;
 }
 
 // ------------------ create GL (must be on main thread) ------------------
 static bool createGLForView(GLRenderContext *rc) {
     if (!rc || !rc->view) return false;
-    
-    NSOpenGLPixelFormatAttribute attrs[] = {
-        NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
-        NSOpenGLPFAColorSize,     64,
-        NSOpenGLPFAColorFloat,
-        NSOpenGLPFADepthSize,     16,
-        NSOpenGLPFAAccelerated,
-        NSOpenGLPFADoubleBuffer,
-        0
+
+    if (![rc->view wantsLayer]) {
+        [rc->view setWantsLayer:YES];
+    }
+    if ([rc->view respondsToSelector:@selector(setLayerContentsRedrawPolicy:)]) {
+        rc->view.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
+    }
+
+    CGLPixelFormatObj pix = nil;
+    GLint npix = 0;
+    CGLPixelFormatAttribute attrsFloat[] = {
+        kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core,
+        kCGLPFAColorSize, (CGLPixelFormatAttribute)64,
+        kCGLPFAColorFloat,
+        kCGLPFADepthSize, (CGLPixelFormatAttribute)16,
+        kCGLPFAAccelerated,
+        kCGLPFADoubleBuffer,
+        (CGLPixelFormatAttribute)0
     };
-    
-    NSOpenGLPixelFormat *pf = [[NSOpenGLPixelFormat alloc] initWithAttributes:attrs];
-    if (!pf) return false;
-    
-    NSOpenGLContext *ctx = [[NSOpenGLContext alloc] initWithFormat:pf shareContext:nil];
-    if (!ctx) {
-        [pf release];
+    CGLError err = CGLChoosePixelFormat(attrsFloat, &pix, &npix);
+    if (err != kCGLNoError || !pix) {
+        CGLPixelFormatAttribute attrsFallback[] = {
+            kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core,
+            kCGLPFAColorSize, (CGLPixelFormatAttribute)32,
+            kCGLPFADepthSize, (CGLPixelFormatAttribute)16,
+            kCGLPFAAccelerated,
+            kCGLPFADoubleBuffer,
+            (CGLPixelFormatAttribute)0
+        };
+        err = CGLChoosePixelFormat(attrsFallback, &pix, &npix);
+        if (err != kCGLNoError || !pix) return false;
+    }
+
+    CGLContextObj cglCtx = nil;
+    err = CGLCreateContext(pix, nil, &cglCtx);
+    if (err != kCGLNoError || !cglCtx) {
+        CGLReleasePixelFormat(pix);
         return false;
     }
-    
-    [ctx setView:rc->view];
-    [ctx makeCurrentContext];
-    
-    // Enable vsync swap to synchronize with display refresh rate
-    {
-        GLint swapInt = 1;
-        [ctx setValues:&swapInt forParameter:NSOpenGLCPSwapInterval];
+
+    GLint swapInt = 1;
+    CGLSetParameter(cglCtx, kCGLCPSwapInterval, &swapInt);
+    CGLEnable(cglCtx, kCGLCEMPEngine);
+    CGLSetCurrentContext(cglCtx);
+
+    rc->cglContext = cglCtx;
+    rc->cglPixelFormat = pix;
+
+    MPVOpenGLLayer *layer = [[MPVOpenGLLayer alloc] init];
+    layer.renderCtx = rc;
+    layer.asynchronous = YES;
+    layer.needsDisplayOnBoundsChange = YES;
+    layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+
+    CGFloat scale = 1.0;
+    if (rc->view.window) {
+        scale = rc->view.window.backingScaleFactor;
+    } else {
+        NSScreen *screen = [NSScreen mainScreen];
+        if (screen) scale = screen.backingScaleFactor;
     }
-    
-    // 关键：开启 Retina 支持和 EDR OpenGL surface，并更新 context
-    [rc->view setWantsBestResolutionOpenGLSurface:YES];
-    if (@available(macOS 10.15, *)) {
-        if ([rc->view respondsToSelector:@selector(setWantsExtendedDynamicRangeOpenGLSurface:)]) {
-            [(id)rc->view setWantsExtendedDynamicRangeOpenGLSurface:YES];
-        }
-    }
-    [ctx update];
-    
-    rc->glContext = ctx;
+    if (scale <= 0.0) scale = 1.0;
+    layer.contentsScale = scale;
+
+    [rc->view setLayer:layer];
+    layer.frame = rc->view.bounds;
+
+    rc->glLayer = layer;
     
     // Read initial backing size on main thread
     @try {
@@ -505,22 +672,54 @@ static bool createGLForView(GLRenderContext *rc) {
         NSLog(@"[mpv_render_gl] Warning: failed to read initial view size");
     }
     
-    // Setup CVDisplayLink
+    // init mpv render context (GL) using this OpenGL context
+    mpv_opengl_init_params gl_init_params = {};
+    gl_init_params.get_proc_address = get_proc_address;
+    gl_init_params.get_proc_address_ctx = nullptr;
+
+    mpv_render_param params[] = {
+        { MPV_RENDER_PARAM_API_TYPE, (void*)MPV_RENDER_API_TYPE_OPENGL },
+        { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params },
+        { MPV_RENDER_PARAM_INVALID, nullptr }
+    };
+
+    int createErr = mpv_render_context_create(&rc->mpvRenderCtx, rc->mpvHandle, params);
+    if (createErr < 0) {
+        NSLog(@"[mpv_render_gl] ❌ mpv_render_context_create failed: %d", createErr);
+        if (rc->glLayer) {
+            MPVOpenGLLayer *layer = (MPVOpenGLLayer *)rc->glLayer;
+            layer.renderCtx = nullptr;
+            [layer release];
+            rc->glLayer = nil;
+        }
+        if (rc->cglContext) {
+            CGLSetCurrentContext(nil);
+            CGLReleaseContext(rc->cglContext);
+            rc->cglContext = nil;
+        }
+        if (rc->cglPixelFormat) {
+            CGLReleasePixelFormat(rc->cglPixelFormat);
+            rc->cglPixelFormat = nil;
+        }
+        return false;
+    }
+
+    mpv_render_context_set_update_callback(rc->mpvRenderCtx, on_mpv_redraw, (void*)(intptr_t)rc->instanceId);
+    set_render_icc_profile(rc);
+
+    // Setup CVDisplayLink (for mpv_render_context_report_swap timing)
     CVReturn cvRet = CVDisplayLinkCreateWithActiveCGDisplays(&rc->displayLink);
     if (cvRet == kCVReturnSuccess) {
         CVDisplayLinkSetOutputCallback(rc->displayLink, DisplayLinkCallback, rc);
-        
-        CGLContextObj cglCtx = [rc->glContext CGLContextObj];
-        CGLPixelFormatObj cglPix = [pf CGLPixelFormatObj];
-        CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(rc->displayLink, cglCtx, cglPix);
+
+        CVDisplayLinkSetCurrentCGDisplayFromOpenGLContext(rc->displayLink, rc->cglContext, rc->cglPixelFormat);
         
         CVDisplayLinkStart(rc->displayLink);
         NSLog(@"[mpv_render_gl] CVDisplayLink started");
     } else {
         NSLog(@"[mpv_render_gl] Failed to create CVDisplayLink: %d", cvRet);
     }
-    
-    [pf release];
+
     return true;
 }
 
@@ -544,15 +743,22 @@ static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
         rc->mpvRenderCtx = nullptr;
     }
     
-    // release GL context (必须在主线程)
+    // release GL resources (必须在主线程)
     runOnMainAsync(^{
-        if (rc->glContext) {
-            @try {
-                [NSOpenGLContext clearCurrentContext];
-                [rc->glContext clearDrawable];
-            } @catch (NSException *ex) {}
-            [rc->glContext release];
-            rc->glContext = nil;
+        if (rc->glLayer) {
+            MPVOpenGLLayer *layer = (MPVOpenGLLayer *)rc->glLayer;
+            layer.renderCtx = nullptr;
+            [layer release];
+            rc->glLayer = nil;
+        }
+        if (rc->cglContext) {
+            CGLSetCurrentContext(nil);
+            CGLReleaseContext(rc->cglContext);
+            rc->cglContext = nil;
+        }
+        if (rc->cglPixelFormat) {
+            CGLReleasePixelFormat(rc->cglPixelFormat);
+            rc->cglPixelFormat = nil;
         }
         
         if (rc->view) {
@@ -571,6 +777,7 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
     auto rc = std::make_shared<GLRenderContext>();
     NSView *view = reinterpret_cast<NSView*>(nsViewPtr);
     rc->view = view;
+    rc->instanceId = instanceId;
     if (rc->view) {
         [rc->view retain]; // Retain view to prevent dangling pointer
         
@@ -580,7 +787,7 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
     }
     rc->mpvHandle = mpv;
     
-    // create GL and read initial size - must be on main thread
+    // create GL layer + context and read initial size - must be on main thread
     if (!isMainThread()) {
         std::atomic<bool>* ok = new std::atomic<bool>(false);
         GLRenderContext* rawRc = rc.get();
@@ -596,33 +803,15 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
         bool result = ok->load();
         delete ok;
         if (!result) {
+            destroyGL(rc);
             return nullptr;
         }
     } else {
         if (!createGLForView(rc.get())) {
+            destroyGL(rc);
             return nullptr;
         }
     }
-    
-    // init mpv render context (GL)
-    mpv_opengl_init_params gl_init_params = {};
-    gl_init_params.get_proc_address = get_proc_address;
-    gl_init_params.get_proc_address_ctx = nullptr;
-    
-    mpv_render_param params[] = {
-        { MPV_RENDER_PARAM_API_TYPE, (void*)MPV_RENDER_API_TYPE_OPENGL },
-        { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params },
-        { MPV_RENDER_PARAM_INVALID, nullptr }
-    };
-    
-    int err = mpv_render_context_create(&rc->mpvRenderCtx, mpv, params);
-    if (err < 0) {
-        destroyGL(rc);
-        return nullptr;
-    }
-    
-    // Set mpv update callback
-    mpv_render_context_set_update_callback(rc->mpvRenderCtx, on_mpv_redraw, (void*)(intptr_t)instanceId);
     
     // 注册到全局 map
     {
@@ -670,13 +859,6 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
         if (rc->isDestroying) return;
         if (!rc->view) return;
         
-        // 关键：通知 OpenGL context 视图几何形状已更改
-        // 这必须在主线程上调用，否则会导致画面不更新或缩放错误（如只显示在左下角）
-        if (rc->glContext) {
-            ScopedCGLock lock([rc->glContext CGLContextObj]);
-            [rc->glContext update];
-        }
-        
         int pixelW = 0;
         int pixelH = 0;
         
@@ -703,113 +885,21 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
         
         if (sizeChanged) {
             rc->needRedraw.store(true);
+            if (rc->glLayer) {
+                rc->glLayer.frame = rc->view.bounds;
+                CGFloat scale = 1.0;
+                if (rc->view.window) {
+                    scale = rc->view.window.backingScaleFactor;
+                } else {
+                    NSScreen *screen = [NSScreen mainScreen];
+                    if (screen) scale = screen.backingScaleFactor;
+                }
+                if (scale <= 0.0) scale = 1.0;
+                rc->glLayer.contentsScale = scale;
+                [rc->glLayer setNeedsDisplay];
+            }
         }
     });
-}
-
-static void render_frame_with_size(GLRenderContext *rc, int w, int h) {
-    if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
-    if (w <= 0 || h <= 0) return;
-    
-    update_hdr_mode(rc);
-    
-    bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
-    
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    
-    GLint drawFbo = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
-    
-    mpv_opengl_fbo fbo;
-    memset(&fbo, 0, sizeof(fbo));
-    fbo.fbo = drawFbo != 0 ? (int)drawFbo : 0;
-    fbo.w = w;
-    fbo.h = h;
-    
-    int flip_y = 1;
-    
-    mpv_render_param params[] = {
-        { MPV_RENDER_PARAM_OPENGL_FBO, &fbo },
-        { MPV_RENDER_PARAM_FLIP_Y, &flip_y },
-        { MPV_RENDER_PARAM_INVALID, nullptr }
-    };
-    
-    bool sizeChanged = (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight);
-    
-    uint64_t flags = mpv_render_context_update(rc->mpvRenderCtx);
-    bool hasNewFrame = (flags & MPV_RENDER_UPDATE_FRAME) != 0;
-    
-    if (forceBlack) {
-        rc->forceBlackFrame.store(false);
-        
-        if (sizeChanged) {
-            rc->lastRenderedWidth = w;
-            rc->lastRenderedHeight = h;
-        }
-        
-        @try {
-            [rc->glContext flushBuffer];
-        } @catch (NSException *ex) {
-            NSLog(@"[mpv_render_gl] flushBuffer failed: %@", ex);
-        }
-        
-        return;
-    }
-    
-    if (hasNewFrame || sizeChanged) {
-        int res = mpv_render_context_render(rc->mpvRenderCtx, params);
-        
-        if (res < 0) {
-            NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)", 
-                  res, w, h, fbo.w, fbo.h);
-        } else {
-            if (sizeChanged) {
-                rc->lastRenderedWidth = w;
-                rc->lastRenderedHeight = h;
-            }
-            
-            @try {
-                [rc->glContext flushBuffer];
-            } @catch (NSException *ex) {
-                NSLog(@"[mpv_render_gl] flushBuffer failed: %@", ex);
-            }
-        }
-    }
-}
-
-static void render_internal(GLRenderContext *rc) {
-    if (!rc || !rc->mpvRenderCtx || !rc->glContext) return;
-    
-    ScopedCGLock lock([rc->glContext CGLContextObj]);
-    
-    int w = 0, h = 0;
-    {
-        std::lock_guard<std::mutex> sl(rc->sizeMutex);
-        w = rc->width;
-        h = rc->height;
-    }
-    
-    if (w <= 0 || h <= 0) {
-        @try {
-            NSRect bounds = [rc->view bounds];
-            NSSize backing = [rc->view convertSizeToBacking:bounds.size];
-            int bw = (int)backing.width;
-            int bh = (int)backing.height;
-            if (bw > 0 && bh > 0) {
-                w = bw;
-                h = bh;
-                rc->width = w;
-                rc->height = h;
-            }
-        } @catch (NSException *ex) {
-            return;
-        }
-    }
-    
-    if (w <= 0 || h <= 0) return;
-    
-    render_frame_with_size(rc, w, h);
 }
 
 extern "C" void mpv_request_render(int64_t instanceId) {
@@ -824,27 +914,25 @@ extern "C" void mpv_request_render(int64_t instanceId) {
     if (!rc || rc->isDestroying.load()) return;
     
     rc->needRedraw.store(true);
+    runOnMainAsync(^{
+        std::shared_ptr<GLRenderContext> inner = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_renderMutex);
+            auto it = g_renderContexts.find(instanceId);
+            if (it != g_renderContexts.end()) inner = it->second;
+        }
+        if (!inner || inner->isDestroying.load()) return;
+        if (inner->glLayer) {
+            [inner->glLayer setNeedsDisplay];
+            [inner->glLayer displayIfNeeded];
+        }
+    });
 }
 
 // ------------------ render entry (exposed) ------------------
 // Called from render thread (background thread, not main thread)
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
-    std::shared_ptr<GLRenderContext> rc = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_renderMutex);
-        auto it = g_renderContexts.find(instanceId);
-        if (it == g_renderContexts.end()) return;
-        rc = it->second;
-    }
-    
-    if (!rc || rc->isDestroying.load() || !rc->glContext || !rc->mpvRenderCtx) return;
-    
-    bool expected = true;
-    if (!rc->needRedraw.compare_exchange_strong(expected, false)) {
-        return;
-    }
-    
-    render_internal(rc.get());
+    mpv_request_render(instanceId);
 }
 
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
