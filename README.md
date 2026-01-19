@@ -62,22 +62,23 @@ Build:
 npm run build
 ```
 
-## macOS HDR (What matters)
+## macOS HDR (Updated for gpu-next)
 
-On macOS, “HDR looks correct” is not only about mpv `target-*` options. It heavily depends on whether the system recognizes your render surface as HDR/EDR and applies the correct PQ semantics.
+We have migrated to the `gpu-next` (libplacebo) backend for handling HDR and Dolby Vision.
 
 What we do here:
 
-- Use `CAOpenGLLayer` as the render surface
-- When HDR is active:
-  - Enable EDR on the layer (guarded by OS availability)
-  - Set a PQ colorspace on the layer (e.g. DisplayP3_PQ / ITUR_2100_PQ)
-  - Align mpv settings (`target-trc=pq`, `target-prim`, etc.)
-- Centralize HDR detection/switching in native code
+- Use `CAOpenGLLayer` as the render surface.
+- Delegate HDR/EDR handling to `libplacebo` (`gpu-next`), which manages:
+  - Tone mapping (including Dolby Vision)
+  - Colorspace conversion
+  - Peak brightness adaptation
+- The native layer (`mpv_render_gl.mm`) no longer manually forces `target-trc` or specific CALayer colorspaces, relying instead on the backend's internal logic.
 
 Key implementation:
 
-- [native/mpv_render_gl.mm](native/mpv_render_gl.mm)
+- [native/mpv_render_gl.mm](native/mpv_render_gl.mm) (Simplified integration)
+- [docs/GPU_NEXT_INTEGRATION.md](docs/GPU_NEXT_INTEGRATION.md) (Migration details)
 
 ## HDR Debug (IPC one-shot print)
 
