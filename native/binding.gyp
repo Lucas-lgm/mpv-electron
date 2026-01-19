@@ -22,7 +22,10 @@
           "xcode_settings": {
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
             "CLANG_CXX_LIBRARY": "libc++",
-            "MACOSX_DEPLOYMENT_TARGET": "10.13"
+            "MACOSX_DEPLOYMENT_TARGET": "10.13",
+            "LD_RUNPATH_SEARCH_PATHS": [
+              "@loader_path/../../../vendor/mpv/darwin-arm64/lib"
+            ]
           },
           "link_settings": {
             "libraries": [
