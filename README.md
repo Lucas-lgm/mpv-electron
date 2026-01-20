@@ -9,6 +9,7 @@ If you're working on “Electron + libmpv embedding (render API)” or “macOS 
 - Electron + Vue3 UI
 - libmpv render API embedding (native addon)
 - macOS HDR pipeline: CAOpenGLLayer + PQ colorspace + EDR enablement
+- Advanced Dolby Vision support (Profile 5 & 8) with intelligent tone mapping
 - One-shot HDR debug print via IPC (mpv properties + native layer/display state)
 
 ## Status
@@ -62,9 +63,21 @@ Build:
 npm run build
 ```
 
-## macOS HDR (Updated for gpu-next)
+## macOS HDR & Dolby Vision
 
 We have migrated to the `gpu-next` (libplacebo) backend for handling HDR and Dolby Vision.
+
+**Key Features:**
+
+- **Intelligent Tone Mapping**:
+  - Automatically switches to **`st2094-10`** for Dolby Vision content.
+  - Uses **`bt.2390`** (ITU-R recommended) for standard HDR10.
+  - Enables **`hdr-compute-peak`** for dynamic scene-by-scene brightness analysis (similar to MadVR).
+- **Dolby Vision Profile Support**:
+  - **Profile 5** (Streaming): Full support with correct colors via `libplacebo` dynamic metadata.
+  - **Profile 8** (iPhone): Smart detection to avoid rotation issues; renders as high-quality HLG/HDR10.
+- **Native macOS Integration**:
+  - Uses `target-colorspace-hint=yes` to pass accurate metadata to macOS's ColorSync and EDR pipeline.
 
 What we do here:
 
