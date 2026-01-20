@@ -338,6 +338,50 @@ static void log_hdr_config(GLRenderContext *rc) {
     if (toneMapping) mpv_free(toneMapping);
 }
 
+static const char* get_optimal_tone_mapping(mpv_handle *mpv) {
+    const char* algorithm = "bt.2390"; 
+    
+    mpv_node tracks;
+    if (mpv_get_property(mpv, "track-list", MPV_FORMAT_NODE, &tracks) < 0) {
+        return algorithm;
+    }
+    
+    if (tracks.format == MPV_FORMAT_NODE_ARRAY) {
+        for (int i = 0; i < tracks.u.list->num; i++) {
+            mpv_node track = tracks.u.list->values[i];
+            if (track.format != MPV_FORMAT_NODE_MAP) continue;
+            
+            bool is_video = false;
+            bool is_selected = false;
+            bool has_dv = false;
+            
+            mpv_node_list *list = track.u.list;
+            for (int j = 0; j < list->num; j++) {
+                char *key = list->keys[j];
+                mpv_node value = list->values[j];
+                
+                if (strcmp(key, "type") == 0 && value.format == MPV_FORMAT_STRING) {
+                    if (strcmp(value.u.string, "video") == 0) is_video = true;
+                } else if (strcmp(key, "selected") == 0 && value.format == MPV_FORMAT_FLAG) {
+                    is_selected = value.u.flag;
+                } else if (strcmp(key, "dolby-vision-profile") == 0 && value.format == MPV_FORMAT_INT64) {
+                    if (value.u.int64 > 0) has_dv = true;
+                }
+            }
+            
+            if (is_video && is_selected) {
+                if (has_dv) {
+                    algorithm = "hable";
+                }
+                break;
+            }
+        }
+    }
+    
+    mpv_free_node_contents(&tracks);
+    return algorithm;
+}
+
 static void update_hdr_mode(GLRenderContext *rc) {
     if (!rc || !rc->mpvHandle || !rc->view) return;
     
@@ -447,10 +491,9 @@ static void update_hdr_mode(GLRenderContext *rc) {
         
         // mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
 
-        // hable 算法
-        // mobius 算法
-        // bt.2390 算法
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "hable");
+        const char *algo = get_optimal_tone_mapping(rc->mpvHandle);
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", algo);
+        
         rc->hdrActive = true;
     } else {
         CALayer *layer = get_render_layer(rc);
