@@ -718,6 +718,28 @@ export class LibMPVController extends EventEmitter {
     if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
 
     if (hasDolbyVision) {
+      // 检查 Profile 8 (iPhone 等)，直接在此处拦截
+      if (currentDvProfile === 8) {
+         console.log('[libmpv] Skipping Dolby Vision filter for Profile 8 (handled in refresh).')
+         // 确保清除可能残留的 filter
+         await this.clearDolbyVisionFilter()
+         return
+      }
+      
+      // 检查旋转 (在 refresh 阶段快速检查)
+      // 获取旧版 rotate 属性作为 fallback
+      const rotateRaw = await this.getProperty('video-params/rotate')
+      const rotateLegacyRaw = await this.getProperty('rotate') 
+      let rotate = this.coerceNumber(rotateRaw)
+      if (rotate === null) {
+          rotate = this.coerceNumber(rotateLegacyRaw)
+      }
+      if (rotate !== null && rotate % 360 !== 0) {
+          console.log(`[libmpv] Skipping Dolby Vision filter due to rotation (refresh check): ${rotate}`)
+          await this.clearDolbyVisionFilter()
+          return
+      }
+
       await this.ensureDolbyVisionFilterEnabled(expectedGeneration)
     } else {
       if (this.dvFilterActive) {
@@ -735,6 +757,76 @@ export class LibMPVController extends EventEmitter {
 
     if (this.dvFilterUnsupportedForThisFile) return
     if (this.dvFilterCapability === 'unavailable') return
+
+    // 检查视频旋转角度
+    // 如果视频有旋转（如手机竖屏拍摄），应用 libplacebo filter 会导致画面尺寸异常或翻转错误
+    // 这种情况下优先保证几何形状正确，跳过 DV filter
+    
+    // 1. 获取 DV Profile
+    // iPhone 拍摄的 Dolby Vision 通常是 Profile 8.4 (HLG base)。
+    // Profile 8 是向下兼容的，即使不应用 apply_dolbyvision filter，也能正确显示色彩（作为 HLG/HDR10）。
+    // 相比之下，Profile 5 (流媒体) 必须应用 filter 否则色彩错误 (绿/紫)。
+    // 鉴于 Profile 8 常用于手机拍摄（常有旋转），且 filter 容易破坏旋转，我们对 Profile 8 默认跳过 filter。
+    const dvProfileRaw = await this.getProperty('video-params/dolby-vision-profile') // 或者从 refresh 传入
+    const dvProfile = this.coerceNumber(dvProfileRaw)
+    
+    // 如果是 Profile 8 (iPhone 等)，为了避免旋转 bug，直接跳过
+    if (dvProfile === 8) {
+       console.log(`[libmpv] Skipping Dolby Vision filter for Profile 8 to avoid rotation issues.`)
+       this.dvFilterUnsupportedForThisFile = true
+       return
+    }
+
+    const rotateRaw = await this.getProperty('video-params/rotate')
+    // 尝试获取旧版 rotate 属性作为 fallback
+    const rotateLegacyRaw = await this.getProperty('rotate') 
+    
+    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
+    
+    let rotate = this.coerceNumber(rotateRaw)
+    if (rotate === null) {
+        rotate = this.coerceNumber(rotateLegacyRaw)
+    }
+    
+    // 检查 display width/height 是否与 raw width/height 交换
+    // 这通常意味着有 90/270 度的旋转
+    const wRaw = await this.getProperty('width')
+    const hRaw = await this.getProperty('height')
+    const dwRaw = await this.getProperty('dwidth')
+    const dhRaw = await this.getProperty('dheight')
+    
+    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
+
+    const w = this.coerceNumber(wRaw)
+    const h = this.coerceNumber(hRaw)
+    const dw = this.coerceNumber(dwRaw)
+    const dh = this.coerceNumber(dhRaw)
+
+    console.log(`[libmpv] DV Check: profile=${dvProfile} rotate=${rotate} size=${w}x${h} display=${dw}x${dh}`)
+
+    const hasRotationProperty = rotate !== null && rotate % 360 !== 0
+    let hasSwappedDimensions = false
+    
+    if (w !== null && h !== null && dw !== null && dh !== null) {
+      // 简单的长宽比检查：如果不一致，说明可能有旋转
+      const rawAspect = w / h
+      const displayAspect = dw / dh
+      
+      // 容差 0.01
+      if (Math.abs(rawAspect - displayAspect) > 0.01) {
+         // 如果 raw 是宽屏 (aspect > 1) 但 display 是竖屏 (aspect < 1)，或者反之
+         // 这强有力地暗示了旋转
+         if ((rawAspect > 1 && displayAspect < 1) || (rawAspect < 1 && displayAspect > 1)) {
+            hasSwappedDimensions = true
+         }
+      }
+    }
+
+    if (hasRotationProperty || hasSwappedDimensions) {
+      console.log(`[libmpv] Skipping Dolby Vision filter due to rotation (rotate=${rotate}, swapped=${hasSwappedDimensions})`)
+      this.dvFilterUnsupportedForThisFile = true
+      return
+    }
 
     const vf = await this.getProperty('vf')
     if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
