@@ -484,6 +484,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
         }
         mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
         mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
+        mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "yes");
 
         int64_t targetPeak = (int64_t)(edr * 100.0);
         if (targetPeak < 100) targetPeak = 100;
@@ -529,6 +530,7 @@ static void update_hdr_mode(GLRenderContext *rc) {
         mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
         mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
         mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
+        mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "no");
         
         rc->hdrActive = false;
     }

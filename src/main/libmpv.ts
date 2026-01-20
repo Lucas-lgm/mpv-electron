@@ -348,6 +348,7 @@ export class LibMPVController extends EventEmitter {
       const targetPeak = await this.getProperty('target-peak')
       const targetTrc = await this.getProperty('target-trc')
       const targetPrim = await this.getProperty('target-prim')
+      const targetColorspaceHint = await this.getProperty('target-colorspace-hint')
       
       console.log('=== MPV Video State Debug ===')
       console.log(`Video size: ${width}x${height}`)
@@ -373,6 +374,7 @@ export class LibMPVController extends EventEmitter {
       console.log(`target-peak: ${targetPeak}`)
       console.log(`target-trc: ${targetTrc}`)
       console.log(`target-prim: ${targetPrim}`)
+      console.log(`target-colorspace-hint: ${targetColorspaceHint}`)
       console.log('============================')
     } catch (error) {
       console.error('[libmpv] Failed to debug video state:', error)
