@@ -404,9 +404,13 @@ static void update_hdr_mode(GLRenderContext *rc) {
     //       edr);
     
     if (shouldEnable == rc->hdrActive) {
-        if (primaries) mpv_free(primaries);
-        if (gamma) mpv_free(gamma);
-        return;
+        // Even if state matches, we force re-apply if it's enabled
+        // This handles cases where user toggles button but internal state was already true
+        if (!shouldEnable) {
+            if (primaries) mpv_free(primaries);
+            if (gamma) mpv_free(gamma);
+            return;
+        }
     }
     
     if (shouldEnable) {
