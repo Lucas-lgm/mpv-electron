@@ -441,11 +441,12 @@ static void update_hdr_mode(GLRenderContext *rc) {
         mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
         mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
 
-        int64_t targetPeak = (int64_t)(edr * 100.0 * 0.7);
+        int64_t targetPeak = (int64_t)(edr * 100.0);
         if (targetPeak < 100) targetPeak = 100;
         mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeak);
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "bt.2390");
         
+        // 使用 hable 算法，通常比 bt.2390 有更强的高光滚降和更低的平均亮度
+        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "hable");
         rc->hdrActive = true;
     } else {
         CALayer *layer = get_render_layer(rc);
