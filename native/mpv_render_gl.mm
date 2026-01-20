@@ -445,7 +445,11 @@ static void update_hdr_mode(GLRenderContext *rc) {
         if (targetPeak < 100) targetPeak = 100;
         mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeak);
         
-        // 使用 hable 算法，通常比 bt.2390 有更强的高光滚降和更低的平均亮度
+        // mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+
+        // hable 算法
+        // mobius 算法
+        // bt.2390 算法
         mpv_set_property_string(rc->mpvHandle, "tone-mapping", "hable");
         rc->hdrActive = true;
     } else {
