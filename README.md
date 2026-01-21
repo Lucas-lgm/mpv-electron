@@ -84,12 +84,14 @@ We use the **`gpu-next`** (libplacebo) backend for handling HDR and Dolby Vision
   - Uses **`bt.2390`** (ITU-R recommended) for standard HDR10 to avoid overexposure.
   - Disables **`hdr-compute-peak`** for stable, consistent brightness (prevents dynamic peak detection issues).
   
-- **Conservative Peak Brightness**:
-  - Automatically calculates `target-peak` based on display EDR capability:
+- **Peak Brightness Configuration**:
+  - **Industry Standard**: `target-peak` should be set to the **actual measured peak brightness** of the display (in nits/cd/m²).
+  - **Current Implementation**: Uses conservative estimates based on display EDR capability to prevent overexposure:
     - EDR ≤ 2.0: 500 nits
     - EDR ≤ 3.0: 700 nits
     - EDR > 3.0: 1000 nits
-  - This prevents overexposure while maintaining HDR impact.
+  - **Note**: The `auto` mode would ideally query the display's reported peak brightness via `target-colorspace-hint=yes`, but macOS may report overly high values (e.g., 10000 nits nominal), which can cause overexposure. The conservative estimates provide a safer default.
+  - **Best Practice**: For accurate tone mapping, `target-peak` should match the display's actual measured peak brightness. Users with calibrated displays should set this value accordingly.
 
 - **Dolby Vision Profile Support**:
   - **Profile 5** (Streaming): Full support with correct colors via `libplacebo` dynamic metadata.
