@@ -488,8 +488,9 @@ static void update_hdr_mode(GLRenderContext *rc) {
         int hdrComputePeak = 0;
         mpv_set_property(rc->mpvHandle, "hdr-compute-peak", MPV_FORMAT_FLAG, &hdrComputePeak);
         
-        // 根据显示器 EDR 能力计算保守的 target-peak
-        // 避免过曝：使用一个保守的峰值，让 libplacebo 进行适当的色调映射
+        // 手动设置 target-peak 以避免过曝
+        // macOS 的 auto 模式可能使用了过高的峰值亮度值（如 10000 nits 的标称值）
+        // 我们需要基于实际的显示器能力设置更保守的值
         CGFloat edr = 1.0;
         NSScreen *screen = nil;
         if (rc->view.window) {
@@ -499,26 +500,27 @@ static void update_hdr_mode(GLRenderContext *rc) {
             edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
         }
         
-        // 计算保守的峰值亮度（nits）
-        // PQ 传输函数的标称峰值是 10000 nits，但我们使用保守值避免过曝
-        // 大多数消费级 HDR 显示器峰值在 400-1000 nits 之间
+        // 根据 EDR 值计算实际的峰值亮度（nits）
+        // EDR 值表示相对于标准 sRGB (100 nits) 的倍数
+        // 例如：edr=2.0 意味着显示器可以达到 200 nits 的峰值
+        // 但实际的 HDR 显示器通常峰值更高，需要更合理的映射
         int64_t targetPeakNits = 0;
         if (edr > 1.0) {
-            // 使用更保守的计算：EDR 值 * 保守的基准值
-            // 例如：edr=2.0 时，使用约 800 nits 而不是完整的 10000 nits
-            targetPeakNits = (int64_t)(edr * 400.0); // 保守：每个 EDR 倍数对应 400 nits
-            // 限制最大值，避免过高导致过曝
-            if (targetPeakNits > 1000) {
-                targetPeakNits = 1000; // 大多数消费级显示器的实际峰值
+            // 使用保守的映射：大多数消费级 HDR 显示器峰值在 400-1000 nits
+            // edr 值通常对应：1.5-2.0 (400-600 nits), 2.0-3.0 (600-800 nits), 3.0+ (800-1000 nits)
+            if (edr <= 2.0) {
+                targetPeakNits = 500; // 保守：较低端的 HDR 显示器
+            } else if (edr <= 3.0) {
+                targetPeakNits = 700; // 中等：大多数消费级 HDR 显示器
+            } else {
+                targetPeakNits = 1000; // 高端：但仍保守，避免过曝
             }
+        } else {
+            // 没有 EDR 支持，使用 SDR 标准值
+            targetPeakNits = 203;
         }
         
-        if (targetPeakNits > 0) {
-            mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakNits);
-        } else {
-            // 如果没有 EDR 信息，使用保守的默认值
-            mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-        }
+        mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakNits);
         
         // 显式设置色调映射算法
         // gpu-next 默认使用 spline，但这可能导致过曝
