@@ -610,7 +610,7 @@ export class LibMPVController extends EventEmitter {
         if (this.currentStatus.phase !== 'paused') {
           this.currentStatus.phase = 'playing'
         }
-        this.refreshDolbyVisionFilter(this.fileLoadGeneration).catch(() => {})
+        // this.refreshDolbyVisionFilter(this.fileLoadGeneration).catch(() => {})
         this.emit('status', { ...this.currentStatus })
         break
       }
