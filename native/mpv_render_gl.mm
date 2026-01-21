@@ -371,7 +371,7 @@ static const char* get_optimal_tone_mapping(mpv_handle *mpv) {
             
             if (is_video && is_selected) {
                 if (has_dv) {
-                    algorithm = "hable";
+                    algorithm = "st2094-10";
                 }
                 break;
             }
@@ -421,31 +421,6 @@ static void update_hdr_mode(GLRenderContext *rc) {
         }
     }
     
-    const char *primariesLog = primaries ? primaries : "(null)";
-    const char *gammaLog = gamma ? gamma : "(null)";
-    if (sigPeakErr < 0) {
-        sigPeak = -1.0;
-    }
-    // 获取显示器信息用于调试
-    CGFloat edr = 1.0;
-    NSScreen *screen = nil;
-    if (rc->view.window) {
-        screen = rc->view.window.screen;
-    }
-    if (screen) {
-        if (@available(macOS 10.15, *)) {
-            edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
-        }
-    }
-    
-    // NSLog(@"[mpv_hdr] update_hdr_mode: userEnabled=%d primaries=%s gamma=%s sig-peak=%.2f shouldEnable=%d hdrActive=%d edr=%.2f",
-    //       userEnabled ? 1 : 0,
-    //       primariesLog,
-    //       gammaLog,
-    //       sigPeak,
-    //       shouldEnable ? 1 : 0,
-    //       rc->hdrActive ? 1 : 0,
-    //       edr);
     
     if (shouldEnable == rc->hdrActive) {
         // Even if state matches, we force re-apply if it's enabled
@@ -458,24 +433,43 @@ static void update_hdr_mode(GLRenderContext *rc) {
     }
     
     if (shouldEnable) {
+        // macOS 系统级 HDR (EDR) 设置流程：
+        // 1. 确保 view 启用 layer-backed rendering
+        if (![rc->view wantsLayer]) {
+            [rc->view setWantsLayer:YES];
+        }
+        
+        // 2. 获取或创建 layer
         CALayer *layer = get_render_layer(rc);
         if (!layer) {
-            [rc->view setWantsLayer:YES];
             layer = get_render_layer(rc);
         }
+        
         if (layer) {
+            // 3. 启用 layer 的 EDR 支持 (macOS 14.0+)
             if (@available(macOS 14.0, *)) {
                 layer.wantsExtendedDynamicRangeContent = YES;
             }
+            
+            // 4. 设置正确的 HDR 色彩空间（PQ）
             CGColorSpaceRef cs = create_hdr_pq_colorspace_for_primaries(primaries);
             if (cs) {
                 set_layer_colorspace_if_supported(layer, cs);
                 CGColorSpaceRelease(cs);
             }
+            
+            // 5. 确保 layer 的 contentsScale 匹配窗口的 backingScaleFactor
+            // 这对于正确的 HDR 渲染很重要
+            if (rc->view.window) {
+                CGFloat scale = rc->view.window.backingScaleFactor;
+                if (scale > 0.0) {
+                    layer.contentsScale = scale;
+                }
+            }
         }
         
+        // 配置 mpv HDR 选项
         int iccAuto = 0;
-        int screenshotTag = 1;
         mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
         if (primaries) {
             mpv_set_property_string(rc->mpvHandle, "target-prim", primaries);
@@ -483,17 +477,32 @@ static void update_hdr_mode(GLRenderContext *rc) {
             mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
         }
         mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
-        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
         mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "yes");
-
-        int64_t targetPeak = (int64_t)(edr * 100.0);
-        if (targetPeak < 100) targetPeak = 100;
-        mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeak);
         
-        // mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-
+        // gpu-next 使用 libplacebo，根据 GPU_NEXT_INTEGRATION.md 文档
+        // 过曝可能与 libplacebo 检测峰值亮度的方式有关
+        // 尝试更保守的配置：
+        
+        // 1. 禁用 hdr-compute-peak（动态峰值检测可能导致过曝）
+        int hdrComputePeak = 0;
+        mpv_set_property(rc->mpvHandle, "hdr-compute-peak", MPV_FORMAT_FLAG, &hdrComputePeak);
+        
+        // 2. 使用 bt.2390 色调映射（与 gpu 后端一致，避免 libplacebo 默认的 spline）
+        // 只在明确检测到 Dolby Vision 时使用 st2094-10
         const char *algo = get_optimal_tone_mapping(rc->mpvHandle);
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", algo);
+        if (strcmp(algo, "st2094-10") == 0) {
+            mpv_set_property_string(rc->mpvHandle, "tone-mapping", "st2094-10");
+        } else {
+            // 使用 bt.2390（避免 libplacebo 默认的 spline 导致的过曝）
+            mpv_set_property_string(rc->mpvHandle, "tone-mapping", "bt.2390");
+        }
+        
+        // 3. 显式设置 target-peak 为 auto
+        // 现在 gpu_next/video.c 已修复，会正确读取 mpv 选项
+        // auto 模式会使用合适的默认值，让 macOS EDR 系统处理实际显示
+        // 由于我们已经修复了 gpu_next/video.c 中的硬编码 sRGB 问题，
+        // libplacebo 现在会正确识别 HDR 色彩空间
+        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
         
         rc->hdrActive = true;
     } else {
@@ -523,13 +532,12 @@ static void update_hdr_mode(GLRenderContext *rc) {
         
         set_render_icc_profile(rc);
         int iccAuto = 1;
-        int screenshotTag = 0;
         mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
         mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
         mpv_set_property_string(rc->mpvHandle, "target-trc", "auto");
-        mpv_set_property(rc->mpvHandle, "screenshot-tag-colorspace", MPV_FORMAT_FLAG, &screenshotTag);
         mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
         mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
+        mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
         mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "no");
         
         rc->hdrActive = false;
