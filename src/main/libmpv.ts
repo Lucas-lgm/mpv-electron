@@ -74,14 +74,8 @@ export class LibMPVController extends EventEmitter {
   private instanceId: number | null = null
   private hdrEnabled = true
   private fileLoadGeneration = 0
-  private dvFilterActive = false
-  private dvFilterRetryTimer: NodeJS.Timeout | null = null
-  private dvFilterRetryCount = 0
-  private dvFilterUnsupportedForThisFile = false
   private lastMpvErrorLogLine: string | null = null
   private recentMpvLogLines: string[] = []
-  private dvFilterCapability: 'unknown' | 'available' | 'unavailable' = 'unknown'
-  private dvFilterUnavailableReason: string | null = null
   private currentStatus: MPVStatus = {
     position: 0,
     duration: 0,
@@ -391,10 +385,8 @@ export class LibMPVController extends EventEmitter {
       const dvProfile = await this.getProperty('current-tracks/video/dolby-vision-profile')
       const primaries = await this.getProperty('video-params/primaries')
       const gamma = await this.getProperty('video-params/gamma')
-      const vf = await this.getProperty('vf')
-      const vfHasDv = typeof vf === 'string' ? vf.includes('@dv') : false
       console.log(
-        `[debug-hdr-status] dvProfile=${dvProfile ?? '(null)'} dvFilterActive=${this.dvFilterActive ? 1 : 0} vfHasDv=${vfHasDv ? 1 : 0} dvFilterCapability=${this.dvFilterCapability} primaries=${primaries ?? '(null)'} gamma=${gamma ?? '(null)'}`
+        `[debug-hdr-status] dvProfile=${dvProfile ?? '(null)'} primaries=${primaries ?? '(null)'} gamma=${gamma ?? '(null)'}`
       )
       mpvBinding!.debugHdrStatus(this.instanceId)
     } catch (error) {
@@ -539,7 +531,11 @@ export class LibMPVController extends EventEmitter {
         if (!text) break
 
         const line = `[mpv:${level || 'unknown'}:${prefix || 'core'}] ${text}`
-        this.pushRecentMpvLogLine(line)
+        // Keep recent log lines for debugging
+        this.recentMpvLogLines.push(line)
+        if (this.recentMpvLogLines.length > 50) {
+          this.recentMpvLogLines.splice(0, this.recentMpvLogLines.length - 50)
+        }
 
         if (level === 'fatal' || level === 'error' || level === 'warn') {
           this.lastMpvErrorLogLine = line
@@ -594,7 +590,6 @@ export class LibMPVController extends EventEmitter {
       }
       case MPV_EVENT_START_FILE: {
         this.fileLoadGeneration++
-        this.clearDolbyVisionFilter().catch(() => {})
         this.currentStatus.isSeeking = false
         this.currentStatus.isNetworkBuffering = false
         this.currentStatus.networkBufferingPercent = 0
@@ -610,7 +605,6 @@ export class LibMPVController extends EventEmitter {
         if (this.currentStatus.phase !== 'paused') {
           this.currentStatus.phase = 'playing'
         }
-        // this.refreshDolbyVisionFilter(this.fileLoadGeneration).catch(() => {})
         this.emit('status', { ...this.currentStatus })
         break
       }
@@ -673,284 +667,6 @@ export class LibMPVController extends EventEmitter {
     }
   }
 
-  private async clearDolbyVisionFilter(): Promise<void> {
-    if (this.instanceId === null) return
-    this.dvFilterRetryCount = 0
-    this.dvFilterUnsupportedForThisFile = false
-    if (this.dvFilterRetryTimer) {
-      clearTimeout(this.dvFilterRetryTimer)
-      this.dvFilterRetryTimer = null
-    }
-    await this.removeDolbyVisionFilterIfPresent()
-    this.dvFilterActive = false
-  }
-
-  private async refreshDolbyVisionFilter(expectedGeneration: number): Promise<void> {
-    if (this.instanceId === null) return
-    const instanceId = this.instanceId
-
-    const currentDvProfileRaw = await this.getProperty('current-tracks/video/dolby-vision-profile')
-    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-
-    const currentDvProfile = this.coerceNumber(currentDvProfileRaw)
-    let hasDolbyVision = currentDvProfile !== null && currentDvProfile > 0
-
-    if (!hasDolbyVision) {
-      const trackCountRaw = await this.getProperty('track-list/count')
-      if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-
-      const trackCountNumber = this.coerceNumber(trackCountRaw)
-      const trackCount = trackCountNumber !== null ? Math.max(0, Math.floor(trackCountNumber)) : 0
-
-      for (let i = 0; i < trackCount; i++) {
-        const type = await this.getProperty(`track-list/${i}/type`)
-        if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-        if (type !== 'video') continue
-
-        const dvProfile = await this.getProperty(`track-list/${i}/dolby-vision-profile`)
-        if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-        const dvProfileNumber = this.coerceNumber(dvProfile)
-        if (dvProfileNumber !== null && dvProfileNumber > 0) {
-          hasDolbyVision = true
-          break
-        }
-      }
-    }
-
-    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-
-    if (hasDolbyVision) {
-      // 检查 Profile 8 (iPhone 等)，直接在此处拦截
-      if (currentDvProfile === 8) {
-         console.log('[libmpv] Skipping Dolby Vision filter for Profile 8 (handled in refresh).')
-         // 确保清除可能残留的 filter
-         await this.clearDolbyVisionFilter()
-         return
-      }
-      
-      // 检查旋转 (在 refresh 阶段快速检查)
-      // 获取旧版 rotate 属性作为 fallback
-      const rotateRaw = await this.getProperty('video-params/rotate')
-      const rotateLegacyRaw = await this.getProperty('rotate') 
-      let rotate = this.coerceNumber(rotateRaw)
-      if (rotate === null) {
-          rotate = this.coerceNumber(rotateLegacyRaw)
-      }
-      if (rotate !== null && rotate % 360 !== 0) {
-          console.log(`[libmpv] Skipping Dolby Vision filter due to rotation (refresh check): ${rotate}`)
-          await this.clearDolbyVisionFilter()
-          return
-      }
-
-      await this.ensureDolbyVisionFilterEnabled(expectedGeneration)
-    } else {
-      if (this.dvFilterActive) {
-        await this.clearDolbyVisionFilter()
-        console.log('[libmpv] Dolby Vision reshaping disabled (vf=@dv)')
-      } else {
-        await this.clearDolbyVisionFilter()
-      }
-    }
-  }
-
-  private async ensureDolbyVisionFilterEnabled(expectedGeneration: number): Promise<void> {
-    if (this.instanceId === null) return
-    const instanceId = this.instanceId
-
-    if (this.dvFilterUnsupportedForThisFile) return
-    if (this.dvFilterCapability === 'unavailable') return
-
-    // 检查视频旋转角度
-    // 如果视频有旋转（如手机竖屏拍摄），应用 libplacebo filter 会导致画面尺寸异常或翻转错误
-    // 这种情况下优先保证几何形状正确，跳过 DV filter
-    
-    // 1. 获取 DV Profile
-    // iPhone 拍摄的 Dolby Vision 通常是 Profile 8.4 (HLG base)。
-    // Profile 8 是向下兼容的，即使不应用 apply_dolbyvision filter，也能正确显示色彩（作为 HLG/HDR10）。
-    // 相比之下，Profile 5 (流媒体) 必须应用 filter 否则色彩错误 (绿/紫)。
-    // 鉴于 Profile 8 常用于手机拍摄（常有旋转），且 filter 容易破坏旋转，我们对 Profile 8 默认跳过 filter。
-    const dvProfileRaw = await this.getProperty('video-params/dolby-vision-profile') // 或者从 refresh 传入
-    const dvProfile = this.coerceNumber(dvProfileRaw)
-    
-    // 如果是 Profile 8 (iPhone 等)，为了避免旋转 bug，直接跳过
-    if (dvProfile === 8) {
-       console.log(`[libmpv] Skipping Dolby Vision filter for Profile 8 to avoid rotation issues.`)
-       this.dvFilterUnsupportedForThisFile = true
-       return
-    }
-
-    const rotateRaw = await this.getProperty('video-params/rotate')
-    // 尝试获取旧版 rotate 属性作为 fallback
-    const rotateLegacyRaw = await this.getProperty('rotate') 
-    
-    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-    
-    let rotate = this.coerceNumber(rotateRaw)
-    if (rotate === null) {
-        rotate = this.coerceNumber(rotateLegacyRaw)
-    }
-    
-    // 检查 display width/height 是否与 raw width/height 交换
-    // 这通常意味着有 90/270 度的旋转
-    const wRaw = await this.getProperty('width')
-    const hRaw = await this.getProperty('height')
-    const dwRaw = await this.getProperty('dwidth')
-    const dhRaw = await this.getProperty('dheight')
-    
-    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-
-    const w = this.coerceNumber(wRaw)
-    const h = this.coerceNumber(hRaw)
-    const dw = this.coerceNumber(dwRaw)
-    const dh = this.coerceNumber(dhRaw)
-
-    console.log(`[libmpv] DV Check: profile=${dvProfile} rotate=${rotate} size=${w}x${h} display=${dw}x${dh}`)
-
-    const hasRotationProperty = rotate !== null && rotate % 360 !== 0
-    let hasSwappedDimensions = false
-    
-    if (w !== null && h !== null && dw !== null && dh !== null) {
-      // 简单的长宽比检查：如果不一致，说明可能有旋转
-      const rawAspect = w / h
-      const displayAspect = dw / dh
-      
-      // 容差 0.01
-      if (Math.abs(rawAspect - displayAspect) > 0.01) {
-         // 如果 raw 是宽屏 (aspect > 1) 但 display 是竖屏 (aspect < 1)，或者反之
-         // 这强有力地暗示了旋转
-         if ((rawAspect > 1 && displayAspect < 1) || (rawAspect < 1 && displayAspect > 1)) {
-            hasSwappedDimensions = true
-         }
-      }
-    }
-
-    if (hasRotationProperty || hasSwappedDimensions) {
-      console.log(`[libmpv] Skipping Dolby Vision filter due to rotation (rotate=${rotate}, swapped=${hasSwappedDimensions})`)
-      this.dvFilterUnsupportedForThisFile = true
-      return
-    }
-
-    const vf = await this.getProperty('vf')
-    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-
-    const hasDvInVf = typeof vf === 'string' ? vf.includes('@dv') : false
-    if (hasDvInVf) {
-      this.dvFilterActive = true
-      this.dvFilterCapability = 'available'
-      this.dvFilterRetryCount = 0
-      if (this.dvFilterRetryTimer) {
-        clearTimeout(this.dvFilterRetryTimer)
-        this.dvFilterRetryTimer = null
-      }
-      return
-    }
-
-    try {
-      await this.command('vf', 'add', '@dv:lavfi=[libplacebo=apply_dolbyvision=1]')
-    } catch (error) {
-      this.dvFilterActive = false
-      this.scheduleDolbyVisionFilterRetry(expectedGeneration, error)
-      return
-    }
-
-    const vfAfter = await this.getProperty('vf')
-    if (expectedGeneration !== this.fileLoadGeneration || this.instanceId !== instanceId) return
-
-    const hasDvAfter = typeof vfAfter === 'string' ? vfAfter.includes('@dv') : false
-    this.dvFilterActive = hasDvAfter
-    if (hasDvAfter) {
-      console.log('[libmpv] Dolby Vision reshaping enabled (vf=@dv)')
-      this.dvFilterCapability = 'available'
-      this.dvFilterRetryCount = 0
-      if (this.dvFilterRetryTimer) {
-        clearTimeout(this.dvFilterRetryTimer)
-        this.dvFilterRetryTimer = null
-      }
-    } else {
-      this.scheduleDolbyVisionFilterRetry(expectedGeneration, null)
-    }
-  }
-
-  private scheduleDolbyVisionFilterRetry(expectedGeneration: number, error: unknown): void {
-    if (this.instanceId === null) return
-    if (expectedGeneration !== this.fileLoadGeneration) return
-
-    const unsupportedReason = this.findDolbyVisionFilterUnsupportedReason()
-    if (unsupportedReason) {
-      this.dvFilterUnsupportedForThisFile = true
-      this.dvFilterCapability = 'unavailable'
-      this.dvFilterUnavailableReason = unsupportedReason
-      if (this.dvFilterRetryTimer) {
-        clearTimeout(this.dvFilterRetryTimer)
-        this.dvFilterRetryTimer = null
-      }
-      console.warn('[libmpv] Dolby Vision reshaping unavailable (vf=@dv)')
-      console.warn(unsupportedReason)
-      return
-    }
-
-    this.dvFilterRetryCount++
-    if (this.dvFilterRetryCount > 10) {
-      console.warn('[libmpv] Dolby Vision reshaping enable failed (vf=@dv)', error ?? '')
-      if (this.lastMpvErrorLogLine) {
-        console.warn(this.lastMpvErrorLogLine)
-      }
-      return
-    }
-
-    if (this.dvFilterRetryTimer) {
-      clearTimeout(this.dvFilterRetryTimer)
-      this.dvFilterRetryTimer = null
-    }
-
-    this.dvFilterRetryTimer = setTimeout(() => {
-      this.ensureDolbyVisionFilterEnabled(expectedGeneration).catch(() => {})
-    }, 200)
-  }
-
-  private async removeDolbyVisionFilterIfPresent(): Promise<void> {
-    if (this.instanceId === null) return
-    try {
-      const vf = await this.getProperty('vf')
-      const hasDv = typeof vf === 'string' ? vf.includes('@dv') : false
-      if (!hasDv) return
-    } catch {
-      return
-    }
-
-    try {
-      await this.command('vf', 'remove', '@dv')
-    } catch {
-    }
-  }
-
-  private pushRecentMpvLogLine(line: string): void {
-    this.recentMpvLogLines.push(line)
-    if (this.recentMpvLogLines.length > 50) {
-      this.recentMpvLogLines.splice(0, this.recentMpvLogLines.length - 50)
-    }
-  }
-
-  private findDolbyVisionFilterUnsupportedReason(): string | null {
-    for (let i = this.recentMpvLogLines.length - 1; i >= 0; i--) {
-      const line = this.recentMpvLogLines[i]
-      const s = line.toLowerCase()
-      if (!s.includes('libplacebo')) continue
-
-      if (s.includes("no such filter: 'libplacebo'") || s.includes('no such filter: "libplacebo"')) {
-        return line
-      }
-
-      if (s.includes('option') && s.includes('apply_dolbyvision') && (s.includes('not found') || s.includes('unknown'))) {
-        return line
-      }
-
-      if (s.includes('failed') && (s.includes('lavfi') || s.includes('avfiltergraph') || s.includes('filter graph'))) {
-        return line
-      }
-    }
-    return null
-  }
 
   private coerceNumber(value: unknown): number | null {
     if (typeof value === 'number') return isFinite(value) ? value : null
