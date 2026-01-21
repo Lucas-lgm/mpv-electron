@@ -28,20 +28,32 @@ fi
 echo "Compiling mpv..."
 meson compile -C build
 
-echo "Copying libmpv to vendor..."
-LIB_SRC="build/libmpv.2.dylib"
-LIB_DEST="$PROJECT_ROOT/vendor/mpv/darwin-arm64/lib/libmpv.2.dylib"
+echo "Copying libmpv and all dependencies to vendor..."
 
-if [ -f "$LIB_SRC" ]; then
-    cp "$LIB_SRC" "$LIB_DEST"
-    echo "Copied $LIB_SRC to $LIB_DEST"
-    
-    # Update install name to be @rpath relative
-    install_name_tool -id "@rpath/libmpv.2.dylib" "$LIB_DEST"
-    echo "Updated install name to @rpath/libmpv.2.dylib"
+# 运行依赖复制脚本
+if [ -f "$PROJECT_ROOT/copy_dependencies.sh" ]; then
+    "$PROJECT_ROOT/copy_dependencies.sh"
+    echo ""
+    echo "所有依赖已复制到 vendor 目录"
 else
-    echo "Error: $LIB_SRC not found!"
-    exit 1
+    echo "Warning: copy_dependencies.sh not found, only copying libmpv..."
+    LIB_SRC="build/libmpv.2.dylib"
+    LIB_DEST="$PROJECT_ROOT/vendor/mpv/darwin-arm64/lib/libmpv.2.dylib"
+    
+    if [ -f "$LIB_SRC" ]; then
+        cp "$LIB_SRC" "$LIB_DEST"
+        echo "Copied $LIB_SRC to $LIB_DEST"
+        
+        # Update install name to be @rpath relative
+        install_name_tool -id "@rpath/libmpv.2.dylib" "$LIB_DEST"
+        echo "Updated install name to @rpath/libmpv.2.dylib"
+    else
+        echo "Error: $LIB_SRC not found!"
+        exit 1
+    fi
 fi
 
+echo ""
+echo "================================"
 echo "mpv build complete."
+echo "================================"

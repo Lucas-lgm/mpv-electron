@@ -1,0 +1,48 @@
+appId: com.mpvplayer.app
+productName: MPV Player
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**/*
+  - vendor/**/*
+  - native/**/*
+  - build/**/*
+asarUnpack:
+  - vendor/**/*
+  - native/build/Release/**/*
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  category: public.app-category.video
+  icon: resources/icon.icns
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  extraFiles:
+    - from: vendor/mpv/darwin-arm64/lib
+      to: Resources/lib
+      filter:
+        - '**/*.dylib'
+dmg:
+  title: ${productName} ${version}
+  icon: resources/icon.icns
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

@@ -13,13 +13,17 @@
     "serve:8080": "node serve-video.js --port 8080",
     "build:native": "node-gyp rebuild --directory native",
     "rebuild:native": "node-gyp rebuild --directory native",
-    "clean:native": "node-gyp clean --directory native"
+    "clean:native": "node-gyp clean --directory native",
+    "package": "npm run build && npm run build:native && electron-builder",
+    "package:mac": "npm run build && npm run build:native && electron-builder --mac",
+    "dist": "npm run build && npm run build:native && electron-builder --mac --arm64"
   },
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.19.25",
     "@vitejs/plugin-vue": "^5.0.0",
     "electron": "^28.0.0",
+    "electron-builder": "^26.4.0",
     "electron-vite": "^2.0.0",
     "node-addon-api": "^7.1.1",
     "node-gyp": "^10.3.1",
