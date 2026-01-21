@@ -566,11 +566,29 @@ static void update_hdr_mode(GLRenderContext *rc) {
         int iccAuto = 1;
         mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
         
-        // 重置所有 HDR 相关选项为 auto/默认值
-        mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
-        mpv_set_property_string(rc->mpvHandle, "target-trc", "auto");
+        // 明确设置 SDR 色彩空间，避免 auto 模式导致的偏灰问题
+        // 对于 SDR，明确指定 transfer function 很重要
+        NSScreen *screen = nil;
+        if (rc->view.window) {
+            screen = rc->view.window.screen;
+        }
+        
+        // 检测显示器的 primaries（通常是 bt.709 或 display-p3）
+        const char *targetPrim = "bt.709";  // 默认使用 bt.709
+        if (screen && screen.colorSpace) {
+            NSString *csName = screen.colorSpace.localizedName;
+            // macOS 的 Display P3 显示器应该使用 display-p3
+            if ([csName containsString:@"P3"] || [csName containsString:@"Display P3"]) {
+                targetPrim = "display-p3";
+            }
+        }
+        
+        // 明确设置 SDR 的 transfer function 为 sRGB
+        // 这确保正确的 gamma 曲线，避免画面偏灰
+        mpv_set_property_string(rc->mpvHandle, "target-prim", targetPrim);
+        mpv_set_property_string(rc->mpvHandle, "target-trc", "srgb");
         mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-        mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "no");
+        mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "yes");
         mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
         
         rc->hdrActive = false;
