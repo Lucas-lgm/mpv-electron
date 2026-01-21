@@ -537,10 +537,12 @@ export class LibMPVController extends EventEmitter {
           this.recentMpvLogLines.splice(0, this.recentMpvLogLines.length - 50)
         }
 
-        if (level === 'fatal' || level === 'error' || level === 'warn') {
-          this.lastMpvErrorLogLine = line
-          console.warn(line)
-        }
+        console.log(line)
+
+        // if (level === 'fatal' || level === 'error' || level === 'warn') {
+        //   this.lastMpvErrorLogLine = line
+        //   console.warn(line)
+        // }
         break
       }
       case MPV_EVENT_PROPERTY_CHANGE: {
