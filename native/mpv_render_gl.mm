@@ -469,8 +469,12 @@ static void update_hdr_mode(GLRenderContext *rc) {
         }
         
         // 配置 mpv HDR 选项
+        // 注意：icc-profile-auto 必须禁用，因为 HDR 使用 PQ 传输函数，不应通过 ICC 进行色彩转换
+        // macOS EDR 系统会直接处理 HDR 信号，ICC 会干扰这个过程
         int iccAuto = 0;
         mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+        
+        // 设置目标色彩空间
         if (primaries) {
             mpv_set_property_string(rc->mpvHandle, "target-prim", primaries);
         } else {
@@ -479,30 +483,54 @@ static void update_hdr_mode(GLRenderContext *rc) {
         mpv_set_property_string(rc->mpvHandle, "target-trc", "pq");
         mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "yes");
         
-        // gpu-next 使用 libplacebo，根据 GPU_NEXT_INTEGRATION.md 文档
-        // 过曝可能与 libplacebo 检测峰值亮度的方式有关
-        // 尝试更保守的配置：
-        
-        // 1. 禁用 hdr-compute-peak（动态峰值检测可能导致过曝）
+        // 禁用动态峰值检测（hdr-compute-peak），让系统使用静态峰值
+        // 这可以避免动态检测导致的过曝问题
         int hdrComputePeak = 0;
         mpv_set_property(rc->mpvHandle, "hdr-compute-peak", MPV_FORMAT_FLAG, &hdrComputePeak);
         
-        // 2. 使用 bt.2390 色调映射（与 gpu 后端一致，避免 libplacebo 默认的 spline）
-        // 只在明确检测到 Dolby Vision 时使用 st2094-10
-        const char *algo = get_optimal_tone_mapping(rc->mpvHandle);
-        if (strcmp(algo, "st2094-10") == 0) {
-            mpv_set_property_string(rc->mpvHandle, "tone-mapping", "st2094-10");
-        } else {
-            // 使用 bt.2390（避免 libplacebo 默认的 spline 导致的过曝）
-            mpv_set_property_string(rc->mpvHandle, "tone-mapping", "bt.2390");
+        // 根据显示器 EDR 能力计算保守的 target-peak
+        // 避免过曝：使用一个保守的峰值，让 libplacebo 进行适当的色调映射
+        CGFloat edr = 1.0;
+        NSScreen *screen = nil;
+        if (rc->view.window) {
+            screen = rc->view.window.screen;
+        }
+        if (screen && @available(macOS 10.15, *)) {
+            edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
         }
         
-        // 3. 显式设置 target-peak 为 auto
-        // 现在 gpu_next/video.c 已修复，会正确读取 mpv 选项
-        // auto 模式会使用合适的默认值，让 macOS EDR 系统处理实际显示
-        // 由于我们已经修复了 gpu_next/video.c 中的硬编码 sRGB 问题，
-        // libplacebo 现在会正确识别 HDR 色彩空间
-        mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        // 计算保守的峰值亮度（nits）
+        // PQ 传输函数的标称峰值是 10000 nits，但我们使用保守值避免过曝
+        // 大多数消费级 HDR 显示器峰值在 400-1000 nits 之间
+        int64_t targetPeakNits = 0;
+        if (edr > 1.0) {
+            // 使用更保守的计算：EDR 值 * 保守的基准值
+            // 例如：edr=2.0 时，使用约 800 nits 而不是完整的 10000 nits
+            targetPeakNits = (int64_t)(edr * 400.0); // 保守：每个 EDR 倍数对应 400 nits
+            // 限制最大值，避免过高导致过曝
+            if (targetPeakNits > 1000) {
+                targetPeakNits = 1000; // 大多数消费级显示器的实际峰值
+            }
+        }
+        
+        if (targetPeakNits > 0) {
+            mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakNits);
+        } else {
+            // 如果没有 EDR 信息，使用保守的默认值
+            mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+        }
+        
+        // 显式设置色调映射算法
+        // gpu-next 默认使用 spline，但这可能导致过曝
+        // 使用 bt.2390（ITU-R 标准）更保守，适合大多数 HDR 内容
+        const char *algo = get_optimal_tone_mapping(rc->mpvHandle);
+        if (strcmp(algo, "st2094-10") == 0) {
+            // Dolby Vision 需要使用特定的色调映射算法
+            mpv_set_property_string(rc->mpvHandle, "tone-mapping", "st2094-10");
+        } else {
+            // 对于普通 HDR，使用 bt.2390 避免默认 spline 导致的过曝
+            mpv_set_property_string(rc->mpvHandle, "tone-mapping", "bt.2390");
+        }
         
         rc->hdrActive = true;
     } else {
@@ -530,15 +558,18 @@ static void update_hdr_mode(GLRenderContext *rc) {
             }
         }
         
+        // 恢复 SDR 模式配置
+        // 启用 ICC 配置文件以进行正确的显示器色彩管理
         set_render_icc_profile(rc);
         int iccAuto = 1;
         mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+        
+        // 重置所有 HDR 相关选项为 auto/默认值
         mpv_set_property_string(rc->mpvHandle, "target-prim", "auto");
         mpv_set_property_string(rc->mpvHandle, "target-trc", "auto");
         mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
-        mpv_set_property_string(rc->mpvHandle, "tone-mapping", "");
-        mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
         mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "no");
+        mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
         
         rc->hdrActive = false;
     }
