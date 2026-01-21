@@ -362,7 +362,8 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
         return env.Null();
     }
     
-    mpv_request_log_messages(instance->ctx, "warn");
+    // Request info level logs to see debug messages (can use "v" for verbose)
+    mpv_request_log_messages(instance->ctx, "v");
     
     mpv_observe_property(instance->ctx, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(instance->ctx, 0, "time-pos", MPV_FORMAT_DOUBLE);

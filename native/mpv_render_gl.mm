@@ -319,18 +319,18 @@ static void log_hdr_config(GLRenderContext *rc) {
         contentsScale = layer.contentsScale;
     }
     
-    NSLog(@"[mpv_hdr_cfg] icc-profile-auto=%d target-prim=%s target-trc=%s screenshot-tag-colorspace=%d target-peak-int=%d target-peak-str=%s tone-mapping=%s edr=%.3f wantsEDR=%d contentsScale=%.2f hdrActive=%d",
-          iccAuto,
-          primariesCfg,
-          trcCfg,
-          screenshotTag,
-          targetPeakInt,
-          peakCfg,
-          toneCfg,
-          edr,
-          wantsEDR ? 1 : 0,
-          contentsScale,
-          rc->hdrActive ? 1 : 0);
+    // NSLog(@"[mpv_hdr_cfg] icc-profile-auto=%d target-prim=%s target-trc=%s screenshot-tag-colorspace=%d target-peak-int=%d target-peak-str=%s tone-mapping=%s edr=%.3f wantsEDR=%d contentsScale=%.2f hdrActive=%d",
+    //       iccAuto,
+    //       primariesCfg,
+    //       trcCfg,
+    //       screenshotTag,
+    //       targetPeakInt,
+    //       peakCfg,
+    //       toneCfg,
+    //       edr,
+    //       wantsEDR ? 1 : 0,
+    //       contentsScale,
+    //       rc->hdrActive ? 1 : 0);
     
     if (targetPrim) mpv_free(targetPrim);
     if (targetTrc) mpv_free(targetTrc);
@@ -1066,7 +1066,7 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
     
     rc->hdrUserEnabled.store(enabled != 0);
     rc->lastHdrUpdateMs.store(0);
-    NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
+    // NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
     mpv_request_render(instanceId);
 }
 
