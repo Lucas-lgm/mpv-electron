@@ -124,6 +124,7 @@ export class VideoPlayerApp {
   readonly playlist: PlaylistManager
   readonly config: ConfigManager
   private controlView: BrowserView | null = null
+  private isQuitting: boolean = false
 
   constructor() {
     this.windowManager = new WindowManager()
@@ -255,6 +256,21 @@ export class VideoPlayerApp {
       route: '#/'
     })
 
+    // 监听主窗口关闭事件（使用 once 确保只触发一次）
+    mainWindow.once('close', async (event) => {
+      if (this.isQuitting) {
+        return
+      }
+      console.log('[VideoPlayerApp] Main window closing')
+      this.isQuitting = true
+      // 清理资源
+      await corePlayer.cleanup().catch(() => {})
+      // 退出应用
+      app.quit()
+      // 注意：在开发模式下，app.quit() 只会退出 Electron 应用，
+      // Vite 开发服务器会继续运行。要完全退出开发环境，请在终端按 Ctrl+C
+    })
+
     return mainWindow
   }
 
@@ -351,6 +367,11 @@ export class VideoPlayerApp {
     })
 
     window.on('close', async (event) => {
+      // 如果应用正在退出，允许窗口关闭
+      if (this.isQuitting) {
+        return
+      }
+      
       event.preventDefault()
       await corePlayer.stop()
       window.hide()
@@ -443,19 +464,34 @@ export class VideoPlayerApp {
     })
 
     app.on('window-all-closed', () => {
-      corePlayer.cleanup().catch(() => {})
-      // 主窗口关闭时已经退出，这里只处理其他情况
-      // macOS 上如果没有窗口了，也退出应用（因为主窗口关闭时已经退出）
+      console.log('window-all-closed')
+      if (!this.isQuitting) {
+        this.isQuitting = true
+        corePlayer.cleanup().catch(() => {})
+      }
+      // 所有平台都退出应用
       app.quit()
     })
 
     app.on('before-quit', () => {
+      this.isQuitting = true
       // corePlayer.cleanup().catch(() => {})
     })
 
-    const handleSignal = (signal: NodeJS.Signals) => {
+    const handleSignal = async (signal: NodeJS.Signals) => {
       console.log(`[Main] Received ${signal}, quitting app...`)
-      app.quit()
+      this.isQuitting = true
+      // 清理资源
+      await corePlayer.cleanup().catch(() => {})
+      // 关闭所有窗口
+      const windows = BrowserWindow.getAllWindows()
+      windows.forEach(window => {
+        if (!window.isDestroyed()) {
+          window.destroy()
+        }
+      })
+      // 强制退出
+      app.exit(0)
     }
 
     process.on('SIGINT', handleSignal)
