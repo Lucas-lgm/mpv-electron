@@ -247,13 +247,23 @@ export class VideoPlayerApp {
   }
 
   createMainWindow() {
-    this.windowManager.createWindow({
+    const mainWindow = this.windowManager.createWindow({
       id: 'main',
       width: 1200,
       height: 800,
       title: '视频播放器 - 视频列表',
       route: '#/'
     })
+
+    // 主窗口关闭时退出整个应用
+    mainWindow.on('close', async (event) => {
+      // 先清理资源
+      await corePlayer.cleanup().catch(() => {})
+      // 退出应用
+      app.quit()
+    })
+
+    return mainWindow
   }
 
   createVideoWindow(): BrowserWindow | undefined {
@@ -437,9 +447,9 @@ export class VideoPlayerApp {
 
     app.on('window-all-closed', () => {
       corePlayer.cleanup().catch(() => {})
-      if (process.platform !== 'darwin') {
-        app.quit()
-      }
+      // 主窗口关闭时已经退出，这里只处理其他情况
+      // macOS 上如果没有窗口了，也退出应用（因为主窗口关闭时已经退出）
+      app.quit()
     })
 
     app.on('before-quit', () => {
