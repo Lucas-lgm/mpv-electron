@@ -147,6 +147,37 @@ export class LibMPVController extends EventEmitter {
         // 忽略
       }
       
+      try {
+        await this.setOption('profile', 'fast')
+        console.log('[libmpv] ✅ Applied fast profile for better responsiveness')
+      } catch (error) {
+        // 忽略，某些版本可能不支持
+      }
+
+      // 针对 Apple Silicon 启用硬件解码
+      if (process.arch === 'arm64' && process.platform === 'darwin') {
+        try {
+          await this.setOption('hwdec', 'videotoolbox')
+          console.log('[libmpv] ✅ Enabled hardware decoding (VideoToolbox) for Apple Silicon')
+        } catch (error) {
+          console.warn('[libmpv] Failed to enable hardware decoding:', error)
+        }
+      }
+
+      // 优化响应速度的设置
+      try {
+        // 降低 OSD 复杂度
+        await this.setOption('osd-level', 1)
+        // 使用音频同步模式以提高响应性
+        await this.setOption('video-sync', 'audio')
+        // 减少输入队列大小以提高响应速度
+        await this.setOption('input-queue-size', 2)
+        // 启用视频延迟优化
+        await this.setOption('video-latency-hacks', true)
+        console.log('[libmpv] ✅ Applied responsiveness optimizations')
+      } catch (error) {
+        // 忽略，某些选项可能不支持
+      }
 
       // 现在初始化（初始化后不能再设置 vo 和 wid）
       mpvBinding!.initialize(this.instanceId)
@@ -441,17 +472,35 @@ export class LibMPVController extends EventEmitter {
   }
 
   /**
-   * 暂停
+   * 暂停（使用命令以提高响应速度）
    */
   async pause(): Promise<void> {
-    await this.setProperty('pause', true)
+    if (this.instanceId === null) {
+      throw new Error('MPV instance not initialized')
+    }
+    try {
+      // 使用命令而不是属性设置，响应更快，特别是对于高分辨率视频
+      mpvBinding!.command(this.instanceId, ['set', 'pause', 'yes'])
+    } catch (error) {
+      // 如果命令失败，回退到属性设置
+      await this.setProperty('pause', true)
+    }
   }
 
   /**
-   * 播放
+   * 播放（使用命令以提高响应速度）
    */
   async play(): Promise<void> {
-    await this.setProperty('pause', false)
+    if (this.instanceId === null) {
+      throw new Error('MPV instance not initialized')
+    }
+    try {
+      // 使用命令而不是属性设置，响应更快
+      mpvBinding!.command(this.instanceId, ['set', 'pause', 'no'])
+    } catch (error) {
+      // 如果命令失败，回退到属性设置
+      await this.setProperty('pause', false)
+    }
   }
 
   /**
