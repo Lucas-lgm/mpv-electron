@@ -32,7 +32,7 @@ struct MPVInstance {
 // 来自 mpv_render_gl.mm
 extern "C" struct GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv);
 extern "C" void mpv_destroy_gl_context(int64_t instanceId);
-extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
+// mpv_render_frame_for_instance 已废弃：渲染现在完全由 CVDisplayLink 驱动
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
@@ -201,13 +201,7 @@ Napi::Value AttachView(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// 渲染一帧（已废弃：渲染循环现在在原生代码中自动运行）
-// 保留此函数以保持 API 兼容性，但实际不做任何操作
-Napi::Value RenderFrame(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    // 渲染循环现在在原生代码中自动运行，不需要从 JS 调用
-    return env.Undefined();
-}
+// RenderFrame 已废弃：渲染现在完全由 CVDisplayLink 驱动，不需要手动调用
 
 // 设置窗口尺寸（由 Electron 调用）
 Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
@@ -759,7 +753,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "setEventCallback"), Napi::Function::New(env, SetEventCallback));
     exports.Set(Napi::String::New(env, "destroy"), Napi::Function::New(env, Destroy));
     exports.Set(Napi::String::New(env, "attachView"), Napi::Function::New(env, AttachView));
-    exports.Set(Napi::String::New(env, "renderFrame"), Napi::Function::New(env, RenderFrame));
+    // renderFrame 已废弃：渲染现在完全由 CVDisplayLink 驱动
     exports.Set(Napi::String::New(env, "setWindowSize"), Napi::Function::New(env, SetWindowSize));
     exports.Set(Napi::String::New(env, "setForceBlackMode"), Napi::Function::New(env, SetForceBlackMode));
     exports.Set(Napi::String::New(env, "setHdrMode"), Napi::Function::New(env, SetHdrMode));

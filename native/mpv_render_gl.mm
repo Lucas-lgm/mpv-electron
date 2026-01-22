@@ -4,12 +4,14 @@
 #import <OpenGL/gl3.h>
 #import <OpenGL/OpenGL.h>
 #import <CoreVideo/CoreVideo.h>
+#import <CoreFoundation/CoreFoundation.h>
 
 #include <map>
 #include <mutex>
 #include <atomic>
 #include <dlfcn.h>
 #include <cmath>
+#include <algorithm>  // for std::max, std::min
 #include <unistd.h>  // for usleep
 #include <thread>
 #include <chrono>
@@ -59,6 +61,13 @@ struct GLRenderContext {
     std::atomic<bool> hdrUserEnabled;
     bool hdrActive;
     std::atomic<uint64_t> lastHdrUpdateMs;
+    
+    std::atomic<uint64_t> lastRenderTimeMs;
+    // 视频帧率（fps），用于动态计算渲染间隔
+    std::atomic<double> videoFps;
+    // 最小渲染间隔（毫秒），根据视频帧率动态计算
+    // 默认值 16ms (~60fps)，如果视频帧率更高则相应调整
+    static constexpr uint64_t DEFAULT_MIN_RENDER_INTERVAL_MS = 16; // ~60fps max
 
     std::mutex iccMutex;
     std::vector<uint8_t> iccProfileBytes;
@@ -78,7 +87,9 @@ struct GLRenderContext {
           forceBlackMode(false),
           hdrUserEnabled(true),
           hdrActive(false),
-          lastHdrUpdateMs(0) {}
+          lastHdrUpdateMs(0),
+          lastRenderTimeMs(0),
+          videoFps(0.0) {}
 };
 
 struct ScopedCGLock {
@@ -118,6 +129,25 @@ static void init_default_sdr_config(GLRenderContext *rc);
     GLRenderContext *rc = self.renderCtx;
     if (!rc || rc->isDestroying.load()) return NO;
     if (!rc->mpvRenderCtx) return YES;
+    
+    // 渲染节流：检查是否距离上次渲染时间太短
+    // 根据视频帧率动态计算最小渲染间隔
+    uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
+    uint64_t lastRenderMs = rc->lastRenderTimeMs.load();
+    
+    // 根据视频帧率计算最小渲染间隔
+    double fps = rc->videoFps.load();
+    uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
+    if (fps > 0.1) {
+        // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
+        uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
+        minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
+    }
+    
+    if (lastRenderMs > 0 && (nowMs - lastRenderMs) < minIntervalMs) {
+        return NO; // 跳过本次渲染
+    }
+    
     return rc->needRedraw.load();
 }
 
@@ -153,14 +183,61 @@ static void init_default_sdr_config(GLRenderContext *rc);
         return;
     }
 
+    // 渲染节流：避免过度渲染阻塞主线程
+    // 根据视频帧率动态计算最小渲染间隔
     uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
-    uint64_t lastMs = rc->lastHdrUpdateMs.load();
-    // 首次调用或超过 250ms 时更新 HDR 模式
-    // 首次调用时（lastMs == 0）必须强制应用配置，确保 SDR 视频也能正确设置色彩空间
-    bool isFirstCall = (lastMs == 0);
-    if (isFirstCall || nowMs - lastMs > 250) {
+    uint64_t lastRenderMs = rc->lastRenderTimeMs.load();
+    
+    // 根据视频帧率计算最小渲染间隔
+    double fps = rc->videoFps.load();
+    uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
+    if (fps > 0.1) {
+        // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
+        uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
+        minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
+    }
+    
+    if (lastRenderMs > 0 && (nowMs - lastRenderMs) < minIntervalMs) {
+        // 渲染太频繁，跳过本次渲染，让 RunLoop 处理其他事件（如 Electron UI）
+        glFlush();
+        return;
+    }
+    rc->lastRenderTimeMs.store(nowMs);
+
+    // HDR 更新和视频帧率更新：延迟到 RunLoop 的下一个周期，避免阻塞当前渲染
+    // 只在首次调用或超过 250ms 时更新
+    uint64_t lastHdrMs = rc->lastHdrUpdateMs.load();
+    bool isFirstCall = (lastHdrMs == 0);
+    if (isFirstCall || nowMs - lastHdrMs > 250) {
         rc->lastHdrUpdateMs.store(nowMs);
-        update_hdr_mode(rc, isFirstCall);
+        // 延迟 HDR 更新和帧率更新到下一个 RunLoop 周期，让当前渲染先完成
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // 再次检查，避免在延迟期间 context 被销毁
+            std::shared_ptr<GLRenderContext> asyncRc = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(g_renderMutex);
+                auto it = g_renderContexts.find(rc->instanceId);
+                if (it != g_renderContexts.end()) asyncRc = it->second;
+            }
+            if (asyncRc && !asyncRc->isDestroying.load()) {
+                // 更新视频帧率
+                double estimatedFps = 0.0;
+                if (asyncRc->mpvHandle) {
+                    int err = mpv_get_property(asyncRc->mpvHandle, "estimated-vf-fps", MPV_FORMAT_DOUBLE, &estimatedFps);
+                    if (err >= 0 && estimatedFps > 0.1) {
+                        asyncRc->videoFps.store(estimatedFps);
+                    } else {
+                        // 如果 estimated-vf-fps 不可用，尝试 container-fps
+                        double containerFps = 0.0;
+                        if (mpv_get_property(asyncRc->mpvHandle, "container-fps", MPV_FORMAT_DOUBLE, &containerFps) >= 0 && containerFps > 0.1) {
+                            asyncRc->videoFps.store(containerFps);
+                        }
+                    }
+                }
+                // 更新 HDR 模式
+                update_hdr_mode(asyncRc.get(), isFirstCall);
+            }
+        });
     }
 
     GLint fboBinding = 0;
@@ -189,13 +266,26 @@ static void init_default_sdr_config(GLRenderContext *rc);
 
     int flip_y = 1;
 
+    // 关键：禁用阻塞等待，确保与 Electron UI 同步
+    // block_for_target_time=0 让 mpv_render_context_render 不阻塞主线程
+    // 这样 Electron 的 UI 事件（点击、滚动等）可以及时处理
+    // CVDisplayLink 已经提供了显示同步，所以不需要 mpv 的阻塞等待
+    int block_for_target_time = 0;
+
     mpv_render_param params[] = {
         { MPV_RENDER_PARAM_OPENGL_FBO, &fbo },
         { MPV_RENDER_PARAM_FLIP_Y, &flip_y },
+        { MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &block_for_target_time },
         { MPV_RENDER_PARAM_INVALID, nullptr }
     };
 
     bool sizeChanged = (w != rc->lastRenderedWidth || h != rc->lastRenderedHeight);
+
+    CFRunLoopRef runLoop = CFRunLoopGetCurrent();
+    if (runLoop) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, false);
+    }
+    
     int res = mpv_render_context_render(rc->mpvRenderCtx, params);
     if (res < 0) {
         NSLog(@"[mpv_render_gl] ❌ mpv_render_context_render failed: %d (win %dx%d, FBO %dx%d)",
@@ -721,6 +811,19 @@ static void runOnMainAsync(dispatch_block_t block) {
     }
 }
 
+// 使用用户交互优先级调度渲染请求，确保与 Electron UI 同步
+// 这样可以让 Electron 的 UI 事件优先处理，视频渲染不会阻塞用户交互
+static void runOnMainAsyncForRender(dispatch_block_t block) {
+    if (!block) return;
+    if (isMainThread()) {
+        // 使用 dispatch_async 而不是直接执行，让当前 RunLoop 先处理其他事件
+        // 这样可以确保 Electron UI 事件优先处理
+        dispatch_async(dispatch_get_main_queue(), block);
+    } else {
+        dispatch_async(dispatch_get_main_queue(), block);
+    }
+}
+
 // ------------------ mpv update callback ------------------
 // Called by mpv on arbitrary thread. We must not do GL here.
 static void on_mpv_redraw(void *ctx) {
@@ -739,6 +842,12 @@ static void on_mpv_redraw(void *ctx) {
 }
 
 // ------------------ CVDisplayLink Callback ------------------
+// CVDisplayLink 在显示刷新时调用（通常 60Hz 或 120Hz）
+// 这个回调必须非常轻量，不能阻塞主线程，否则会影响 Electron UI 响应性
+// 与 Electron 渲染同步的关键：
+// 1. 只做必要的操作（report_swap 和标记需要渲染）
+// 2. 不在这里执行实际的渲染（渲染在 drawInCGLContext 中异步执行）
+// 3. 使用异步调度，让 Electron UI 事件优先处理
 static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
                                     const CVTimeStamp *now,
                                     const CVTimeStamp *outputTime,
@@ -749,10 +858,27 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     if (!rc || rc->isDestroying.load()) return kCVReturnSuccess;
 
     @autoreleasepool {
+        // 报告交换完成（必须，用于音视频同步）
         if (rc->mpvRenderCtx) {
             mpv_render_context_report_swap(rc->mpvRenderCtx);
         }
-        if (rc->needRedraw.load()) {
+        // 渲染节流：检查是否距离上次渲染时间太短
+        // 根据视频帧率动态计算最小渲染间隔
+        uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
+        uint64_t lastRenderMs = rc->lastRenderTimeMs.load();
+        
+        // 根据视频帧率计算最小渲染间隔
+        double fps = rc->videoFps.load();
+        uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
+        if (fps > 0.1) {
+            // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
+            uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
+            minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
+        }
+        
+        bool shouldRender = rc->needRedraw.load() && 
+                           (lastRenderMs == 0 || (nowMs - lastRenderMs) >= minIntervalMs);
+        if (shouldRender) {
             mpv_request_render(rc->instanceId);
         }
     }
@@ -812,6 +938,9 @@ static bool createGLForView(GLRenderContext *rc) {
 
     MPVOpenGLLayer *layer = [[MPVOpenGLLayer alloc] init];
     layer.renderCtx = rc;
+    // 关键：启用异步渲染，确保与 Electron UI 同步
+    // asynchronous=YES 让 Core Animation 在后台线程准备渲染内容
+    // 这样主线程可以优先处理 Electron UI 事件（如点击、滚动等）
     layer.asynchronous = YES;
     layer.needsDisplayOnBoundsChange = YES;
     layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
@@ -1138,7 +1267,10 @@ extern "C" void mpv_request_render(int64_t instanceId) {
     rc->needRedraw.store(true);
     bool wasScheduled = rc->displayScheduled.exchange(true);
     if (wasScheduled) return;
-    runOnMainAsync(^{
+    
+    // 使用专门的渲染调度函数，确保与 Electron UI 同步
+    // 这样可以让 Electron 的 UI 事件（如点击）优先处理
+    runOnMainAsyncForRender(^{
         std::shared_ptr<GLRenderContext> inner = nullptr;
         {
             std::lock_guard<std::mutex> lock(g_renderMutex);
