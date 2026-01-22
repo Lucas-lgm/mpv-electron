@@ -97,7 +97,7 @@ extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
-static void update_hdr_mode(GLRenderContext *rc);
+static void update_hdr_mode(GLRenderContext *rc, bool forceApply = false);
 static void set_render_icc_profile(GLRenderContext *rc);
 
 @interface MPVOpenGLLayer : CAOpenGLLayer
@@ -153,9 +153,12 @@ static void set_render_icc_profile(GLRenderContext *rc);
 
     uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
     uint64_t lastMs = rc->lastHdrUpdateMs.load();
-    if (lastMs == 0 || nowMs - lastMs > 250) {
+    // 首次调用或超过 250ms 时更新 HDR 模式
+    // 首次调用时（lastMs == 0）必须强制应用配置，确保 SDR 视频也能正确设置色彩空间
+    bool isFirstCall = (lastMs == 0);
+    if (isFirstCall || nowMs - lastMs > 250) {
         rc->lastHdrUpdateMs.store(nowMs);
-        update_hdr_mode(rc);
+        update_hdr_mode(rc, isFirstCall);
     }
 
     GLint fboBinding = 0;
@@ -382,7 +385,7 @@ static const char* get_optimal_tone_mapping(mpv_handle *mpv) {
     return algorithm;
 }
 
-static void update_hdr_mode(GLRenderContext *rc) {
+static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
     if (!rc || !rc->mpvHandle || !rc->view) return;
     
     bool userEnabled = rc->hdrUserEnabled.load();
@@ -422,9 +425,10 @@ static void update_hdr_mode(GLRenderContext *rc) {
     }
     
     
-    if (shouldEnable == rc->hdrActive) {
+    if (shouldEnable == rc->hdrActive && !forceApply) {
         // Even if state matches, we force re-apply if it's enabled
         // This handles cases where user toggles button but internal state was already true
+        // 但是首次调用时（forceApply=true）必须强制应用，确保 SDR 视频也能正确配置
         if (!shouldEnable) {
             if (primaries) mpv_free(primaries);
             if (gamma) mpv_free(gamma);
