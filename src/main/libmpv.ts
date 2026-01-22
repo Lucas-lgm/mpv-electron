@@ -147,16 +147,6 @@ export class LibMPVController extends EventEmitter {
         // 忽略
       }
       
-      // 配置音频直通（passthrough）支持
-      // 支持的格式：ac3, dts, dts-hd, eac3, truehd
-      // 注意：macOS 的 coreaudio 驱动支持 AC3/DTS 直通，但需要硬件支持（如 HDMI 输出到 A/V 接收器）
-      try {
-        // 启用常见格式的直通：AC3, DTS, DTS-HD, E-AC3, TrueHD
-        await this.setOption('audio-spdif', 'ac3,dts,dts-hd,eac3,truehd')
-        console.log('[libmpv] ✅ Enabled audio passthrough for AC3/DTS/E-AC3/TrueHD')
-      } catch (error) {
-        console.warn('[libmpv] Failed to set audio-spdif:', error)
-      }
 
       // 现在初始化（初始化后不能再设置 vo 和 wid）
       mpvBinding!.initialize(this.instanceId)
@@ -619,6 +609,7 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.phase = 'playing'
         }
         this.emit('status', { ...this.currentStatus })
+        this.emit('file-loaded')
         break
       }
       case MPV_EVENT_SEEK: {

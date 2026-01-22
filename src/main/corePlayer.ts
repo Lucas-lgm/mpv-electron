@@ -115,9 +115,9 @@ class CorePlayerImpl implements CorePlayer {
         await this.controller.setWindowId(windowId)
         await this.syncWindowSize()
         this.setupResizeHandler()
+        this.setupEventHandlers()
         await this.controller.loadFile(filePath)
         await this.syncWindowSize()
-        this.setupEventHandlers()
         return
       } catch {
         this.useLibMPV = false
@@ -182,9 +182,28 @@ class CorePlayerImpl implements CorePlayer {
     if (!this.controller) return
     const videoWindow = this.videoWindow
     if (!videoWindow) return
+    
+    // 先移除旧的监听器，避免重复注册
+    this.controller.removeAllListeners('status')
+    this.controller.removeAllListeners('file-loaded')
+    
     this.controller.on('status', (status: MPVStatus) => {
       this.updateFromMPVStatus(status)
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
+    })
+    
+    // 监听文件加载完成事件，确保自动播放
+    this.controller.on('file-loaded', async () => {
+      if (!this.controller) return
+      try {
+        // 检查 pause 状态，如果为 true 则自动播放
+        const pauseState = await this.controller.getProperty('pause')
+        if (pauseState === true) {
+          await this.controller.play()
+        }
+      } catch (error) {
+        // 忽略错误，继续执行
+      }
     })
   }
 
