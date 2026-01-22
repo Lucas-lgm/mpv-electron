@@ -212,19 +212,72 @@ echo ""
 echo "================================"
 echo "创建符号链接..."
 echo "================================"
-if [ -f "$PROJECT_ROOT/create_symlinks.sh" ]; then
-    "$PROJECT_ROOT/create_symlinks.sh"
-else
-    echo "Warning: create_symlinks.sh not found"
-fi
+cd "$VENDOR_LIB"
 
-# 修复 rpath
+# 为带完整版本号的库创建简化版本号的符号链接
+for lib in *.dylib; do
+    # 跳过已经是符号链接的
+    [ -L "$lib" ] && continue
+    [ ! -f "$lib" ] && continue
+    
+    # 获取库名和版本（例如：libfoo.1.2.3.dylib -> libfoo.1.dylib）
+    if [[ "$lib" =~ ^(.+)\.([0-9]+)\.([0-9]+)\.([0-9]+)\.dylib$ ]]; then
+        base="${BASH_REMATCH[1]}"
+        major="${BASH_REMATCH[2]}"
+        minor="${BASH_REMATCH[3]}"
+        patch="${BASH_REMATCH[4]}"
+        
+        # 创建 major.minor 版本的链接
+        link_name="${base}.${major}.${minor}.dylib"
+        if [ ! -e "$link_name" ]; then
+            ln -sf "$lib" "$link_name"
+        fi
+        
+        # 创建 major 版本的链接
+        link_name="${base}.${major}.dylib"
+        if [ ! -e "$link_name" ]; then
+            ln -sf "$lib" "$link_name"
+        fi
+    fi
+done
+
+echo "符号链接创建完成！"
+
+# 最终修复所有库的路径（确保所有依赖都使用 @rpath）
 echo ""
 echo "================================"
-echo "修复依赖路径为 @rpath..."
+echo "最终修复依赖路径为 @rpath..."
 echo "================================"
-if [ -f "$PROJECT_ROOT/fix_rpath.sh" ]; then
-    "$PROJECT_ROOT/fix_rpath.sh" | tail -30
-else
-    echo "Warning: fix_rpath.sh not found"
-fi
+
+for lib in *.dylib; do
+    # 跳过符号链接
+    [ -L "$lib" ] && continue
+    [ ! -f "$lib" ] && continue
+    
+    # 修改库的 install name 为 @rpath
+    install_name_tool -id "@rpath/$lib" "$lib" 2>/dev/null || true
+    
+    # 获取所有依赖
+    deps=$(otool -L "$lib" | tail -n +2 | awk '{print $1}')
+    
+    while IFS= read -r dep; do
+        [ -z "$dep" ] && continue
+        
+        # 跳过系统库和已修复的路径
+        [[ "$dep" == /usr/lib/* ]] && continue
+        [[ "$dep" == /System/* ]] && continue
+        [[ "$dep" == @rpath/* ]] && continue
+        [[ "$dep" == @loader_path/* ]] && continue
+        
+        # 获取依赖库的文件名
+        dep_name=$(basename "$dep")
+        
+        # 检查文件是否存在于 vendor 目录
+        if [ -f "$dep_name" ] || [ -L "$dep_name" ]; then
+            # 修改依赖路径为 @rpath
+            install_name_tool -change "$dep" "@rpath/$dep_name" "$lib" 2>/dev/null || true
+        fi
+    done <<< "$deps"
+done
+
+echo "路径修复完成！"

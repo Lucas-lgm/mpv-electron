@@ -44,32 +44,8 @@ vendor/
 此脚本会：
 1. 分析 libmpv 的依赖树
 2. 递归复制所有非系统库依赖（约 101 个库文件）
-3. 自动调用 `create_symlinks.sh` 创建版本号符号链接
-4. 自动调用 `fix_rpath.sh` 修改所有库的路径为 @rpath
-
-### create_symlinks.sh
-创建库文件的版本号符号链接：
-
-```bash
-./create_symlinks.sh
-```
-
-此脚本会为带完整版本号的库文件创建简化版本号的符号链接，例如：
-- `libavcodec.62.11.100.dylib` → `libavcodec.62.dylib`
-- `libjxl.0.11.1.dylib` → `libjxl.0.11.dylib` 和 `libjxl.0.dylib`
-
-### fix_rpath.sh
-修复所有库文件的依赖路径为 @rpath：
-
-```bash
-./fix_rpath.sh
-```
-
-此脚本会：
-1. 遍历所有 vendor 中的库文件
-2. 将 install_name 修改为 @rpath 相对路径
-3. 将所有 homebrew 绝对路径依赖改为 @rpath 相对路径
-4. 验证 libmpv 的最终依赖路径
+3. 创建版本号符号链接（为带完整版本号的库创建简化版本号链接）
+4. 修改所有库的路径为 @rpath（确保所有依赖都使用 @rpath 相对路径）
 
 ## 依赖库列表
 

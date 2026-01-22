@@ -85,8 +85,8 @@ vendor/
 2. 递归分析每个依赖的依赖（最多10层）
 3. 排除系统库（/usr/lib, /System）
 4. 复制所有第三方库到 vendor 目录
-5. 调用 create_symlinks.sh 创建符号链接
-6. 调用 fix_rpath.sh 修复依赖路径
+5. 创建版本号符号链接
+6. 修复所有路径为 @rpath
 
 **依赖树示例**:
 ```
@@ -105,54 +105,23 @@ libmpv.2.dylib
 └── ...
 ```
 
-### 3. create_symlinks.sh - 符号链接脚本
+### 3. 符号链接和路径修复
 
-**用途**: 为带完整版本号的库创建简化版本号的符号链接
+`copy_dependencies.sh` 会自动完成：
+- 创建版本号符号链接（为带完整版本号的库创建简化版本号链接）
+- 修复所有路径为 @rpath（确保所有依赖都使用 @rpath 相对路径）
 
-**执行步骤**:
-```bash
-./create_symlinks.sh
-```
-
-**示例**:
+**符号链接示例**:
 ```bash
 # 原始文件: libavcodec.62.11.100.dylib
-# 创建链接:
+# 自动创建链接:
 libavcodec.62.11.dylib -> libavcodec.62.11.100.dylib
 libavcodec.62.dylib -> libavcodec.62.11.100.dylib
-
-# 原始文件: libjxl.0.11.1.dylib
-# 创建链接:
-libjxl.0.11.dylib -> libjxl.0.11.1.dylib
-libjxl.0.dylib -> libjxl.0.11.1.dylib
 ```
 
-**为什么需要符号链接?**
-- homebrew 中的库使用完整版本号命名
-- 引用时使用主版本号（如 libavcodec.62.dylib）
-- 符号链接让两种命名方式都能工作
-
-### 4. fix_rpath.sh - 路径修复脚本
-
-**用途**: 将所有绝对路径依赖改为 @rpath 相对路径
-
-**执行步骤**:
-```bash
-./fix_rpath.sh
-```
-
-**修复示例**:
-```bash
-# 修复前:
-/opt/homebrew/opt/ffmpeg-full/lib/libavcodec.62.dylib
-
-# 修复后:
-@rpath/libavcodec.62.dylib
-```
-
-**使用的工具**:
-- `install_name_tool -id` - 修改库的身份标识
-- `install_name_tool -change` - 修改依赖路径
+**路径修复**:
+- 所有库的 install_name 修改为 `@rpath/xxx.dylib`
+- 所有依赖路径从 `/opt/homebrew/...` 改为 `@rpath/xxx.dylib`
 
 **验证命令**:
 ```bash
@@ -265,7 +234,7 @@ cd ..
 cp /opt/homebrew/opt/ffmpeg-full/lib/libavcodec.*.dylib \
    vendor/mpv/darwin-arm64/lib/
 
-./fix_rpath.sh
+./copy_dependencies.sh
 ```
 
 ## 故障排查
@@ -283,7 +252,7 @@ ls vendor/mpv/darwin-arm64/lib/libxxx.dylib
 otool -L vendor/mpv/darwin-arm64/lib/libmpv.2.dylib
 
 # 3. 重新修复路径
-./fix_rpath.sh
+./copy_dependencies.sh
 ```
 
 ### 问题 2: 符号链接丢失
@@ -292,7 +261,7 @@ otool -L vendor/mpv/darwin-arm64/lib/libmpv.2.dylib
 
 **解决方案**:
 ```bash
-./create_symlinks.sh
+./copy_dependencies.sh
 ```
 
 ### 问题 3: 权限问题
