@@ -300,6 +300,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   pointer-events: none;
+  contain: layout style paint;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .loading-overlay {
@@ -349,11 +352,14 @@ onUnmounted(() => {
   right: 0;
   bottom: 80px;
   width: 280px;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.85);
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  backdrop-filter: blur(12px);
+  /* 移除 backdrop-filter 以提高性能，特别是在 8K 视频上 */
+  /* backdrop-filter: blur(12px); */
+  /* 使用 will-change 优化渲染性能 */
+  will-change: transform, opacity;
 }
 
 .playlist-header {

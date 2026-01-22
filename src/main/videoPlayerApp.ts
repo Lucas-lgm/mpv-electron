@@ -398,10 +398,15 @@ export class VideoPlayerApp {
         preload: preloadPath,
         nodeIntegration: false,
         contextIsolation: true,
-        backgroundThrottling: false
+        backgroundThrottling: false,
+        // 优化性能：禁用不必要的功能
+        enableWebSQL: false
       }
     })
     view.setBackgroundColor('#00000000')
+    
+    // 优化 BrowserView 性能：禁用不必要的功能
+    view.webContents.setFrameRate(30) // 降低控制栏的帧率，减少性能消耗
     window.setBrowserView(view)
     const bounds = window.getContentBounds()
     view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height })
