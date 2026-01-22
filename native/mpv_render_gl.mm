@@ -12,6 +12,7 @@
 #include <cmath>
 #include <unistd.h>  // for usleep
 #include <thread>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -920,36 +921,69 @@ static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
         rc->displayLink = nullptr;
     }
     
-    // Free mpv render context
-    if (rc->mpvRenderCtx) {
-        mpv_render_context_set_update_callback(rc->mpvRenderCtx, nullptr, nullptr);
-        mpv_render_context_free(rc->mpvRenderCtx);
-        rc->mpvRenderCtx = nullptr;
-    }
+    // release GL resources (必须在主线程，并且必须在正确的 OpenGL 上下文中)
+    // 关键：mpv_render_context_free 会调用 OpenGL 函数，必须在正确的上下文中执行
+    auto cleanupBlock = ^{
+        @autoreleasepool {
+            // 设置 OpenGL 上下文（如果存在）
+            CGLContextObj savedContext = nil;
+            if (rc->cglContext) {
+                CGLLockContext(rc->cglContext);
+                savedContext = CGLGetCurrentContext();
+                CGLSetCurrentContext(rc->cglContext);
+            }
+            
+            // Free mpv render context（必须在正确的 OpenGL 上下文中）
+            if (rc->mpvRenderCtx) {
+                mpv_render_context_set_update_callback(rc->mpvRenderCtx, nullptr, nullptr);
+                mpv_render_context_free(rc->mpvRenderCtx);
+                rc->mpvRenderCtx = nullptr;
+            }
+            
+            // 恢复之前的上下文
+            if (rc->cglContext) {
+                CGLSetCurrentContext(savedContext);
+                CGLUnlockContext(rc->cglContext);
+            }
+            
+            // 先断开 layer 与 view 的关联，再释放 layer
+            if (rc->glLayer && rc->view) {
+                MPVOpenGLLayer *layer = (MPVOpenGLLayer *)rc->glLayer;
+                layer.renderCtx = nullptr;
+                if (rc->view.layer == layer) {
+                    rc->view.layer = nil;
+                }
+                [layer release];
+                rc->glLayer = nil;
+            } else if (rc->glLayer) {
+                MPVOpenGLLayer *layer = (MPVOpenGLLayer *)rc->glLayer;
+                layer.renderCtx = nullptr;
+                [layer release];
+                rc->glLayer = nil;
+            }
+            
+            if (rc->cglContext) {
+                CGLSetCurrentContext(nil);
+                CGLReleaseContext(rc->cglContext);
+                rc->cglContext = nil;
+            }
+            if (rc->cglPixelFormat) {
+                CGLReleasePixelFormat(rc->cglPixelFormat);
+                rc->cglPixelFormat = nil;
+            }
+            
+            if (rc->view) {
+                [rc->view release];
+                rc->view = nil;
+            }
+        }
+    };
     
-    // release GL resources (必须在主线程)
-    runOnMainAsync(^{
-        if (rc->glLayer) {
-            MPVOpenGLLayer *layer = (MPVOpenGLLayer *)rc->glLayer;
-            layer.renderCtx = nullptr;
-            [layer release];
-            rc->glLayer = nil;
-        }
-        if (rc->cglContext) {
-            CGLSetCurrentContext(nil);
-            CGLReleaseContext(rc->cglContext);
-            rc->cglContext = nil;
-        }
-        if (rc->cglPixelFormat) {
-            CGLReleasePixelFormat(rc->cglPixelFormat);
-            rc->cglPixelFormat = nil;
-        }
-        
-        if (rc->view) {
-            [rc->view release];
-            rc->view = nil;
-        }
-    });
+    if (isMainThread()) {
+        cleanupBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), cleanupBlock);
+    }
     
     rc->mpvHandle = nullptr;
 }
