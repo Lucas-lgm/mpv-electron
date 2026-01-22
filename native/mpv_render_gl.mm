@@ -99,6 +99,7 @@ extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
 static void update_hdr_mode(GLRenderContext *rc, bool forceApply = false);
 static void set_render_icc_profile(GLRenderContext *rc);
+static void init_default_sdr_config(GLRenderContext *rc);
 
 @interface MPVOpenGLLayer : CAOpenGLLayer
 @property(nonatomic, assign) GLRenderContext *renderCtx;
@@ -604,6 +605,65 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
     log_hdr_config(rc);
 }
 
+/**
+ * 初始化默认 SDR 色彩空间配置
+ * 在创建渲染上下文时调用，确保首次打开 SDR 视频时就有正确的色彩空间设置
+ */
+static void init_default_sdr_config(GLRenderContext *rc) {
+    if (!rc || !rc->mpvHandle || !rc->view) return;
+    
+    // 设置 layer 的色彩空间
+    CALayer *layer = get_render_layer(rc);
+    if (layer) {
+        if (@available(macOS 14.0, *)) {
+            layer.wantsExtendedDynamicRangeContent = NO;
+        }
+        
+        CGColorSpaceRef cs = nullptr;
+        NSScreen *screen = nil;
+        if (rc->view.window) {
+            screen = rc->view.window.screen;
+        }
+        if (screen && screen.colorSpace) {
+            cs = screen.colorSpace.CGColorSpace;
+        } else {
+            cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        }
+        if (cs) {
+            set_layer_colorspace_if_supported(layer, cs);
+            if (!(screen && screen.colorSpace && cs == screen.colorSpace.CGColorSpace)) {
+                CGColorSpaceRelease(cs);
+            }
+        }
+    }
+    
+    // 设置默认 SDR MPV 配置
+    int iccAuto = 1;
+    mpv_set_property(rc->mpvHandle, "icc-profile-auto", MPV_FORMAT_FLAG, &iccAuto);
+    
+    NSScreen *screen = nil;
+    if (rc->view.window) {
+        screen = rc->view.window.screen;
+    }
+    
+    // 检测显示器的 primaries（通常是 bt.709 或 display-p3）
+    const char *targetPrim = "bt.709";
+    if (screen && screen.colorSpace) {
+        NSString *csName = screen.colorSpace.localizedName;
+        if ([csName containsString:@"P3"] || [csName containsString:@"Display P3"]) {
+            targetPrim = "display-p3";
+        }
+    }
+    
+    // 明确设置 SDR 的 transfer function 为 sRGB
+    // 这确保正确的 gamma 曲线，避免画面偏灰
+    mpv_set_property_string(rc->mpvHandle, "target-prim", targetPrim);
+    mpv_set_property_string(rc->mpvHandle, "target-trc", "srgb");
+    mpv_set_property_string(rc->mpvHandle, "target-peak", "auto");
+    mpv_set_property_string(rc->mpvHandle, "target-colorspace-hint", "yes");
+    mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
+}
+
 static void set_render_icc_profile(GLRenderContext *rc) {
     if (!rc || !rc->mpvRenderCtx || !rc->view) return;
     NSScreen *screen = nil;
@@ -826,6 +886,10 @@ static bool createGLForView(GLRenderContext *rc) {
 
     mpv_render_context_set_update_callback(rc->mpvRenderCtx, on_mpv_redraw, (void*)(intptr_t)rc->instanceId);
     set_render_icc_profile(rc);
+    
+    // 初始化默认 SDR 色彩空间配置
+    // 这样即使首次打开的是 SDR 视频，也能有正确的色彩空间设置
+    init_default_sdr_config(rc);
 
     // Setup CVDisplayLink (for mpv_render_context_report_swap timing)
     CVReturn cvRet = CVDisplayLinkCreateWithActiveCGDisplays(&rc->displayLink);
