@@ -656,32 +656,38 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
             // 这样可以充分利用显示器的能力，获得更好的对比度和亮度表现
             if (isDolbyVision) {
                 // Dolby Vision 需要更保守的设置，因为它本身已经有动态色调映射
-                // 使用显示器峰值的 70%，避免 Dolby Vision 的动态映射导致过曝
-                targetPeakNits = (int64_t)(displayPeakNits * 0.7);
-                // 确保最小值
-                if (targetPeakNits < 400) {
-                    targetPeakNits = 400;
+                // 使用显示器峰值的 55%，稍微提高亮度（从 50% 提升）
+                // Dolby Vision 的动态色调映射已经处理了亮度映射，target-peak 过高会导致过曝
+                targetPeakNits = (int64_t)(displayPeakNits * 0.55);
+                // 确保最小值，但不要太高
+                if (targetPeakNits < 350) {
+                    targetPeakNits = 350;
+                }
+                // 设置最大值上限，稍微提高（从 600 提升到 650）
+                if (targetPeakNits > 650) {
+                    targetPeakNits = 650;
+                }
+                
+                // 对于 Dolby Vision，如果视频的 sig-peak 可用且较低，进一步限制 target-peak
+                // 这样可以避免低峰值 Dolby Vision 视频过亮
+                if (sigPeakErr >= 0 && sigPeak > 0.1) {
+                    if (sigPeak < 2000.0) {
+                        // sig-peak 较低，使用更保守的值
+                        // 对于 Dolby Vision，使用 sig-peak 的 85% 作为上限（从 80% 提升）
+                        int64_t maxFromSigPeak = (int64_t)(sigPeak * 0.85);
+                        if (maxFromSigPeak < targetPeakNits) {
+                            targetPeakNits = maxFromSigPeak;
+                        }
+                        // 确保最小值，避免过低导致画面过暗
+                        if (targetPeakNits < 400) {
+                            targetPeakNits = 400;
+                        }
+                    }
                 }
             } else {
                 // 普通 HDR：使用显示器的实际峰值亮度
                 targetPeakNits = displayPeakNits;
             }
-            
-            // 如果视频的 sig-peak 可用，根据实际峰值进行微调
-            // if (sigPeakErr >= 0 && sigPeak > 0.1) {
-            //     if (sigPeak < 1000.0) {
-            //         // sig-peak 很低，可能是低峰值 HDR 或 SDR，限制 target-peak
-            //         int64_t maxFromSigPeak = (int64_t)(sigPeak * 0.9);
-            //         if (maxFromSigPeak < targetPeakNits) {
-            //             targetPeakNits = maxFromSigPeak;
-            //         }
-            //         // 确保最小值
-            //         if (targetPeakNits < 300) {
-            //             targetPeakNits = 300;
-            //         }
-            //     }
-            //     // 对于高 sig-peak 的视频，已经使用了显示器峰值，不需要进一步调整
-            // }
         } else {
             // 没有 EDR 支持，使用 SDR 标准值
             targetPeakNits = 203;
