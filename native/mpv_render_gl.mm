@@ -592,25 +592,118 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
             edr = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
         }
         
+        // 检测文件格式，MOV 格式的 HDR 视频通常需要更保守的 target-peak
+        char *fileFormat = mpv_get_property_string(rc->mpvHandle, "file-format");
+        bool isMovFormat = false;
+        if (fileFormat) {
+            // 检查是否是 MOV/MP4 格式（MOV 和 MP4 使用相同的容器格式）
+            if (strcasecmp(fileFormat, "mov") == 0 || 
+                strcasecmp(fileFormat, "mp4") == 0 ||
+                strcasecmp(fileFormat, "m4v") == 0 ||
+                strcasecmp(fileFormat, "quicktime") == 0) {
+                isMovFormat = true;
+            }
+        }
+        
+        // 检测是否是 Dolby Vision 视频
+        bool isDolbyVision = false;
+        mpv_node tracks;
+        if (mpv_get_property(rc->mpvHandle, "track-list", MPV_FORMAT_NODE, &tracks) >= 0) {
+            if (tracks.format == MPV_FORMAT_NODE_ARRAY) {
+                for (int i = 0; i < tracks.u.list->num; i++) {
+                    mpv_node track = tracks.u.list->values[i];
+                    if (track.format != MPV_FORMAT_NODE_MAP) continue;
+                    
+                    bool is_video = false;
+                    bool is_selected = false;
+                    bool has_dv = false;
+                    
+                    mpv_node_list *list = track.u.list;
+                    for (int j = 0; j < list->num; j++) {
+                        char *key = list->keys[j];
+                        mpv_node value = list->values[j];
+                        
+                        if (strcmp(key, "type") == 0 && value.format == MPV_FORMAT_STRING) {
+                            if (strcmp(value.u.string, "video") == 0) is_video = true;
+                        } else if (strcmp(key, "selected") == 0 && value.format == MPV_FORMAT_FLAG) {
+                            is_selected = value.u.flag;
+                        } else if (strcmp(key, "dolby-vision-profile") == 0 && value.format == MPV_FORMAT_INT64) {
+                            if (value.u.int64 > 0) has_dv = true;
+                        }
+                    }
+                    
+                    if (is_video && is_selected && has_dv) {
+                        isDolbyVision = true;
+                        break;
+                    }
+                }
+            }
+            mpv_free_node_contents(&tracks);
+        }
+        
         // 根据 EDR 值计算实际的峰值亮度（nits）
         // EDR 值表示相对于标准 sRGB (100 nits) 的倍数
         // 例如：edr=2.0 意味着显示器可以达到 200 nits 的峰值
         // 但实际的 HDR 显示器通常峰值更高，需要更合理的映射
         int64_t targetPeakNits = 0;
         if (edr > 1.0) {
-            // 使用保守的映射：大多数消费级 HDR 显示器峰值在 400-1000 nits
-            // edr 值通常对应：1.5-2.0 (400-600 nits), 2.0-3.0 (600-800 nits), 3.0+ (800-1000 nits)
-            if (edr <= 2.0) {
-                targetPeakNits = 500; // 保守：较低端的 HDR 显示器
-            } else if (edr <= 3.0) {
-                targetPeakNits = 700; // 中等：大多数消费级 HDR 显示器
+            // MOV 格式的 HDR 视频通常使用更保守的峰值设置，避免过曝
+            // 因为 MOV 容器中的 HDR 元数据可能不够准确，或者内容本身峰值较低
+            // MOV 格式的 Dolby Vision 视频尤其需要更保守的设置，因为 Dolby Vision 本身已经有动态色调映射
+            if (isMovFormat) {
+                if (isDolbyVision) {
+                    // MOV + Dolby Vision: 使用最保守的值，避免过曝
+                    // Dolby Vision 已经有动态色调映射，如果 target-peak 过高会导致过曝
+                    if (edr <= 2.0) {
+                        targetPeakNits = 350; // MOV+DV: 最保守，较低端的 HDR 显示器
+                    } else if (edr <= 3.0) {
+                        targetPeakNits = 450; // MOV+DV: 最保守，大多数消费级 HDR 显示器
+                    } else {
+                        targetPeakNits = 600; // MOV+DV: 最保守，高端但仍避免过曝
+                    }
+                } else {
+                    // MOV 格式（非 Dolby Vision）：使用更保守的值
+                    if (edr <= 2.0) {
+                        targetPeakNits = 400; // MOV: 更保守，较低端的 HDR 显示器
+                    } else if (edr <= 3.0) {
+                        targetPeakNits = 550; // MOV: 更保守，大多数消费级 HDR 显示器
+                    } else {
+                        targetPeakNits = 750; // MOV: 更保守，高端但仍避免过曝
+                    }
+                }
             } else {
-                targetPeakNits = 1000; // 高端：但仍保守，避免过曝
+                // 其他格式：使用原有的保守映射
+                if (edr <= 2.0) {
+                    targetPeakNits = 500; // 保守：较低端的 HDR 显示器
+                } else if (edr <= 3.0) {
+                    targetPeakNits = 700; // 中等：大多数消费级 HDR 显示器
+                } else {
+                    targetPeakNits = 1000; // 高端：但仍保守，避免过曝
+                }
+            }
+            
+            // 如果视频的 sig-peak 可用且较低，进一步限制 target-peak
+            // 但不要直接使用 sig-peak，因为它可能过高（如 10000 nits）
+            // 而是使用更保守的映射：如果 sig-peak < 2000 nits，则进一步降低 target-peak
+            if (sigPeakErr >= 0 && sigPeak > 0.1 && sigPeak < 2000.0) {
+                // 视频的实际峰值较低，使用更保守的值
+                int64_t sigPeakNits = (int64_t)sigPeak;
+                // 使用 sig-peak 的 80% 作为上限，但不超过当前计算的值
+                int64_t maxFromSigPeak = (int64_t)(sigPeak * 0.8);
+                if (maxFromSigPeak < targetPeakNits) {
+                    targetPeakNits = maxFromSigPeak;
+                }
+                // 确保最小值，避免过低导致画面过暗
+                if (targetPeakNits < 300) {
+                    targetPeakNits = 300;
+                }
             }
         } else {
             // 没有 EDR 支持，使用 SDR 标准值
             targetPeakNits = 203;
         }
+        
+        if (fileFormat) mpv_free(fileFormat);
         
         mpv_set_property(rc->mpvHandle, "target-peak", MPV_FORMAT_INT64, &targetPeakNits);
         
