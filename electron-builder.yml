@@ -26,7 +26,6 @@ mac:
       arch:
         - arm64
   category: public.app-category.video
-  icon: resources/icon.icns
   entitlements: resources/entitlements.mac.plist
   entitlementsInherit: resources/entitlements.mac.plist
   hardenedRuntime: true
@@ -38,7 +37,6 @@ mac:
         - '**/*.dylib'
 dmg:
   title: ${productName} ${version}
-  icon: resources/icon.icns
   contents:
     - x: 130
       y: 220
