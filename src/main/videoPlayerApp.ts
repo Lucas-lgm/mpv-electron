@@ -255,14 +255,6 @@ export class VideoPlayerApp {
       route: '#/'
     })
 
-    // 主窗口关闭时退出整个应用
-    mainWindow.on('close', async (event) => {
-      // 先清理资源
-      await corePlayer.cleanup().catch(() => {})
-      // 退出应用
-      app.quit()
-    })
-
     return mainWindow
   }
 
@@ -458,7 +450,7 @@ export class VideoPlayerApp {
     })
 
     app.on('before-quit', () => {
-      corePlayer.cleanup().catch(() => {})
+      // corePlayer.cleanup().catch(() => {})
     })
 
     const handleSignal = (signal: NodeJS.Signals) => {

@@ -276,6 +276,7 @@ class CorePlayerImpl implements CorePlayer {
       this.timeline?.dispose()
       if (this.controller) {
         if (this.controller instanceof LibMPVController) {
+          await this.controller.stop()
           await this.controller.destroy()
         }
         this.controller = null
