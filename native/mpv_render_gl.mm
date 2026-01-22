@@ -266,10 +266,6 @@ static void init_default_sdr_config(GLRenderContext *rc);
 
     int flip_y = 1;
 
-    // 关键：禁用阻塞等待，确保与 Electron UI 同步
-    // block_for_target_time=0 让 mpv_render_context_render 不阻塞主线程
-    // 这样 Electron 的 UI 事件（点击、滚动等）可以及时处理
-    // CVDisplayLink 已经提供了显示同步，所以不需要 mpv 的阻塞等待
     int block_for_target_time = 0;
 
     mpv_render_param params[] = {
