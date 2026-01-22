@@ -8,7 +8,6 @@
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
-        "<(module_root_dir)/../vendor/mpv/darwin-arm64/include",
         "<(module_root_dir)/../mpv/include"
       ],
       "dependencies": [
@@ -24,23 +23,45 @@
             "CLANG_CXX_LIBRARY": "libc++",
             "MACOSX_DEPLOYMENT_TARGET": "10.13",
             "LD_RUNPATH_SEARCH_PATHS": [
-              "@loader_path/../../../vendor/mpv/darwin-arm64/lib"
+              "@loader_path/../../../vendor/mpv/darwin-arm64/lib",
+              "@loader_path/../../../../lib"
             ]
           },
           "link_settings": {
             "libraries": [
-              "<(module_root_dir)/../vendor/mpv/darwin-arm64/lib/libmpv.2.dylib",
               "-framework Cocoa",
               "-framework IOKit",
               "-framework QuartzCore",
               "-framework CoreVideo"
-            ],
-            "library_dirs": [
-              "<(module_root_dir)/../vendor/mpv/darwin-arm64/lib"
             ]
           },
-          "include_dirs": [
-            "<(module_root_dir)/../vendor/mpv/darwin-arm64/include"
+          "conditions": [
+            ["target_arch=='arm64'", {
+              "link_settings": {
+                "libraries": [
+                  "<(module_root_dir)/../vendor/mpv/darwin-arm64/lib/libmpv.2.dylib"
+                ],
+                "library_dirs": [
+                  "<(module_root_dir)/../vendor/mpv/darwin-arm64/lib"
+                ]
+              },
+              "include_dirs": [
+                "<(module_root_dir)/../vendor/mpv/darwin-arm64/include"
+              ]
+            }],
+            ["target_arch=='x64'", {
+              "link_settings": {
+                "libraries": [
+                  "<(module_root_dir)/../vendor/mpv/darwin-x64/lib/libmpv.2.dylib"
+                ],
+                "library_dirs": [
+                  "<(module_root_dir)/../vendor/mpv/darwin-x64/lib"
+                ]
+              },
+              "include_dirs": [
+                "<(module_root_dir)/../vendor/mpv/darwin-x64/include"
+              ]
+            }]
           ]
         }],
         ["OS=='win'", {

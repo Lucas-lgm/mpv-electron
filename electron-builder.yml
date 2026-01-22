@@ -15,7 +15,6 @@ files:
   - native/**/*
   - build/**/*
 asarUnpack:
-  - vendor/**/*
   - native/build/Release/**/*
 mac:
   target:
@@ -31,6 +30,7 @@ mac:
   hardenedRuntime: true
   gatekeeperAssess: false
   extraFiles:
+    # macOS ARM64 库（当前只支持 arm64）
     - from: vendor/mpv/darwin-arm64/lib
       to: Resources/lib
       filter:
