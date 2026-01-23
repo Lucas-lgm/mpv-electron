@@ -2,7 +2,7 @@ import { BrowserWindow, BrowserView, screen } from 'electron'
 import { PlayerStateMachine, type PlayerState, type PlayerPhase } from './playerState'
 import type { MPVStatus } from './libmpv'
 import { LibMPVController, isLibMPVAvailable } from './libmpv'
-import { getNSViewPointer } from './nativeHelper'
+import { getNSViewPointer, getHWNDPointer } from './nativeHelper'
 import { Timeline } from './timeline'
 
 export interface CorePlayer {
@@ -90,15 +90,36 @@ class CorePlayerImpl implements CorePlayer {
           this.videoWindow.show()
         }
         this.videoWindow.focus()
-        await new Promise(resolve => setTimeout(resolve, 300))
+        // Windows 上需要等待窗口完全准备好
+        const waitTime = process.platform === 'win32' ? 500 : 300
+        await new Promise(resolve => setTimeout(resolve, waitTime))
         if (this.videoWindow.isDestroyed()) {
+          console.warn('[CorePlayer] Window was destroyed while waiting')
         } else {
-          const windowHandle = getNSViewPointer(this.videoWindow)
-          if (windowHandle) {
-            windowId = windowHandle
+          // 按平台获取窗口句柄
+          if (process.platform === 'darwin') {
+            const windowHandle = getNSViewPointer(this.videoWindow)
+            if (windowHandle) {
+              windowId = windowHandle
+              console.log('[CorePlayer] Got NSView pointer:', windowHandle)
+            }
+          } else if (process.platform === 'win32') {
+            // Windows 上，确保窗口完全显示后再获取 HWND
+            if (!this.videoWindow.isVisible()) {
+              this.videoWindow.show()
+              await new Promise(resolve => setTimeout(resolve, 100))
+            }
+            const windowHandle = getHWNDPointer(this.videoWindow)
+            if (windowHandle) {
+              windowId = windowHandle
+              console.log('[CorePlayer] Got HWND:', windowHandle)
+            } else {
+              console.error('[CorePlayer] Failed to get HWND')
+            }
           }
         }
-      } catch {
+      } catch (error) {
+        console.error('[CorePlayer] Error getting window handle:', error)
       }
     }
     if (isLibMPVAvailable() && windowId) {
@@ -106,13 +127,21 @@ class CorePlayerImpl implements CorePlayer {
       try {
         if (!this.controller) {
           this.controller = new LibMPVController()
-          this.initPromise = this.controller.initialize()
+          // Windows 上需要在初始化前设置 wid
+          if (process.platform === 'win32' && windowId) {
+            this.initPromise = this.controller.initialize(windowId)
+          } else {
+            this.initPromise = this.controller.initialize()
+          }
         }
         if (this.initPromise) {
           await this.initPromise
           this.initPromise = null
         }
-        await this.controller.setWindowId(windowId)
+        // Windows 上需要调用 setWindowId
+        if (process.platform === 'win32') {
+          await this.controller.setWindowId(windowId)
+        }
         await this.syncWindowSize()
         this.setupResizeHandler()
         this.setupEventHandlers()
@@ -145,6 +174,7 @@ class CorePlayerImpl implements CorePlayer {
     }
     this.videoWindow.removeAllListeners('resize')
     this.videoWindow.on('resize', () => {
+      console.log('[CorePlayer] Window resize event triggered')
       this.scheduleWindowSizeSync()
     })
   }
@@ -171,6 +201,7 @@ class CorePlayerImpl implements CorePlayer {
     if (width === this.lastPhysicalWidth && height === this.lastPhysicalHeight) {
       return
     }
+    console.log(`[CorePlayer] Window size changed: ${this.lastPhysicalWidth}x${this.lastPhysicalHeight} -> ${width}x${height} (scale: ${scaleFactor})`)
     this.lastPhysicalWidth = width
     this.lastPhysicalHeight = height
     if (this.controller instanceof LibMPVController) {

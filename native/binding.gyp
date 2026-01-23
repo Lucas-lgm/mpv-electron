@@ -3,8 +3,7 @@
     {
       "target_name": "mpv_binding",
       "sources": [
-        "binding.cc",
-        "mpv_render_gl.mm"
+        "binding.cc"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
@@ -18,6 +17,9 @@
       "defines": [ "NAPI_DISABLE_CPP_EXCEPTIONS" ],
       "conditions": [
         ["OS=='mac'", {
+          "sources": [
+            "mpv_render_gl.mm"
+          ],
           "xcode_settings": {
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
             "CLANG_CXX_LIBRARY": "libc++",
@@ -70,13 +72,33 @@
               "ExceptionHandling": 1
             }
           },
+          "include_dirs": [
+            "<(module_root_dir)/../vendor/mpv/win32-x64/include"
+          ],
           "link_settings": {
             "libraries": [
-              "../mpv/build/libmpv.lib"
+              "<(module_root_dir)/../vendor/mpv/win32-x64/lib/libmpv.lib",
+              "opengl32.lib",
+              "dwmapi.lib",
+              "imm32.lib",
+              "shcore.lib",
+              "version.lib",
+              "user32.lib",
+              "gdi32.lib",
+              "kernel32.lib",
+              "advapi32.lib",
+              "shell32.lib",
+              "ole32.lib",
+              "oleaut32.lib",
+              "uuid.lib",
+              "ws2_32.lib",
+              "winmm.lib",
+              "bcrypt.lib"
             ],
             "library_dirs": [
-              "../mpv/build"
-            ]
+              "<(module_root_dir)/../vendor/mpv/win32-x64/lib"
+            ],
+            "msvs_disabled_warnings": [ 4006 ]
           }
         }],
         ["OS=='linux'", {

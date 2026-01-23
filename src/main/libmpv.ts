@@ -1,5 +1,17 @@
 import { EventEmitter } from 'events'
 import * as path from 'path'
+import { existsSync } from 'fs'
+
+// Set DLL search path for Windows (must be before native module loading)
+if (process.platform === 'win32') {
+  const dllPath = path.join(__dirname, '../../vendor/mpv/win32-x64/lib')
+  if (existsSync(dllPath)) {
+    process.env.PATH = `${dllPath};${process.env.PATH}`
+    console.log('[DLL] Added to PATH:', dllPath)
+  } else {
+    console.warn('[DLL] DLL path not found:', dllPath)
+  }
+}
 
 // 定义 native binding 的类型
 interface MPVBinding {
@@ -99,8 +111,9 @@ export class LibMPVController extends EventEmitter {
 
   /**
    * 初始化 MPV 实例
+   * @param windowId 可选的窗口 ID（Windows 上需要在初始化前设置 wid）
    */
-  async initialize(): Promise<void> {
+  async initialize(windowId?: number): Promise<void> {
     if (this.instanceId !== null) {
       throw new Error('MPV instance already initialized')
     }
@@ -109,14 +122,37 @@ export class LibMPVController extends EventEmitter {
       // 创建实例（未初始化）
       this.instanceId = mpvBinding!.create()
       
-      // 在初始化前设置选项（使用 render API 时，必须设置 vo=gpu，不能设置 wid）
+      // 在初始化前设置选项
       // 注意：libmpv 默认已经设置了 no-terminal，不需要再设置
       try {
-        // 使用 GPU 渲染（render API 模式必需，这样 mpv 不会创建自己的窗口）
-        await this.setOption('vo', 'libmpv')
-        console.log('[libmpv] ✅ Set vo=libmpv for render API')
+        // macOS: 使用 render API (vo=libmpv)
+        // Windows: 使用 wid 嵌入 (vo=gpu)
+        if (process.platform === 'darwin') {
+          await this.setOption('vo', 'libmpv')
+          console.log('[libmpv] ✅ Set vo=libmpv for render API (macOS)')
+        } else if (process.platform === 'win32') {
+          // Windows 上使用 gpu 驱动（gpu-next 可能不支持 wid）
+          await this.setOption('vo', 'gpu')
+          console.log('[libmpv] ✅ Set vo=gpu for wid mode (Windows)')
+          // Windows 上，如果提供了 windowId，在初始化前设置 wid
+          if (windowId !== undefined) {
+            console.log('[libmpv] Setting wid to HWND:', windowId, '(0x' + windowId.toString(16) + ')')
+            try {
+              const result = mpvBinding!.setWindowId(this.instanceId, windowId)
+              if (result) {
+                console.log('[libmpv] ✅ Set wid before initialization (Windows)')
+              } else {
+                console.error('[libmpv] ❌ Failed to set wid option (returned false)')
+              }
+            } catch (error) {
+              console.error('[libmpv] ❌ Exception while setting wid:', error)
+            }
+          } else {
+            console.warn('[libmpv] ⚠️ No windowId provided for Windows wid mode')
+          }
+        }
       } catch (error) {
-        console.warn('[libmpv] Failed to set vo=libmpv:', error)
+        console.warn('[libmpv] Failed to set vo option:', error)
       }
       
       try {
@@ -216,9 +252,20 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      // B 方案：使用 render API，把 libmpv 绑定到 Electron 的 NSView 上
-      mpvBinding!.attachView(this.instanceId, windowId)
-      mpvBinding!.setHdrMode(this.instanceId, this.hdrEnabled)
+      if (process.platform === 'darwin') {
+        // macOS: 使用 render API，把 libmpv 绑定到 Electron 的 NSView 上
+        mpvBinding!.attachView(this.instanceId, windowId)
+        mpvBinding!.setHdrMode(this.instanceId, this.hdrEnabled)
+      } else if (process.platform === 'win32') {
+        // Windows: 使用 wid 嵌入方式
+        // 注意：wid 应该在初始化前设置，但如果已经在 initialize 中设置过，这里可以跳过
+        // 或者如果初始化时没有设置，这里尝试设置（可能失败，取决于 mpv 版本）
+        try {
+          mpvBinding!.setWindowId(this.instanceId, windowId)
+        } catch (error) {
+          console.warn('[libmpv] Failed to set wid after initialization, may need to set before init:', error)
+        }
+      }
       this.emit('window-set', windowId)
     } catch (error) {
       throw new Error(`Failed to set window ID: ${error}`)
@@ -257,8 +304,28 @@ export class LibMPVController extends EventEmitter {
         // 忽略，视频可能还没加载
       }
       
-      // Native 实现会自动触发渲染，并处理 letterbox
-      mpvBinding!.setWindowSize(this.instanceId, width, height)
+      // macOS: Native 实现会自动触发渲染，并处理 letterbox
+      // Windows: wid 模式下，需要确保 MPV 知道窗口大小变化
+      if (process.platform === 'darwin') {
+        mpvBinding!.setWindowSize(this.instanceId, width, height)
+      } else if (process.platform === 'win32') {
+        console.log(`[libmpv] Setting window size: ${width}x${height}`)
+        // Windows wid 模式下，MPV 会自动适应窗口大小
+        // 但可以通过设置 window-scale 属性来触发更新
+        // 或者通过其他属性来确保视频正确缩放
+        try {
+          // 设置 window-scale 为 1.0 来触发窗口大小更新
+          await this.setProperty('window-scale', 1.0)
+          console.log('[libmpv] Set window-scale property')
+          // 也可以尝试设置 video-scale 相关属性
+          // 但实际上 wid 模式下，MPV 应该会自动适应
+        } catch (error) {
+          console.warn('[libmpv] Failed to set window-scale:', error)
+        }
+        // 调用 native 的 setWindowSize（虽然 Windows 实现可能是空的，但保持接口一致）
+        mpvBinding!.setWindowSize(this.instanceId, width, height)
+        console.log('[libmpv] Called native setWindowSize')
+      }
     } catch (error) {
       console.error('[libmpv] Failed to set window size:', error)
     }
@@ -267,7 +334,10 @@ export class LibMPVController extends EventEmitter {
   setHdrEnabled(enabled: boolean): void {
     this.hdrEnabled = enabled
     if (!mpvBinding || this.instanceId === null) return
-    mpvBinding.setHdrMode(this.instanceId, enabled)
+    // HDR 模式仅在 macOS 上支持（通过 render API）
+    if (process.platform === 'darwin') {
+      mpvBinding.setHdrMode(this.instanceId, enabled)
+    }
   }
 
   /**
@@ -529,7 +599,10 @@ export class LibMPVController extends EventEmitter {
       return
     }
     try {
-      mpvBinding.setForceBlackMode(this.instanceId, enabled)
+      // Force black mode 仅在 macOS 上支持（通过 render API）
+      if (process.platform === 'darwin') {
+        mpvBinding.setForceBlackMode(this.instanceId, enabled)
+      }
     } catch (error) {
     }
   }

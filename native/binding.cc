@@ -29,7 +29,8 @@ struct MPVInstance {
     }
 };
 
-// 来自 mpv_render_gl.mm
+// 来自 mpv_render_gl.mm（仅 macOS）
+#ifdef __APPLE__
 extern "C" struct GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv);
 extern "C" void mpv_destroy_gl_context(int64_t instanceId);
 // mpv_render_frame_for_instance 已废弃：渲染现在完全由 CVDisplayLink 驱动
@@ -37,6 +38,7 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_debug_hdr_status(int64_t instanceId);
+#endif
 
 struct MPVEventMessage {
     mpv_event_id event_id;
@@ -167,7 +169,7 @@ void eventLoop(MPVInstance* instance) {
     }
 }
 
-// 绑定 NSView 并创建 GL + mpv_render_context
+// 绑定视图并创建 GL + mpv_render_context（macOS）或设置 wid（Windows）
 Napi::Value AttachView(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -189,7 +191,8 @@ Napi::Value AttachView(const Napi::CallbackInfo& info) {
     
     MPVInstance* inst = it->second;
     
-    // 避免重复创建
+#ifdef __APPLE__
+    // macOS: 使用 render API，创建 GL 上下文
     if (!inst->glCtx) {
         inst->glCtx = mpv_create_gl_context_for_view(id, (void*)viewPtr, inst->ctx);
         if (!inst->glCtx) {
@@ -197,6 +200,16 @@ Napi::Value AttachView(const Napi::CallbackInfo& info) {
             return env.Null();
         }
     }
+#elif defined(_WIN32)
+    // Windows: 使用 wid 嵌入方式
+    // viewPtr 是 HWND，通过 SetWindowId 设置
+    int err = mpv_set_option(inst->ctx, "wid", MPV_FORMAT_INT64, &viewPtr);
+    if (err < 0) {
+        Napi::Error::New(env, std::string("Failed to set window ID: ") + mpv_error_string(err))
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+#endif
     
     return env.Undefined();
 }
@@ -217,7 +230,24 @@ Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
     int width = info[1].As<Napi::Number>().Int32Value();
     int height = info[2].As<Napi::Number>().Int32Value();
     
+#ifdef __APPLE__
     mpv_set_window_size(id, width, height);
+#elif defined(_WIN32)
+    // Windows 使用 wid 方式，MPV 会自动适应窗口大小
+    // 但可以通过设置属性来触发更新，确保视频正确缩放
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    auto it = instances.find(id);
+    if (it != instances.end() && it->second->ctx && it->second->running) {
+        mpv_handle* ctx = it->second->ctx;
+        // 通过设置 window-scale 属性来触发窗口大小更新
+        // 这会强制 MPV 重新计算窗口大小
+        double scale = 1.0;
+        mpv_set_property(ctx, "window-scale", MPV_FORMAT_DOUBLE, &scale);
+        // 也可以尝试触发重绘
+        const char* cmd[] = { "show-text", " ", NULL };
+        mpv_command(ctx, cmd);
+    }
+#endif
     
     return env.Undefined();
 }
@@ -243,7 +273,12 @@ Napi::Value SetForceBlackMode(const Napi::CallbackInfo& info) {
         }
     }
     
+#ifdef __APPLE__
     mpv_set_force_black_mode(id, enabled ? 1 : 0);
+#elif defined(_WIN32)
+    // Windows 使用 wid 方式，不支持 force black mode
+    // 可以忽略或通过其他方式实现
+#endif
     
     return env.Undefined();
 }
@@ -260,16 +295,20 @@ Napi::Value SetHdrMode(const Napi::CallbackInfo& info) {
     int64_t id = info[0].As<Napi::Number>().Int64Value();
     bool enabled = info[1].As<Napi::Boolean>().Value();
     
-    {
-        std::lock_guard<std::mutex> lock(instancesMutex);
-        auto it = instances.find(id);
-        if (it == instances.end() || !it->second->ctx) {
-            Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
-            return env.Null();
-        }
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    auto it = instances.find(id);
+    if (it == instances.end() || !it->second->ctx) {
+        Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+        return env.Null();
     }
     
+#ifdef __APPLE__
     mpv_set_hdr_mode(id, enabled ? 1 : 0);
+#elif defined(_WIN32)
+    // Windows 使用 wid 方式，HDR 可以通过 mpv 选项设置
+    // 这里可以设置相关选项，但需要根据实际需求调整
+    // 暂时忽略，后续可以扩展
+#endif
     
     return env.Undefined();
 }
@@ -294,7 +333,11 @@ Napi::Value DebugHdrStatus(const Napi::CallbackInfo& info) {
         }
     }
 
+#ifdef __APPLE__
     mpv_debug_hdr_status(id);
+#elif defined(_WIN32)
+    // Windows 使用 wid 方式，HDR 调试功能暂不支持
+#endif
 
     return env.Undefined();
 }
@@ -447,14 +490,20 @@ Napi::Value SetWindowId(const Napi::CallbackInfo& info) {
     }
     
     mpv_handle* ctx = it->second->ctx;
+    
+    // 在 Windows 上，wid 必须是有效的 HWND
+    // 注意：wid 必须在 mpv_initialize() 之前设置
     int err = mpv_set_option(ctx, "wid", MPV_FORMAT_INT64, &windowId);
     
     if (err < 0) {
-        Napi::Error::New(env, std::string("Failed to set window ID: ") + mpv_error_string(err))
+        std::string errorMsg = std::string("Failed to set window ID (wid): ") + mpv_error_string(err);
+        std::cerr << "[binding] SetWindowId error: " << errorMsg << " (HWND: " << windowId << ")" << std::endl;
+        Napi::Error::New(env, errorMsg)
             .ThrowAsJavaScriptException();
         return env.Null();
     }
     
+    std::cerr << "[binding] SetWindowId success: wid=" << windowId << std::endl;
     return Napi::Boolean::New(env, true);
 }
 
@@ -725,8 +774,10 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
             instance->eventThread.join();
         }
 
-        // 销毁渲染上下文
+        // 销毁渲染上下文（仅 macOS）
+#ifdef __APPLE__
         mpv_destroy_gl_context(id);
+#endif
         
         // 销毁 mpv 实例
         if (instance->ctx) {

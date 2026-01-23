@@ -41,6 +41,10 @@ export class WindowManager {
       alwaysOnTop: config.alwaysOnTop || false,
       transparent: config.transparent || false,
       show: config.show !== undefined ? config.show : false,
+      resizable: true, // 允许调整窗口大小
+      maximizable: true, // 允许最大化
+      minimizable: true, // 允许最小化
+      closable: true, // 允许关闭
       webPreferences: {
         preload: join(__dirname, '../preload/preload.js'),
         nodeIntegration: false,
@@ -55,12 +59,30 @@ export class WindowManager {
       }
     }
     
+    // Windows 特定选项
+    if (process.platform === 'win32') {
+      // Windows 上确保窗口可以调整大小和最大化
+      windowOptions.resizable = true
+      windowOptions.maximizable = true
+      windowOptions.minimizable = true
+      // Windows 上透明窗口可能需要设置背景色
+      if (config.transparent) {
+        windowOptions.backgroundColor = '#00000000' // 完全透明
+      }
+    }
+    
     // 如果窗口不透明，设置黑色背景（这样底层 OpenGL 渲染会更明显）
     if (!config.transparent && config.id === 'video') {
       windowOptions.backgroundColor = '#000000'
     }
     
     const window = new BrowserWindow(windowOptions)
+
+    // 确保窗口可以调整大小和最大化（显式设置，避免某些情况下默认值不生效）
+    window.setResizable(true)
+    window.setMaximizable(true)
+    window.setMinimizable(true)
+    window.setClosable(true)
 
     // 窗口准备好后显示（如果没有配置立即显示，则等待 ready-to-show 事件）
     if (!config.show && config.id !== 'video') {
