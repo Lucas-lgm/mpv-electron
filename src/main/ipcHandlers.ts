@@ -4,6 +4,10 @@ import { videoPlayerApp, PlaylistItem } from './videoPlayerApp'
 import { corePlayer } from './corePlayer'
 import { handlePlayMedia } from './playbackController'
 
+// 显式记录通过控制栏按钮进入的“播放器全屏模式”
+// 这样不依赖 Electron 在透明/子窗口场景下的 isFullScreen() 实现细节
+let isFullscreen = false
+
 export function setupIpcHandlers() {
   // 处理文件选择
   ipcMain.on('select-video-file', async (event) => {
@@ -85,6 +89,25 @@ export function setupIpcHandlers() {
 
   ipcMain.on('control-hdr', async (_event, enabled: boolean) => {
     await videoPlayerApp.setHdrEnabled(enabled)
+  })
+
+  // 全屏切换（来自控制栏按钮）
+  ipcMain.on('control-toggle-fullscreen', () => {
+    const videoWindow = windowManager.getWindow('video')
+    if (!videoWindow) return
+
+    const controlWindow = (videoPlayerApp as any).controlWindow as BrowserWindow | null
+
+    // 仅由控制栏按钮维护的“播放器全屏模式”开关
+    isFullscreen = !isFullscreen
+
+    // 切换视频窗口全屏
+    videoWindow.setFullScreen(isFullscreen)
+
+    // Windows 双窗口模式下，控制窗口也需要同步全屏状态
+    if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()) {
+      controlWindow.setFullScreen(isFullscreen)
+    }
   })
 
   // 窗口控制（来自控制栏左侧三个按钮）

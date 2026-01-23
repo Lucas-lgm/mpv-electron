@@ -81,6 +81,7 @@
             <button @click="toggleHdr" class="btn-control small">
               {{ hdrEnabled ? 'HDR' : 'SDR' }}
             </button>
+            <button @click="toggleFullscreen" class="btn-control small">⛶</button>
             <span class="volume-icon">🔊</span>
             <input
               type="range"
@@ -202,6 +203,12 @@ const formatTime = (seconds: number): string => {
 
 const togglePlaylist = () => {
   showPlaylist.value = !showPlaylist.value
+}
+
+const toggleFullscreen = () => {
+  if (window.electronAPI) {
+    window.electronAPI.send('control-toggle-fullscreen')
+  }
 }
 
 const handleWindowAction = (action: 'close' | 'minimize' | 'maximize') => {
