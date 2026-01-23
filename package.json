@@ -8,9 +8,6 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "serve:hls": "node serve-video.js --dir videos --port 8081",
-    "serve": "node serve-video.js",
-    "serve:8080": "node serve-video.js --port 8080",
     "build:native": "node-gyp rebuild --directory native",
     "rebuild:native": "node-gyp rebuild --directory native",
     "clean:native": "node-gyp clean --directory native"
