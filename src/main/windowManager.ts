@@ -61,28 +61,74 @@ export class WindowManager {
     
     // Windows 特定选项
     if (process.platform === 'win32') {
-      // Windows 上确保窗口可以调整大小和最大化
-      windowOptions.resizable = true
-      windowOptions.maximizable = true
-      windowOptions.minimizable = true
-      // Windows 上透明窗口可能需要设置背景色
       if (config.transparent) {
-        windowOptions.backgroundColor = '#00000000' // 完全透明
+        console.warn('[WindowManager] Windows: Transparent windows cannot be resized on Windows (Electron limitation)')
+      } else {
+        windowOptions.resizable = true
+        windowOptions.maximizable = true
+        windowOptions.minimizable = true
       }
     }
     
-    // 如果窗口不透明，设置黑色背景（这样底层 OpenGL 渲染会更明显）
-    if (!config.transparent && config.id === 'video') {
-      windowOptions.backgroundColor = '#000000'
+    // 视频窗口设置黑色背景（行业标准做法）
+    // Windows 上：不透明窗口 + 黑色背景，MPV 子窗口会显示在 Electron 窗口之上
+    // macOS 上：透明窗口或黑色背景都可以
+    if (config.id === 'video') {
+      if (!config.transparent) {
+        windowOptions.backgroundColor = '#000000'
+      } else if (process.platform === 'darwin') {
+        // macOS 透明窗口也可以设置背景色作为后备
+        windowOptions.backgroundColor = '#00000000'
+      }
     }
     
     const window = new BrowserWindow(windowOptions)
 
     // 确保窗口可以调整大小和最大化（显式设置，避免某些情况下默认值不生效）
-    window.setResizable(true)
-    window.setMaximizable(true)
-    window.setMinimizable(true)
+    // Windows 上透明窗口无法调整大小（Electron 限制），其他情况都可以调整
+    if (!(config.transparent && process.platform === 'win32')) {
+      window.setResizable(true)
+      window.setMaximizable(true)
+      window.setMinimizable(true)
+    }
     window.setClosable(true)
+    
+    // 添加调试日志
+    console.log('[WindowManager] Window created:', {
+      id: config.id,
+      resizable: windowOptions.resizable,
+      maximizable: windowOptions.maximizable,
+      transparent: config.transparent,
+      frame: config.frame,
+      platform: process.platform,
+      actualResizable: window.isResizable(),
+      actualMaximizable: window.isMaximizable()
+    })
+    
+    // 在 Windows 上，非透明窗口可能需要延迟再次设置
+    if (process.platform === 'win32' && !config.transparent) {
+      // 窗口显示后再次确保设置生效
+      window.once('show', () => {
+        if (!window.isDestroyed()) {
+          window.setResizable(true)
+          window.setMaximizable(true)
+          window.setMinimizable(true)
+          window.setClosable(true)
+          console.log('[WindowManager] Windows: Re-set after show, resizable:', window.isResizable(), 'maximizable:', window.isMaximizable())
+        }
+      })
+      
+      // 也尝试在 ready-to-show 时设置
+      window.once('ready-to-show', () => {
+        if (!window.isDestroyed()) {
+          window.setResizable(true)
+          window.setMaximizable(true)
+          window.setMinimizable(true)
+          window.setClosable(true)
+          console.log('[WindowManager] Windows: Re-set after ready-to-show, resizable:', window.isResizable(), 'maximizable:', window.isMaximizable())
+        }
+      })
+    }
 
     // 窗口准备好后显示（如果没有配置立即显示，则等待 ready-to-show 事件）
     if (!config.show && config.id !== 'video') {

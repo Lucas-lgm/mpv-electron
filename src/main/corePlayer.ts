@@ -8,6 +8,7 @@ import { Timeline } from './timeline'
 export interface CorePlayer {
   setVideoWindow(window: BrowserWindow | null): void
   setControlView(view: BrowserView | null): void
+  setControlWindow(window: BrowserWindow | null): void
   play(filePath: string): Promise<void>
   pause(): Promise<void>
   resume(): Promise<void>
@@ -38,6 +39,7 @@ class CorePlayerImpl implements CorePlayer {
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
   private controlView: BrowserView | null = null
+  private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -67,6 +69,10 @@ class CorePlayerImpl implements CorePlayer {
   }
   setControlView(view: BrowserView | null) {
     this.controlView = view
+  }
+
+  setControlWindow(window: BrowserWindow | null) {
+    this.controlWindow = window
   }
 
   isUsingEmbeddedMode(): boolean {
@@ -343,10 +349,17 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   private sendToPlaybackUIs(channel: string, payload?: any) {
+    // 发送到视频窗口
     const vw = this.videoWindow
     if (vw && !vw.isDestroyed()) {
       vw.webContents.send(channel, payload)
     }
+    // 发送到控制窗口（双窗口模式）
+    const cw = this.controlWindow
+    if (cw && !cw.isDestroyed()) {
+      cw.webContents.send(channel, payload)
+    }
+    // 发送到控制视图（BrowserView，向后兼容）
     const cv = this.controlView
     if (cv && !cv.webContents.isDestroyed()) {
       cv.webContents.send(channel, payload)

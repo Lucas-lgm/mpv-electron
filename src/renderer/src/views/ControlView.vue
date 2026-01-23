@@ -299,7 +299,6 @@ onUnmounted(() => {
   background: transparent;
   display: flex;
   flex-direction: column;
-  pointer-events: none;
   contain: layout style paint;
   transform: translateZ(0);
   will-change: transform;

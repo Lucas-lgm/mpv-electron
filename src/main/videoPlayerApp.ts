@@ -124,7 +124,9 @@ export class VideoPlayerApp {
   readonly playlist: PlaylistManager
   readonly config: ConfigManager
   private controlView: BrowserView | null = null
+  private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
   private isQuitting: boolean = false
+  private windowSyncTimer: NodeJS.Timeout | null = null // 窗口同步定时器
 
   constructor() {
     this.windowManager = new WindowManager()
@@ -174,15 +176,17 @@ export class VideoPlayerApp {
       await corePlayer.setVolume(volume)
       await corePlayer.resume()
       const isEmbedded = corePlayer.isUsingEmbeddedMode()
-      videoWindow.webContents.send('player-embedded', {
+      // 发送到视频窗口和控制窗口
+      corePlayer.broadcastToPlaybackUIs('player-embedded', {
         embedded: isEmbedded,
         mode: isEmbedded ? 'native' : 'ipc'
       })
     } catch (error) {
-      videoWindow.webContents.send('player-error', {
+      // 发送错误消息到所有窗口
+      corePlayer.broadcastToPlaybackUIs('player-error', {
         message: error instanceof Error ? error.message : 'Unknown error'
       })
-      videoWindow.webContents.send('player-embedded', {
+      corePlayer.broadcastToPlaybackUIs('player-embedded', {
         embedded: false,
         mode: 'none'
       })
@@ -280,7 +284,7 @@ export class VideoPlayerApp {
       existing.show()
       existing.focus()
       existing.moveTop()
-      this.ensureControlView(existing)
+      this.ensureControlWindow(existing)
       return existing
     }
 
@@ -291,7 +295,8 @@ export class VideoPlayerApp {
     const videoX = Math.floor((size.width - videoWidth) / 2)
     const videoY = Math.floor((size.height - videoHeight) / 2)
 
-    const window = this.windowManager.createWindow({
+    // 视频窗口：透明，用于 MPV 渲染
+    const windowConfig: any = {
       id: 'video',
       width: videoWidth,
       height: videoHeight,
@@ -299,14 +304,29 @@ export class VideoPlayerApp {
       y: videoY,
       title: '视频播放器 - 视频播放',
       route: '#/video',
-      titleBarStyle: 'hiddenInset',
-      frame: true,
+      frame: false, // 无边框，更干净
       alwaysOnTop: false,
       show: true,
-      transparent: true
-    })
+      transparent: true // 透明，让 MPV 视频可见
+    }
+    
+    // macOS 特定选项
+    if (process.platform === 'darwin') {
+      windowConfig.titleBarStyle = 'hiddenInset'
+    }
+    
+    const window = this.windowManager.createWindow(windowConfig)
 
-    this.ensureControlView(window)
+    // 创建控制窗口（透明，跟随视频窗口）
+    this.ensureControlWindow(window)
+
+    // 将按键事件转发到控制窗口（如果存在）
+    const forwardKeyToControl = (input: Electron.Input) => {
+      if (this.controlWindow && !this.controlWindow.isDestroyed()) {
+        // 控制窗口会处理按键
+        return
+      }
+    }
 
     // 在主进程处理按键，避免前端焦点问题
     window.webContents.on('before-input-event', (event, input) => {
@@ -363,17 +383,43 @@ export class VideoPlayerApp {
         corePlayer.debugVideoState().catch(() => {})
         return
       }
+      // 如果控制窗口存在，优先让控制窗口处理（比如 UI 交互）
+      // 否则发送给 MPV
+      if (this.controlWindow && !this.controlWindow.isDestroyed() && 
+          this.controlWindow.isFocused()) {
+        // 控制窗口有焦点时，不发送给 MPV（让 UI 处理）
+        return
+      }
       corePlayer.sendKey(key)
     })
+
 
     window.on('close', async (event) => {
       // 如果应用正在退出，允许窗口关闭
       if (this.isQuitting) {
+        // 关闭控制窗口
+        if (this.controlWindow && !this.controlWindow.isDestroyed()) {
+          this.controlWindow.close()
+        }
+        if (this.windowSyncTimer) {
+          clearInterval(this.windowSyncTimer)
+          this.windowSyncTimer = null
+        }
         return
       }
       
       event.preventDefault()
       await corePlayer.stop()
+      
+      // 关闭控制窗口
+      if (this.controlWindow && !this.controlWindow.isDestroyed()) {
+        this.controlWindow.close()
+      }
+      if (this.windowSyncTimer) {
+        clearInterval(this.windowSyncTimer)
+        this.windowSyncTimer = null
+      }
+      
       window.hide()
       const mainWindow = this.windowManager.getWindow('main')
       if (!mainWindow || mainWindow.isDestroyed()) {
@@ -401,54 +447,261 @@ export class VideoPlayerApp {
     return window
   }
 
-  private ensureControlView(window: BrowserWindow) {
-    if (this.controlView && !this.controlView.webContents.isDestroyed()) {
+  private ensureControlWindow(videoWindow: BrowserWindow) {
+    const videoBounds = videoWindow.getBounds()
+
+    // macOS：单窗口模式，在 videoWindow 上挂一个 BrowserView 作为控制层
+    if (process.platform === 'darwin') {
+      // 如果 BrowserView 已存在且未销毁，直接复用
+      if (this.controlView && !this.controlView.webContents.isDestroyed()) {
+        // 更新 bounds 以匹配当前窗口大小
+        const bounds = videoWindow.getContentBounds()
+        this.controlView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height })
+        // 确保 BrowserView 已设置到窗口
+        if (videoWindow.getBrowserView() !== this.controlView) {
+          videoWindow.setBrowserView(this.controlView)
+        }
+        // 发送播放列表（如果已加载）
+        const items = this.playlist.getList()
+        if (items.length > 0) {
+          this.controlView.webContents.send('playlist-updated', items)
+        }
+        return
+      }
+
+      // 清理旧的 BrowserView（如果存在但已销毁）
+      if (this.controlView) {
+        try {
+          if (!this.controlView.webContents.isDestroyed()) {
+            videoWindow.setBrowserView(null)
+          }
+        } catch {
+          // 忽略错误
+        }
+        this.controlView = null
+      }
+
+      // 创建新的 BrowserView
+      const preloadPath = join(__dirname, '../preload/preload.js')
+      const view = new BrowserView({
+        webPreferences: {
+          preload: preloadPath,
+          nodeIntegration: false,
+          contextIsolation: true,
+          backgroundThrottling: false,
+          enableWebSQL: false
+        }
+      })
+      view.setBackgroundColor('#00000000')
+      videoWindow.setBrowserView(view)
+      const bounds = videoWindow.getContentBounds()
+      view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height })
+      view.setAutoResize({ width: true, height: true })
+
+      if (process.env.NODE_ENV === 'development') {
+        const url = 'http://localhost:5173/#/control'
+        view.webContents.loadURL(url).catch(() => {})
+        view.webContents.openDevTools({ mode: 'detach' })
+      } else {
+        view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
+          hash: 'control'
+        }).catch(() => {})
+      }
+
+      // 播放列表初始化
+      view.webContents.on('did-finish-load', () => {
+        const items = this.playlist.getList()
+        if (items.length > 0) {
+          view.webContents.send('playlist-updated', items)
+        }
+      })
+
+      this.controlView = view
+      this.controlWindow = null
+      corePlayer.setControlView(view)
+
+      // macOS 单窗口模式不需要双窗口同步和鼠标事件穿透逻辑
       return
     }
-    const preloadPath = join(__dirname, '../preload/preload.js')
-    const view = new BrowserView({
-      webPreferences: {
-        preload: preloadPath,
-        nodeIntegration: false,
-        contextIsolation: true,
-        backgroundThrottling: false,
-        // 优化性能：禁用不必要的功能
-        enableWebSQL: false
-      }
-    })
-    view.setBackgroundColor('#00000000')
-    
-    // 优化 BrowserView 性能：禁用不必要的功能
-    view.webContents.setFrameRate(30) // 降低控制栏的帧率，减少性能消耗
-    window.setBrowserView(view)
-    const bounds = window.getContentBounds()
-    view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height })
-    view.setAutoResize({ width: true, height: true })
 
-    if (process.env.NODE_ENV === 'development') {
-      const url = 'http://localhost:5173/#/control'
-      view.webContents.loadURL(url).catch(() => {})
-      view.webContents.openDevTools({ mode: 'detach' })
-    } else {
-      view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
-        hash: 'control'
-      }).catch(() => {})
+    // Windows：双窗口模式，一个视频窗口，一个控制窗口
+    if (process.platform === 'win32') {
+      // 如果控制窗口已存在且未销毁，直接复用
+      if (this.controlWindow && !this.controlWindow.isDestroyed()) {
+        // 更新位置和大小以匹配视频窗口
+        this.controlWindow.setBounds(videoBounds)
+        // 确保控制窗口显示
+        if (!this.controlWindow.isVisible()) {
+          this.controlWindow.show()
+        }
+        // 发送播放列表（如果已加载）
+        const items = this.playlist.getList()
+        if (items.length > 0) {
+          this.controlWindow.webContents.send('playlist-updated', items)
+        }
+        // 确保焦点和鼠标事件设置
+        setTimeout(() => {
+          if (!this.controlWindow?.isDestroyed()) {
+            this.controlWindow.focus()
+            if (!videoWindow.isDestroyed()) {
+              videoWindow.setIgnoreMouseEvents(true)
+            }
+          }
+        }, 100)
+        return
+      }
+
+      // 清理旧的控制窗口（如果存在但已销毁）
+      if (this.controlWindow) {
+        try {
+          if (!this.controlWindow.isDestroyed()) {
+            this.controlWindow.close()
+          }
+        } catch {
+          // 忽略错误
+        }
+        this.controlWindow = null
+      }
+
+      // 创建新的控制窗口（用户操作的主窗口）
+      // 使用 parent 字段建立父子关系：videoWindow 是父，controlWindow 是子
+      const controlWindow = new BrowserWindow({
+        parent: videoWindow,
+        width: videoBounds.width,
+        height: videoBounds.height,
+        x: videoBounds.x,
+        y: videoBounds.y,
+        transparent: true,
+        frame: false,
+        focusable: true,
+        resizable: true,
+        maximizable: false,
+        minimizable: false,
+        closable: false,
+        skipTaskbar: true,
+        webPreferences: {
+          preload: join(__dirname, '../preload/preload.js'),
+          nodeIntegration: false,
+          contextIsolation: true,
+          backgroundThrottling: false
+        }
+      })
+
+      // 加载控制界面
+      if (process.env.NODE_ENV === 'development') {
+        const url = 'http://localhost:5173/#/control'
+        controlWindow.loadURL(url).catch(() => {})
+        controlWindow.webContents.openDevTools({ mode: 'detach' })
+      } else {
+        controlWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+          hash: 'control'
+        }).catch(() => {})
+      }
+
+      // 控制窗口加载完成后发送播放列表，并设置焦点
+      controlWindow.webContents.on('did-finish-load', () => {
+        const items = this.playlist.getList()
+        if (items.length > 0) {
+          controlWindow.webContents.send('playlist-updated', items)
+        }
+        if (!controlWindow.isDestroyed()) {
+          controlWindow.focusable = true
+          setTimeout(() => {
+            if (!controlWindow.isDestroyed()) {
+              controlWindow.focus()
+              // 让视频窗口忽略鼠标事件，事件交给控制窗口
+              if (!videoWindow.isDestroyed()) {
+                videoWindow.setIgnoreMouseEvents(true)
+              }
+            }
+          }, 200)
+        }
+      })
+
+      // 同步窗口位置和大小：控制窗口 -> 视频窗口
+      const syncVideoToControl = () => {
+        if (videoWindow.isDestroyed() || controlWindow.isDestroyed()) {
+          return
+        }
+        const bounds = controlWindow.getBounds()
+        videoWindow.setBounds(bounds)
+        corePlayer.setVideoWindow(videoWindow)
+      }
+
+      // 初始同步一次
+      syncVideoToControl()
+
+      // 监听控制窗口的位置和大小变化（先移除旧的监听器，避免重复注册）
+      controlWindow.removeAllListeners('move')
+      controlWindow.removeAllListeners('resize')
+      controlWindow.removeAllListeners('moved')
+      controlWindow.removeAllListeners('resized')
+      controlWindow.on('move', syncVideoToControl)
+      controlWindow.on('resize', syncVideoToControl)
+      controlWindow.on('moved', syncVideoToControl)
+      controlWindow.on('resized', syncVideoToControl)
+
+      // 监听视频窗口显示/隐藏（先移除旧的监听器，避免重复注册）
+      videoWindow.removeAllListeners('show')
+      videoWindow.removeAllListeners('hide')
+      videoWindow.on('show', () => {
+        if (!controlWindow.isDestroyed()) {
+          controlWindow.show()
+          setTimeout(() => {
+            if (!controlWindow.isDestroyed()) {
+              controlWindow.focus()
+              if (!videoWindow.isDestroyed()) {
+                videoWindow.setIgnoreMouseEvents(true)
+              }
+            }
+          }, 100)
+        }
+      })
+      videoWindow.on('hide', () => {
+        if (!controlWindow.isDestroyed()) {
+          controlWindow.hide()
+        }
+      })
+
+      // 视频窗口关闭时关闭控制窗口（使用 once 避免重复注册）
+      videoWindow.removeAllListeners('closed')
+      videoWindow.once('closed', () => {
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.close()
+        }
+        this.controlWindow = null
+      })
+
+      // 控制窗口关闭时清理引用（使用 once 避免重复注册）
+      controlWindow.removeAllListeners('closed')
+      controlWindow.once('closed', () => {
+        this.controlWindow = null
+      })
+
+      this.controlWindow = controlWindow
+      this.controlView = null
+      corePlayer.setControlWindow(controlWindow)
+
+      // 启动窗口同步定时器（兜底）
+      if (this.windowSyncTimer) {
+        clearInterval(this.windowSyncTimer)
+      }
+      this.windowSyncTimer = setInterval(() => {
+        if (videoWindow && !videoWindow.isDestroyed() &&
+            controlWindow && !controlWindow.isDestroyed()) {
+          syncVideoToControl()
+        } else {
+          if (this.windowSyncTimer) {
+            clearInterval(this.windowSyncTimer)
+            this.windowSyncTimer = null
+          }
+        }
+      }, 100)
+
+      return
     }
 
-    view.webContents.on('did-finish-load', () => {
-      const items = this.playlist.getList()
-      if (items.length > 0) {
-        corePlayer.broadcastToPlaybackUIs('playlist-updated', items)
-      }
-    })
-
-    window.on('resize', () => {
-      const b = window.getContentBounds()
-      view.setBounds({ x: 0, y: 0, width: b.width, height: b.height })
-    })
-
-    this.controlView = view
-    corePlayer.setControlView(view)
+    // 其他平台：暂时不创建单独的控制窗口（保持简单行为）
   }
 
   init() {
