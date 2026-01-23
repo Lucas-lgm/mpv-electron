@@ -1,4 +1,4 @@
-import { ipcMain, dialog } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { windowManager } from './main'
 import { videoPlayerApp, PlaylistItem } from './videoPlayerApp'
 import { corePlayer } from './corePlayer'
@@ -85,6 +85,43 @@ export function setupIpcHandlers() {
 
   ipcMain.on('control-hdr', async (_event, enabled: boolean) => {
     await videoPlayerApp.setHdrEnabled(enabled)
+  })
+
+  // 窗口控制（来自控制栏左侧三个按钮）
+  ipcMain.on('control-window-action', (_event, action: 'close' | 'minimize' | 'maximize') => {
+    const videoWindow = windowManager.getWindow('video')
+    if (!videoWindow) return
+
+    // Windows 双窗口模式下，优先使用控制窗口作为操作目标
+    const controlWindow = (videoPlayerApp as any).controlWindow as BrowserWindow | null
+    const targetForMaximize =
+      process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()
+        ? controlWindow
+        : videoWindow
+
+    switch (action) {
+      case 'close':
+        // 关闭视频窗口，由视频窗口的关闭逻辑统一处理控制窗口
+        videoWindow.close()
+        break
+      case 'minimize':
+        // 最小化视频窗口（父窗口），控制窗口会跟随
+        if (videoWindow.isMinimizable()) {
+          videoWindow.minimize()
+        }
+        break
+      case 'maximize':
+        // mac：直接最大化视频窗口
+        // win：最大化控制窗口，由同步逻辑驱动视频窗口一起变化
+        if (targetForMaximize.isMaximizable()) {
+          if (targetForMaximize.isMaximized()) {
+            targetForMaximize.unmaximize()
+          } else {
+            targetForMaximize.maximize()
+          }
+        }
+        break
+    }
   })
 
   ipcMain.on('set-playlist', async (_event, items: PlaylistItem[]) => {

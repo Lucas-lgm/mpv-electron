@@ -1,6 +1,11 @@
 <template>
   <div class="control-view">
     <header class="header">
+      <div class="window-controls">
+        <button class="window-btn close" @click.stop="handleWindowAction('close')"></button>
+        <button class="window-btn minimize" @click.stop="handleWindowAction('minimize')"></button>
+        <button class="window-btn maximize" @click.stop="handleWindowAction('maximize')"></button>
+      </div>
       <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
     </header>
     <div v-if="isLoading" class="loading-overlay">
@@ -199,6 +204,12 @@ const togglePlaylist = () => {
   showPlaylist.value = !showPlaylist.value
 }
 
+const handleWindowAction = (action: 'close' | 'minimize' | 'maximize') => {
+  if (window.electronAPI) {
+    window.electronAPI.send('control-window-action', action)
+  }
+}
+
 const toggleHdr = () => {
   hdrEnabled.value = !hdrEnabled.value
   if (window.electronAPI) {
@@ -326,13 +337,22 @@ onUnmounted(() => {
 }
 
 .header {
-  padding: 0.5rem 1rem;
+  padding: 0.5rem 0.75rem 0.5rem 0.75rem;
   background: rgba(0, 0, 0, 0.4);
   -webkit-app-region: drag;
   pointer-events: auto;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
+}
+
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 .title {
@@ -343,6 +363,37 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  text-align: center;
+}
+
+.window-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  background-color: #808080;
+  opacity: 0.9;
+  transition: opacity 0.15s ease;
+}
+
+.window-btn.close {
+  background-color: #ff5f57;
+}
+
+.window-btn.minimize {
+  background-color: #febc2e;
+}
+
+.window-btn.maximize {
+  background-color: #28c840;
+}
+
+.window-btn:hover {
+  opacity: 1;
 }
 
 .playlist-panel {

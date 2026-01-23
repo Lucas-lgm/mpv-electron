@@ -575,8 +575,8 @@ export class VideoPlayerApp {
         frame: false,
         focusable: true,
         resizable: true,
-        maximizable: false,
-        minimizable: false,
+        maximizable: true,   // 允许最大化，由同步逻辑带动视频窗口一起变化
+        minimizable: true,
         closable: false,
         skipTaskbar: true,
         webPreferences: {
