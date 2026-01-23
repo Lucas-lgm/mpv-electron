@@ -131,9 +131,8 @@ export class LibMPVController extends EventEmitter {
           await this.setOption('vo', 'libmpv')
           console.log('[libmpv] ✅ Set vo=libmpv for render API (macOS)')
         } else if (process.platform === 'win32') {
-          // Windows 上使用 gpu 驱动（gpu-next 可能不支持 wid）
-          await this.setOption('vo', 'gpu')
-          console.log('[libmpv] ✅ Set vo=gpu for wid mode (Windows)')
+          await this.setOption('vo', 'gpu-next')
+          console.log('[libmpv] ✅ Set vo=gpu-next for wid mode (Windows)')
           // Windows 上，如果提供了 windowId，在初始化前设置 wid
           if (windowId !== undefined) {
             console.log('[libmpv] Setting wid to HWND:', windowId, '(0x' + windowId.toString(16) + ')')
