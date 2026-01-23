@@ -78,7 +78,11 @@
           </div>
           <div class="control-right">
             <button @click="togglePlaylist" class="btn-control small">📃</button>
-            <button @click="toggleHdr" class="btn-control small">
+            <button
+              v-if="!isWindows"
+              @click="toggleHdr"
+              class="btn-control small"
+            >
               {{ hdrEnabled ? 'HDR' : 'SDR' }}
             </button>
             <button @click="toggleFullscreen" class="btn-control small">⛶</button>
@@ -122,6 +126,12 @@ const playlist = ref<PlaylistItem[]>([])
 const showPlaylist = ref(false)
 const currentPath = ref<string | null>(null)
 const hdrEnabled = ref(true)
+
+// 仅在 Electron 渲染进程运行，不考虑 SSR，直接用 window 判断平台
+const isWindows =
+  typeof window !== 'undefined' &&
+  typeof window.electronAPI !== 'undefined' &&
+  window.electronAPI.platform === 'win32'
 
 type PlayerState = {
   phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
