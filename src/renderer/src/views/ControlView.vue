@@ -220,6 +220,7 @@ const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
 
 const handlePlayerState = (state: PlayerState) => {
   console.log('state:', state)
+  const wasSeeking = isSeeking.value
   isSeeking.value = !!state.isSeeking
   isNetworkBuffering.value = !!state.isNetworkBuffering
   networkBufferingPercent.value =
@@ -247,6 +248,11 @@ const handlePlayerState = (state: PlayerState) => {
       currentTime.value = duration.value
     }
     isPlaying.value = false
+  }
+  
+  // 当跳转完成时（isSeeking 从 true 变为 false），重置 isScrubbing
+  if (wasSeeking && !isSeeking.value && isScrubbing.value) {
+    isScrubbing.value = false
   }
   
   // 更新 currentTime（只在非拖动、非跳转状态下更新，且不是播放结束状态）
@@ -354,9 +360,9 @@ const onSeekEnd = () => {
   if (window.electronAPI) {
     window.electronAPI.send('control-seek', time)
   }
-  // 立即重置 isScrubbing，因为 isSeeking 状态会从 handlePlayerState 中更新
-  // handleVideoTimeUpdate 会检查 isSeeking，所以不会在跳转过程中更新 currentTime
-  isScrubbing.value = false
+  // 保持 isScrubbing = true，直到 isSeeking 状态更新
+  // 这样可以确保拖动位置不会被 handleVideoTimeUpdate 覆盖
+  // handlePlayerState 会在 isSeeking 变为 true 时处理，然后在 isSeeking 变为 false 时重置 isScrubbing
 }
 
 const onSeek = (event: Event) => {
