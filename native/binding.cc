@@ -20,8 +20,9 @@ struct MPVInstance {
     MPVInstance() : ctx(nullptr), running(false), hasTsfn(false), glCtx(nullptr) {}
     
     ~MPVInstance() {
-        // 这里只负责释放 TSFN，不在析构里做重型的 mpv 销毁，
-        // 避免在 JS 主线程上触发 mpv 的 vo_destroy 造成卡死。
+        // TSFN 应该在 Destroy() 中显式释放，而不是在析构函数中
+        // 这样可以确保在 eventLoop 线程退出后再释放，避免竞态条件
+        // 如果这里还有 hasTsfn，说明 Destroy() 没有正确调用，强制释放以避免泄漏
         if (hasTsfn) {
             tsfn.Release();
             hasTsfn = false;
@@ -38,6 +39,9 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_debug_hdr_status(int64_t instanceId);
+extern "C" void mpv_set_js_driven_render_mode(int64_t instanceId, int enabled);
+extern "C" int mpv_get_js_driven_render_mode(int64_t instanceId);
+extern "C" void mpv_request_render(int64_t instanceId);
 #endif
 
 struct MPVEventMessage {
@@ -153,7 +157,14 @@ void eventLoop(MPVInstance* instance) {
             delete msg;
         };
         
-        if (instance->hasTsfn) {
+        // 使用局部变量保存 tsfn 和 hasTsfn，避免在检查和使用之间被其他线程修改
+        bool hasTsfn = instance->hasTsfn;
+        if (hasTsfn) {
+            // 再次检查 running，确保在释放 tsfn 之前不会继续使用
+            if (!instance->running) {
+                delete msg;
+                break;
+            }
             napi_status s = instance->tsfn.NonBlockingCall(msg, callback);
             if (s != napi_ok) {
                 // JS 侧已经退出或队列满，丢弃事件避免卡住
@@ -308,6 +319,88 @@ Napi::Value SetHdrMode(const Napi::CallbackInfo& info) {
     // Windows 使用 wid 方式，HDR 可以通过 mpv 选项设置
     // 这里可以设置相关选项，但需要根据实际需求调整
     // 暂时忽略，后续可以扩展
+#endif
+    
+    return env.Undefined();
+}
+
+Napi::Value SetJsDrivenRenderMode(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number, enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    bool enabled = info[1].As<Napi::Boolean>().Value();
+    
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    auto it = instances.find(id);
+    if (it == instances.end() || !it->second->ctx) {
+        Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+#ifdef __APPLE__
+    mpv_set_js_driven_render_mode(id, enabled ? 1 : 0);
+#elif defined(_WIN32)
+    // Windows 暂不支持 JavaScript 驱动渲染模式
+#endif
+    
+    return env.Undefined();
+}
+
+Napi::Value GetJsDrivenRenderMode(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    auto it = instances.find(id);
+    if (it == instances.end() || !it->second->ctx) {
+        Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+#ifdef __APPLE__
+    int enabled = mpv_get_js_driven_render_mode(id);
+    return Napi::Boolean::New(env, enabled != 0);
+#elif defined(_WIN32)
+    // Windows 暂不支持 JavaScript 驱动渲染模式
+    return Napi::Boolean::New(env, false);
+#endif
+}
+
+Napi::Value RequestRender(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (instanceId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    int64_t id = info[0].As<Napi::Number>().Int64Value();
+    
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    auto it = instances.find(id);
+    if (it == instances.end() || !it->second->ctx) {
+        Napi::Error::New(env, "Invalid mpv instance").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+#ifdef __APPLE__
+    mpv_request_render(id);
+#elif defined(_WIN32)
+    // Windows 暂不支持 JavaScript 驱动渲染模式
 #endif
     
     return env.Undefined();
@@ -763,6 +856,13 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
     std::thread([instance, id]() {
         if (!instance) return;
         
+        // 先释放 ThreadSafeFunction，确保 eventLoop 线程不会继续使用它
+        // 必须在停止事件循环之前释放，避免竞态条件
+        if (instance->hasTsfn) {
+            instance->tsfn.Release();
+            instance->hasTsfn = false;
+        }
+        
         // 停止事件循环
         instance->running = false;
         if (instance->ctx) {
@@ -809,6 +909,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "setForceBlackMode"), Napi::Function::New(env, SetForceBlackMode));
     exports.Set(Napi::String::New(env, "setHdrMode"), Napi::Function::New(env, SetHdrMode));
     exports.Set(Napi::String::New(env, "debugHdrStatus"), Napi::Function::New(env, DebugHdrStatus));
+    exports.Set(Napi::String::New(env, "setJsDrivenRenderMode"), Napi::Function::New(env, SetJsDrivenRenderMode));
+    exports.Set(Napi::String::New(env, "getJsDrivenRenderMode"), Napi::Function::New(env, GetJsDrivenRenderMode));
+    exports.Set(Napi::String::New(env, "requestRender"), Napi::Function::New(env, RequestRender));
     
     return exports;
 }

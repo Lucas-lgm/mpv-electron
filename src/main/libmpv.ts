@@ -30,6 +30,9 @@ interface MPVBinding {
   setForceBlackMode(instanceId: number, enabled: boolean): void
   setHdrMode(instanceId: number, enabled: boolean): void
   debugHdrStatus(instanceId: number): void
+  setJsDrivenRenderMode(instanceId: number, enabled: boolean): void
+  getJsDrivenRenderMode(instanceId: number): boolean
+  requestRender(instanceId: number): void
   destroy(instanceId: number): boolean
 }
 
@@ -255,6 +258,9 @@ export class LibMPVController extends EventEmitter {
         // macOS: 使用 render API，把 libmpv 绑定到 Electron 的 NSView 上
         mpvBinding!.attachView(this.instanceId, windowId)
         mpvBinding!.setHdrMode(this.instanceId, this.hdrEnabled)
+        // 默认启用 JavaScript 驱动渲染模式
+        mpvBinding!.setJsDrivenRenderMode(this.instanceId, true)
+        console.log('[libmpv] ✅ Enabled JavaScript-driven render mode by default')
       } else if (process.platform === 'win32') {
         // Windows: 使用 wid 嵌入方式
         // 注意：wid 应该在初始化前设置，但如果已经在 initialize 中设置过，这里可以跳过
@@ -336,6 +342,38 @@ export class LibMPVController extends EventEmitter {
     // HDR 模式仅在 macOS 上支持（通过 render API）
     if (process.platform === 'darwin') {
       mpvBinding.setHdrMode(this.instanceId, enabled)
+    }
+  }
+
+  /**
+   * 设置 JavaScript 驱动渲染模式
+   * @param enabled true = JavaScript 驱动模式，false = CVDisplayLink 驱动模式（默认）
+   */
+  setJsDrivenRenderMode(enabled: boolean): void {
+    if (!mpvBinding || this.instanceId === null) return
+    if (process.platform === 'darwin') {
+      mpvBinding.setJsDrivenRenderMode(this.instanceId, enabled)
+    }
+  }
+
+  /**
+   * 获取当前是否使用 JavaScript 驱动渲染模式
+   */
+  getJsDrivenRenderMode(): boolean {
+    if (!mpvBinding || this.instanceId === null) return false
+    if (process.platform === 'darwin') {
+      return mpvBinding.getJsDrivenRenderMode(this.instanceId)
+    }
+    return false
+  }
+
+  /**
+   * 请求渲染（JavaScript 驱动模式下使用）
+   */
+  requestRender(): void {
+    if (!mpvBinding || this.instanceId === null) return
+    if (process.platform === 'darwin') {
+      mpvBinding.requestRender(this.instanceId)
     }
   }
 

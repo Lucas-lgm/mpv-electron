@@ -40,6 +40,9 @@ class CorePlayerImpl implements CorePlayer {
   private lastPhysicalHeight: number = -1
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
+  private renderLoopActive: boolean = false
+  private renderLoopHandle: NodeJS.Timeout | null = null
+  private readonly RENDER_INTERVAL_MS = 20
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -56,9 +59,67 @@ class CorePlayerImpl implements CorePlayer {
         this.sendToPlaybackUIs('video-time-update', payload)
       }
     })
+    let lastPhase: PlayerPhase | null = null
     this.stateMachine.on('state', (st) => {
       this.timeline?.handlePlayerStateChange(st.phase)
+      // 根据播放状态启动/停止渲染循环（只在状态真正改变时）
+      if (lastPhase !== st.phase) {
+        if (st.phase === 'playing') {
+          this.startRenderLoop()
+        } else {
+          this.stopRenderLoop()
+        }
+        lastPhase = st.phase
+      }
     })
+  }
+
+  // JavaScript 驱动渲染循环（模拟 requestAnimationFrame，使用 16ms 间隔 ≈ 60fps）
+  private renderLoop = () => {
+    if (!this.renderLoopActive) return
+    
+    // 请求渲染
+    if (this.controller) {
+      this.controller.requestRender()
+    }
+    
+    // 继续下一帧（使用 setTimeout 模拟 requestAnimationFrame）
+    this.renderLoopHandle = setTimeout(this.renderLoop, this.RENDER_INTERVAL_MS)
+  }
+
+  private startRenderLoop() {
+    if (this.renderLoopActive) {
+      console.log('[CorePlayer] ⚠️ Render loop already active')
+      return
+    }
+    // 检查是否使用 JavaScript 驱动渲染模式
+    // macOS 上默认启用 JavaScript 驱动模式，所以直接启动循环
+    if (this.controller && process.platform === 'darwin') {
+      const isJsDriven = this.controller.getJsDrivenRenderMode()
+      console.log('[CorePlayer] Checking JS-driven render mode:', isJsDriven)
+      if (isJsDriven) {
+        this.renderLoopActive = true
+        this.renderLoopHandle = setTimeout(this.renderLoop, this.RENDER_INTERVAL_MS)
+        console.log('[CorePlayer] ✅ Started JavaScript-driven render loop')
+      } else {
+        console.log('[CorePlayer] ⚠️ JavaScript-driven render mode not enabled, skipping render loop')
+        console.log('[CorePlayer] Controller exists:', !!this.controller, 'Platform:', process.platform)
+      }
+    } else {
+      console.log('[CorePlayer] ⚠️ Cannot start render loop: controller=', !!this.controller, 'platform=', process.platform)
+    }
+  }
+
+  private stopRenderLoop() {
+    if (!this.renderLoopActive) {
+      console.log('[CorePlayer] ⚠️ Render loop already stopped')
+      return
+    }
+    this.renderLoopActive = false
+    if (this.renderLoopHandle) {
+      clearTimeout(this.renderLoopHandle)
+      this.renderLoopHandle = null
+    }
   }
 
   setVideoWindow(window: BrowserWindow | null) {
@@ -144,11 +205,16 @@ class CorePlayerImpl implements CorePlayer {
           await this.initPromise
           this.initPromise = null
         }
-        // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
-        if (windowId) {
-          await this.controller.setWindowId(windowId)
+      // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
+      if (windowId) {
+        await this.controller.setWindowId(windowId)
+        // setWindowId 后，JavaScript 驱动模式已启用，如果正在播放则启动渲染循环
+        const currentState = this.getPlayerState()
+        if (currentState.phase === 'playing') {
+          this.startRenderLoop()
         }
-        await this.syncWindowSize()
+      }
+      await this.syncWindowSize()
         this.setupResizeHandler()
         this.setupEventHandlers()
         await this.controller.loadFile(filePath)
@@ -306,6 +372,9 @@ class CorePlayerImpl implements CorePlayer {
     }
     this.isCleaningUp = true
     try {
+      // 停止渲染循环
+      this.stopRenderLoop()
+      
       if (this.pendingResizeTimer) {
         clearTimeout(this.pendingResizeTimer)
         this.pendingResizeTimer = null

@@ -68,6 +68,11 @@ struct GLRenderContext {
     // 最小渲染间隔（毫秒），根据视频帧率动态计算
     // 默认值 16ms (~60fps)，如果视频帧率更高则相应调整
     static constexpr uint64_t DEFAULT_MIN_RENDER_INTERVAL_MS = 16; // ~60fps max
+    
+    // JavaScript 驱动渲染模式标志
+    // true: 渲染由 JavaScript 端（如 requestAnimationFrame）驱动
+    // false: 渲染由 CVDisplayLink 自动驱动（默认）
+    std::atomic<bool> jsDrivenRenderMode;
 
     std::mutex iccMutex;
     std::vector<uint8_t> iccProfileBytes;
@@ -89,7 +94,8 @@ struct GLRenderContext {
           hdrActive(false),
           lastHdrUpdateMs(0),
           lastRenderTimeMs(0),
-          videoFps(0.0) {}
+          videoFps(0.0),
+          jsDrivenRenderMode(false) {}
 };
 
 struct ScopedCGLock {
@@ -129,6 +135,12 @@ static void init_default_sdr_config(GLRenderContext *rc);
     GLRenderContext *rc = self.renderCtx;
     if (!rc || rc->isDestroying.load()) return NO;
     if (!rc->mpvRenderCtx) return YES;
+    
+    // JavaScript 驱动模式下，只有当 displayScheduled 为 true 时才允许渲染
+    // displayScheduled 由 mpv_request_render 设置，表示 JavaScript 端请求了渲染
+    if (rc->jsDrivenRenderMode.load()) {
+        return rc->displayScheduled.load() && rc->needRedraw.load();
+    }
     
     // 渲染节流：检查是否距离上次渲染时间太短
     // 根据视频帧率动态计算最小渲染间隔
@@ -915,7 +927,16 @@ static void on_mpv_redraw(void *ctx) {
     
     if (!rc || rc->isDestroying.load()) return;
     
+    // JavaScript 驱动模式下，只标记需要重绘，不自动触发渲染
+    // 渲染由 JavaScript 端的渲染循环控制
     rc->needRedraw.store(true);
+    
+    // 在 JavaScript 驱动模式下，不自动调用 mpv_request_render
+    // 让 JavaScript 端的渲染循环来控制何时渲染
+    if (!rc->jsDrivenRenderMode.load()) {
+        // CVDisplayLink 驱动模式下，可以自动触发渲染
+        // 但这里不触发，让 DisplayLink 回调来处理
+    }
 }
 
 // ------------------ CVDisplayLink Callback ------------------
@@ -936,9 +957,17 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
 
     @autoreleasepool {
         // 报告交换完成（必须，用于音视频同步）
+        // 即使在 JavaScript 驱动模式下，也需要调用 report_swap 来保持音视频同步
         if (rc->mpvRenderCtx) {
             mpv_render_context_report_swap(rc->mpvRenderCtx);
         }
+        
+        // JavaScript 驱动模式下，不在这里触发渲染，由 JavaScript 端控制
+        if (rc->jsDrivenRenderMode.load()) {
+            return kCVReturnSuccess;
+        }
+        
+        // CVDisplayLink 驱动模式：检查是否需要渲染
         // 渲染节流：检查是否距离上次渲染时间太短
         // 根据视频帧率动态计算最小渲染间隔
         uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
@@ -1365,6 +1394,50 @@ extern "C" void mpv_request_render(int64_t instanceId) {
 // Called from render thread (background thread, not main thread)
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     mpv_request_render(instanceId);
+}
+
+// ------------------ JavaScript 驱动渲染模式控制 ------------------
+// 设置是否使用 JavaScript 驱动渲染模式
+// enabled: 1 = JavaScript 驱动模式（渲染由 JS 端控制），0 = CVDisplayLink 驱动模式（默认）
+extern "C" void mpv_set_js_driven_render_mode(int64_t instanceId, int enabled) {
+    std::shared_ptr<GLRenderContext> rc = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        auto it = g_renderContexts.find(instanceId);
+        if (it == g_renderContexts.end()) return;
+        rc = it->second;
+    }
+    
+    if (!rc || rc->isDestroying.load()) return;
+    
+    bool jsMode = (enabled != 0);
+    bool wasJsMode = rc->jsDrivenRenderMode.exchange(jsMode);
+    
+    if (jsMode != wasJsMode) {
+        NSLog(@"[mpv_render_gl] JavaScript 驱动渲染模式: %s", jsMode ? "启用" : "禁用");
+        
+        // 如果切换到 JavaScript 驱动模式，立即触发一次渲染
+        // 这样 JavaScript 端可以立即开始控制渲染循环
+        if (jsMode) {
+            rc->needRedraw.store(true);
+            mpv_request_render(instanceId);
+        }
+    }
+}
+
+// 获取当前是否使用 JavaScript 驱动渲染模式
+extern "C" int mpv_get_js_driven_render_mode(int64_t instanceId) {
+    std::shared_ptr<GLRenderContext> rc = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_renderMutex);
+        auto it = g_renderContexts.find(instanceId);
+        if (it == g_renderContexts.end()) return 0;
+        rc = it->second;
+    }
+    
+    if (!rc || rc->isDestroying.load()) return 0;
+    
+    return rc->jsDrivenRenderMode.load() ? 1 : 0;
 }
 
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
