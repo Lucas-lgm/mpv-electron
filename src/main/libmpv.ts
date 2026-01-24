@@ -745,6 +745,11 @@ export class LibMPVController extends EventEmitter {
             this.currentStatus.networkBufferingPercent =
               typeof value === 'number' ? value : this.currentStatus.networkBufferingPercent
             break
+          case 'estimated-vf-fps':
+            // 发出 fps 变化事件，供 CorePlayer 使用
+            const fps = typeof value === 'number' && value > 0 ? value : null
+            this.emit('fps-change', fps)
+            break
         }
 
         this.emit('status', { ...this.currentStatus })

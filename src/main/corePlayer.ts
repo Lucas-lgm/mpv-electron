@@ -42,7 +42,9 @@ class CorePlayerImpl implements CorePlayer {
   private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
   private renderLoopActive: boolean = false
   private renderLoopHandle: NodeJS.Timeout | null = null
-  private readonly RENDER_INTERVAL_MS = 20
+  private readonly DEFAULT_RENDER_INTERVAL_MS = 20 // 默认 50fps
+  private currentVideoFps: number | null = null // 当前视频帧率
+  private currentRenderInterval: number = 20 // 当前渲染间隔（毫秒）
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -72,9 +74,42 @@ class CorePlayerImpl implements CorePlayer {
         lastPhase = st.phase
       }
     })
+    
+    // 监听视频帧率变化，动态调整渲染间隔
+    if (this.controller) {
+      this.controller.on('fps-change', (fps: number | null) => {
+        this.updateRenderInterval(fps)
+      })
+    }
+  }
+  
+  /**
+   * 根据视频帧率更新渲染间隔
+   * @param fps 视频帧率（fps），null 表示未知或无效
+   */
+  private updateRenderInterval(fps: number | null): void {
+    this.currentVideoFps = fps
+    
+    if (fps && fps > 0.1) {
+      // 根据视频帧率计算渲染间隔：1000ms / fps
+      // 限制范围：最小 8ms (120fps)，最大 42ms (24fps)
+      const calculatedInterval = Math.round(1000 / fps)
+      this.currentRenderInterval = Math.max(8, Math.min(calculatedInterval, 42))
+      console.log(`[CorePlayer] 📹 Video FPS: ${fps.toFixed(2)}, Render interval: ${this.currentRenderInterval}ms`)
+    } else {
+      // 帧率未知或无效，使用默认值
+      this.currentRenderInterval = this.DEFAULT_RENDER_INTERVAL_MS
+      console.log(`[CorePlayer] 📹 Video FPS: unknown, using default render interval: ${this.currentRenderInterval}ms`)
+    }
+    
+    // 如果渲染循环正在运行，需要重启以应用新的间隔
+    if (this.renderLoopActive) {
+      this.stopRenderLoop()
+      this.startRenderLoop()
+    }
   }
 
-  // JavaScript 驱动渲染循环（模拟 requestAnimationFrame，使用 16ms 间隔 ≈ 60fps）
+  // JavaScript 驱动渲染循环（根据视频帧率动态调整间隔）
   private renderLoop = () => {
     if (!this.renderLoopActive) return
     
@@ -83,8 +118,8 @@ class CorePlayerImpl implements CorePlayer {
       this.controller.requestRender()
     }
     
-    // 继续下一帧（使用 setTimeout 模拟 requestAnimationFrame）
-    this.renderLoopHandle = setTimeout(this.renderLoop, this.RENDER_INTERVAL_MS)
+    // 继续下一帧（使用动态计算的间隔）
+    this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
   }
 
   private startRenderLoop() {
@@ -99,8 +134,8 @@ class CorePlayerImpl implements CorePlayer {
       console.log('[CorePlayer] Checking JS-driven render mode:', isJsDriven)
       if (isJsDriven) {
         this.renderLoopActive = true
-        this.renderLoopHandle = setTimeout(this.renderLoop, this.RENDER_INTERVAL_MS)
-        console.log('[CorePlayer] ✅ Started JavaScript-driven render loop')
+        this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
+        console.log(`[CorePlayer] ✅ Started JavaScript-driven render loop (interval: ${this.currentRenderInterval}ms)`)
       } else {
         console.log('[CorePlayer] ⚠️ JavaScript-driven render mode not enabled, skipping render loop')
         console.log('[CorePlayer] Controller exists:', !!this.controller, 'Platform:', process.platform)
@@ -289,16 +324,28 @@ class CorePlayerImpl implements CorePlayer {
     // 先移除旧的监听器，避免重复注册
     this.controller.removeAllListeners('status')
     this.controller.removeAllListeners('file-loaded')
+    this.controller.removeAllListeners('fps-change')
     
     this.controller.on('status', (status: MPVStatus) => {
       this.updateFromMPVStatus(status)
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
     
+    // 监听视频帧率变化，动态调整渲染间隔
+    this.controller.on('fps-change', (fps: number | null) => {
+      this.updateRenderInterval(fps)
+    })
+    
     // 监听文件加载完成事件，确保自动播放
     this.controller.on('file-loaded', async () => {
       if (!this.controller) return
       try {
+        // 主动获取一次视频帧率，确保渲染间隔及时更新
+        const fps = await this.controller.getProperty('estimated-vf-fps')
+        if (typeof fps === 'number' && fps > 0.1) {
+          this.updateRenderInterval(fps)
+        }
+        
         // 检查 pause 状态，如果为 true 则自动播放
         const pauseState = await this.controller.getProperty('pause')
         if (pauseState === true) {

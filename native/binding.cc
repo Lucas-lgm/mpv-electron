@@ -503,6 +503,7 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
     mpv_observe_property(instance->ctx, 0, "idle-active", MPV_FORMAT_FLAG);
     mpv_observe_property(instance->ctx, 0, "paused-for-cache", MPV_FORMAT_FLAG);
     mpv_observe_property(instance->ctx, 0, "cache-buffering-state", MPV_FORMAT_INT64);
+    mpv_observe_property(instance->ctx, 0, "estimated-vf-fps", MPV_FORMAT_DOUBLE);
     
     instance->running = true;
     
