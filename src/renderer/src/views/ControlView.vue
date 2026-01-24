@@ -66,7 +66,7 @@
           <input
             type="range"
             :min="0"
-            :max="duration || 100"
+            :max="duration > 0 ? duration : 100"
             :value="currentTime"
             @mousedown="onSeekStart"
             @touchstart.prevent="onSeekStart"
@@ -189,12 +189,18 @@ const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) 
   if (!isScrubbing.value) {
     currentTime.value = data.currentTime
   }
-  duration.value = data.duration
+  // 只在有有效值时更新 duration，避免播放结束时被设置为 0
+  if (typeof data.duration === 'number' && data.duration > 0) {
+    duration.value = data.duration
+  }
 }
 
 const handleVideoEnded = () => {
   isPlaying.value = false
-  currentTime.value = 0
+  // 播放结束时，将 currentTime 设置为 duration，而不是 0
+  if (duration.value > 0) {
+    currentTime.value = duration.value
+  }
 }
 
 const handlePlayVideo = (file: { name: string; path: string }) => {
@@ -229,9 +235,24 @@ const handlePlayerState = (state: PlayerState) => {
   // 使用 composable 处理播放状态变化
   handlePlayerStateChange(wasPlaying)
   
-  if (typeof state.duration === 'number') {
+  // 更新 duration（只在有有效值时更新，避免覆盖）
+  if (typeof state.duration === 'number' && state.duration > 0) {
     duration.value = state.duration
   }
+  
+  // 处理播放结束状态：将 currentTime 设置为 duration
+  if (state.phase === 'ended') {
+    if (duration.value > 0) {
+      currentTime.value = duration.value
+    }
+    isPlaying.value = false
+  }
+  
+  // 更新 currentTime（只在非拖动状态下更新，且不是播放结束状态）
+  if (typeof state.currentTime === 'number' && !isScrubbing.value && state.phase !== 'ended') {
+    currentTime.value = state.currentTime
+  }
+  
   if (typeof state.volume === 'number') {
     volume.value = state.volume
   }
@@ -252,7 +273,8 @@ const handlePlaylistUpdated = (items: PlaylistItem[]) => {
 }
 
 const formatTime = (seconds: number): string => {
-  if (!seconds || isNaN(seconds)) return '00:00:00'
+  // 明确检查是否为 NaN 或 undefined/null，而不是使用 !seconds（因为 0 也是 falsy）
+  if (seconds == null || isNaN(seconds)) return '00:00:00'
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
