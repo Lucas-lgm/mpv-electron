@@ -144,8 +144,8 @@ class CorePlayerImpl implements CorePlayer {
           await this.initPromise
           this.initPromise = null
         }
-        // Windows 上需要调用 setWindowId
-        if (process.platform === 'win32') {
+        // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
+        if (windowId) {
           await this.controller.setWindowId(windowId)
         }
         await this.syncWindowSize()
