@@ -186,7 +186,8 @@ type PlayerState = {
 }
 
 const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
-  if (!isScrubbing.value) {
+  // 在拖动进度条或跳转中时，不更新 currentTime，避免跳转
+  if (!isScrubbing.value && !isSeeking.value) {
     currentTime.value = data.currentTime
   }
   // 只在有有效值时更新 duration，避免播放结束时被设置为 0
@@ -248,8 +249,8 @@ const handlePlayerState = (state: PlayerState) => {
     isPlaying.value = false
   }
   
-  // 更新 currentTime（只在非拖动状态下更新，且不是播放结束状态）
-  if (typeof state.currentTime === 'number' && !isScrubbing.value && state.phase !== 'ended') {
+  // 更新 currentTime（只在非拖动、非跳转状态下更新，且不是播放结束状态）
+  if (typeof state.currentTime === 'number' && !isScrubbing.value && !isSeeking.value && state.phase !== 'ended') {
     currentTime.value = state.currentTime
   }
   
@@ -348,12 +349,14 @@ const onSeekStart = () => {
 }
 
 const onSeekEnd = () => {
-  isScrubbing.value = false
   const time = currentTime.value
   onUserInteraction()
   if (window.electronAPI) {
     window.electronAPI.send('control-seek', time)
   }
+  // 立即重置 isScrubbing，因为 isSeeking 状态会从 handlePlayerState 中更新
+  // handleVideoTimeUpdate 会检查 isSeeking，所以不会在跳转过程中更新 currentTime
+  isScrubbing.value = false
 }
 
 const onSeek = (event: Event) => {
