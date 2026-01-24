@@ -45,6 +45,7 @@ class CorePlayerImpl implements CorePlayer {
   private readonly DEFAULT_RENDER_INTERVAL_MS = 20 // 默认 50fps
   private currentVideoFps: number | null = null // 当前视频帧率
   private currentRenderInterval: number = 20 // 当前渲染间隔（毫秒）
+  private lastIsSeeking: boolean = false // 上次的 isSeeking 状态，用于检测 seek 完成
   private baseRenderInterval: number = 20 // 基础渲染间隔（根据帧率计算）
   private lastRenderRequestTime: number = 0 // 上次渲染请求的时间戳
   private renderRequestCount: number = 0 // 渲染请求计数（用于检测延迟）
@@ -390,6 +391,21 @@ class CorePlayerImpl implements CorePlayer {
     this.controller.removeAllListeners('fps-change')
     
     this.controller.on('status', (status: MPVStatus) => {
+      // 检测 seek 完成（isSeeking 从 true 变为 false）
+      const wasSeeking = this.lastIsSeeking
+      const isSeeking = status.isSeeking ?? false
+      this.lastIsSeeking = isSeeking
+      
+      // 如果 seek 完成，主动触发一次渲染（JavaScript 驱动模式下需要）
+      if (wasSeeking && !isSeeking && this.controller && process.platform === 'darwin') {
+        const isJsDriven = this.controller.getJsDrivenRenderMode()
+        if (isJsDriven) {
+          // seek 完成后立即触发一次渲染，确保画面刷新
+          this.controller.requestRender()
+          console.log('[CorePlayer] ✅ Seek completed, triggered immediate render')
+        }
+      }
+      
       this.updateFromMPVStatus(status)
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
