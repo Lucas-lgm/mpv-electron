@@ -310,11 +310,6 @@ export class VideoPlayerApp {
       transparent: true // 透明，让 MPV 视频可见
     }
     
-    // macOS 特定选项
-    if (process.platform === 'darwin') {
-      windowConfig.titleBarStyle = 'hiddenInset'
-    }
-    
     const window = this.windowManager.createWindow(windowConfig)
 
     // 创建控制窗口（透明，跟随视频窗口）
