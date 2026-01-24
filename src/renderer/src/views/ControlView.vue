@@ -197,7 +197,7 @@ const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) 
 }
 
 const handleVideoEnded = () => {
-  isPlaying.value = false
+  // 不立即改变 isPlaying，等待主进程响应回来的状态（phase === 'ended'）
   // 播放结束时，将 currentTime 设置为 duration，而不是 0
   if (duration.value > 0) {
     currentTime.value = duration.value
@@ -210,7 +210,7 @@ const handlePlayVideo = (file: { name: string; path: string }) => {
 }
 
 const handlePlayerError = (payload: { message: string }) => {
-  isPlaying.value = false
+  // 不立即改变 isPlaying，等待主进程响应回来的状态（phase === 'error'）
   currentVideoName.value = `播放出错: ${payload.message}`
 }
 
@@ -321,10 +321,11 @@ const playFromPlaylist = (item: PlaylistItem) => {
 }
 
 const togglePlayPause = () => {
-  isPlaying.value = !isPlaying.value
   onUserInteraction()
+  // 不立即改变 isPlaying，等待主进程响应回来的状态
+  // 根据当前状态发送相反的命令
   if (window.electronAPI) {
-    window.electronAPI.send(isPlaying.value ? 'control-play' : 'control-pause')
+    window.electronAPI.send(isPlaying.value ? 'control-pause' : 'control-play')
   }
 }
 
@@ -341,7 +342,7 @@ const playNextFromPlaylist = () => {
 }
 
 const stop = () => {
-  isPlaying.value = false
+  // 不立即改变 isPlaying，等待主进程响应回来的状态（phase === 'stopped'）
   if (window.electronAPI) {
     window.electronAPI.send('control-stop')
   }
