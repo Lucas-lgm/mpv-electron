@@ -515,7 +515,11 @@ export class VideoPlayerApp {
       this.controlWindow = null
       corePlayer.setControlView(view)
 
-      // macOS 单窗口模式不需要双窗口同步和鼠标事件穿透逻辑
+      // 注意：不设置 setIgnoreMouseEvents，让 BrowserView 正常接收鼠标事件
+      // BrowserView 覆盖整个窗口，可以正常接收所有鼠标事件
+      // 设置控制栏自动隐藏（统一处理）
+      this.setupControlBarAutoHideForWebContents(view.webContents)
+      
       return
     }
 
@@ -677,6 +681,9 @@ export class VideoPlayerApp {
       this.controlView = null
       corePlayer.setControlWindow(controlWindow)
 
+      // 设置控制栏自动隐藏（统一处理）
+      this.setupControlBarAutoHideForWebContents(controlWindow.webContents)
+
       // 启动窗口同步定时器（兜底）
       if (this.windowSyncTimer) {
         clearInterval(this.windowSyncTimer)
@@ -697,6 +704,44 @@ export class VideoPlayerApp {
     }
 
     // 其他平台：暂时不创建单独的控制窗口（保持简单行为）
+  }
+
+  /**
+   * 设置控制栏自动隐藏（统一处理，不区分平台）
+   * 通过注入 JavaScript 代码监听鼠标事件
+   */
+  private setupControlBarAutoHideForWebContents(webContents: Electron.WebContents) {
+    if (!webContents) return
+    
+    // 等待页面加载完成后注入鼠标事件监听代码
+    webContents.once('did-finish-load', () => {
+      webContents.executeJavaScript(`
+        (function() {
+          let mouseMoveTimer = null;
+          const MOUSE_MOVE_DELAY = 100;
+          
+          // 监听整个窗口的鼠标移动
+          document.addEventListener('mousemove', () => {
+            if (mouseMoveTimer) {
+              clearTimeout(mouseMoveTimer);
+            }
+            mouseMoveTimer = setTimeout(() => {
+              window.electronAPI.send('control-bar-mouse-move');
+            }, MOUSE_MOVE_DELAY);
+          });
+          
+          document.addEventListener('mouseleave', () => {
+            if (mouseMoveTimer) {
+              clearTimeout(mouseMoveTimer);
+              mouseMoveTimer = null;
+            }
+            setTimeout(() => {
+              window.electronAPI.send('control-bar-mouse-leave');
+            }, 100);
+          });
+        })();
+      `).catch(() => {})
+    })
   }
 
   init() {

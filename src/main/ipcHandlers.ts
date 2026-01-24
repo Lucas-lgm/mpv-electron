@@ -188,4 +188,46 @@ export function setupIpcHandlers() {
       videoWindow.webContents.send('video-ended')
     }
   })
+
+  // 控制栏自动隐藏 - 鼠标移动
+  ipcMain.on('control-bar-mouse-move', (event) => {
+    // 转发到 ControlView（可能是 BrowserView 或 BrowserWindow）
+    const videoWindow = windowManager.getWindow('video')
+    if (!videoWindow) return
+    
+    if (process.platform === 'darwin') {
+      // macOS: BrowserView 模式
+      const controlView = (videoPlayerApp as any).controlView
+      if (controlView && !controlView.webContents.isDestroyed()) {
+        controlView.webContents.send('control-bar-show')
+      }
+    } else if (process.platform === 'win32') {
+      // Windows: BrowserWindow 模式
+      const controlWindow = (videoPlayerApp as any).controlWindow
+      if (controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
+        controlWindow.webContents.send('control-bar-show')
+      }
+    }
+  })
+
+  // 控制栏自动隐藏 - 鼠标离开
+  ipcMain.on('control-bar-mouse-leave', (event) => {
+    // 转发到 ControlView
+    const videoWindow = windowManager.getWindow('video')
+    if (!videoWindow) return
+    
+    if (process.platform === 'darwin') {
+      // macOS: BrowserView 模式
+      const controlView = (videoPlayerApp as any).controlView
+      if (controlView && !controlView.webContents.isDestroyed()) {
+        controlView.webContents.send('control-bar-schedule-hide')
+      }
+    } else if (process.platform === 'win32') {
+      // Windows: BrowserWindow 模式
+      const controlWindow = (videoPlayerApp as any).controlWindow
+      if (controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
+        controlWindow.webContents.send('control-bar-schedule-hide')
+      }
+    }
+  })
 }

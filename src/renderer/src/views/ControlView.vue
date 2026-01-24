@@ -1,6 +1,13 @@
 <template>
-  <div class="control-view">
-    <header class="header">
+  <div 
+    class="control-view" 
+    :class="{ 'controls-hidden': !controlsVisible }"
+  >
+    <header 
+      class="header"
+      @mouseenter="onControlBarEnter"
+      @mouseleave="onControlBarLeave"
+    >
       <div class="window-controls">
         <button class="window-btn close" @click.stop="handleWindowAction('close')"></button>
         <button class="window-btn minimize" @click.stop="handleWindowAction('minimize')"></button>
@@ -46,7 +53,11 @@
         </div>
       </div>
     </div>
-    <main class="playback-controls">
+    <main 
+      class="playback-controls"
+      @mouseenter="onControlBarEnter"
+      @mouseleave="onControlBarLeave"
+    >
       <div class="control-bar">
         <div class="progress-wrapper">
           <input
@@ -106,6 +117,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 
+// 全局鼠标事件监听器（用于 macOS BrowserView 模式）
+let windowMouseMoveHandler: (() => void) | null = null
+let windowMouseLeaveHandler: (() => void) | null = null
+let windowMouseMoveTimer: NodeJS.Timeout | null = null
+
 const isPlaying = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
@@ -126,6 +142,16 @@ const playlist = ref<PlaylistItem[]>([])
 const showPlaylist = ref(false)
 const currentPath = ref<string | null>(null)
 const hdrEnabled = ref(true)
+
+// 控制栏自动隐藏相关状态
+const controlsVisible = ref(true)
+const autoHideEnabled = ref(true)
+const hideTimer = ref<NodeJS.Timeout | null>(null)
+const isHovering = ref(false)
+const lastInteractionTime = ref(Date.now())
+
+// 配置选项
+const HIDE_DELAY = 3000 // 默认隐藏延迟 3 秒
 
 // 仅在 Electron 渲染进程运行，不考虑 SSR，直接用 window 判断平台
 const isWindows =
@@ -179,8 +205,35 @@ const handlePlayerState = (state: PlayerState) => {
   isNetworkBuffering.value = !!state.isNetworkBuffering
   networkBufferingPercent.value =
     typeof state.networkBufferingPercent === 'number' ? state.networkBufferingPercent : null
+  const wasLoading = isLoading.value
   isLoading.value = state.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
+  const wasPlaying = isPlaying.value
   isPlaying.value = state.phase === 'playing'
+  
+  // 如果从播放变为暂停，显示控制栏
+  if (wasPlaying && !isPlaying.value) {
+    showControls()
+  }
+  
+  // 如果正在加载、暂停、或拖动进度条，保持显示
+  if (isLoading.value || !isPlaying.value || isScrubbing.value) {
+    showControls()
+    return // 这些状态下不需要设置隐藏定时器
+  }
+  
+  // 视频正在播放时，如果鼠标不在控制栏上，确保有隐藏定时器在运行
+  // 这样可以处理以下情况：
+  // 1. 从暂停变为播放
+  // 2. 从加载中变为播放中
+  // 3. 视频一开始就是播放状态
+  if (isPlaying.value && !isHovering.value) {
+    // 如果没有定时器在运行，设置一个新的定时器
+    // 如果有定时器在运行，不重置它（避免频繁重置）
+    if (!hideTimer.value) {
+      scheduleHide()
+    }
+  }
+  
   if (typeof state.duration === 'number') {
     duration.value = state.duration
   }
@@ -245,6 +298,7 @@ const playFromPlaylist = (item: PlaylistItem) => {
 
 const togglePlayPause = () => {
   isPlaying.value = !isPlaying.value
+  onUserInteraction()
   if (window.electronAPI) {
     window.electronAPI.send(isPlaying.value ? 'control-play' : 'control-pause')
   }
@@ -269,13 +323,139 @@ const stop = () => {
   }
 }
 
+// 控制栏显示/隐藏逻辑
+const clearHideTimer = () => {
+  if (hideTimer.value) {
+    clearTimeout(hideTimer.value)
+    hideTimer.value = null
+  }
+}
+
+const showControls = () => {
+  controlsVisible.value = true
+  clearHideTimer()
+  lastInteractionTime.value = Date.now()
+}
+
+const hideControls = () => {
+  if (!autoHideEnabled.value) {
+    console.log('[ControlView] hideControls: autoHideEnabled is false')
+    return
+  }
+  if (isLoading.value) {
+    console.log('[ControlView] hideControls: isLoading is true')
+    return
+  }
+  if (!isPlaying.value) {
+    console.log('[ControlView] hideControls: isPlaying is false')
+    return
+  }
+  if (isScrubbing.value) {
+    console.log('[ControlView] hideControls: isScrubbing is true')
+    return
+  }
+  
+  console.log('[ControlView] hideControls: 隐藏控制栏')
+  controlsVisible.value = false
+}
+
+const scheduleHide = () => {
+  if (!autoHideEnabled.value) {
+    console.log('[ControlView] scheduleHide: autoHideEnabled is false')
+    return
+  }
+  if (isLoading.value) {
+    console.log('[ControlView] scheduleHide: isLoading is true')
+    return
+  }
+  if (!isPlaying.value) {
+    console.log('[ControlView] scheduleHide: isPlaying is false')
+    return
+  }
+  if (isScrubbing.value) {
+    console.log('[ControlView] scheduleHide: isScrubbing is true')
+    return
+  }
+  
+  clearHideTimer()
+  
+  // 检查是否在全屏模式（可以通过 IPC 获取，这里先使用默认值）
+  const delay = HIDE_DELAY
+  
+  console.log(`[ControlView] scheduleHide: 设置 ${delay}ms 后隐藏控制栏`)
+  hideTimer.value = setTimeout(() => {
+    console.log(`[ControlView] scheduleHide: 定时器触发，isHovering=${isHovering.value}, isPlaying=${isPlaying.value}, isScrubbing=${isScrubbing.value}, isLoading=${isLoading.value}`)
+    // 清除定时器引用，这样下次可以重新设置
+    hideTimer.value = null
+    if (!isHovering.value && isPlaying.value && !isScrubbing.value && !isLoading.value) {
+      hideControls()
+    } else {
+      console.log('[ControlView] scheduleHide: 条件不满足，不隐藏')
+    }
+  }, delay)
+}
+
+// 注意：这个函数现在不再被频繁调用，只在特定场景下使用
+const updateControlsVisibility = () => {
+  // 如果正在加载、暂停、或拖动进度条，保持显示
+  if (isLoading.value || !isPlaying.value || isScrubbing.value) {
+    showControls()
+  } else if (isPlaying.value) {
+    // 播放中：如果鼠标不在控制栏上，延迟隐藏；如果在控制栏上，保持显示
+    if (!isHovering.value) {
+      scheduleHide()
+    } else {
+      showControls()
+    }
+  }
+}
+
+// 鼠标进入控制栏区域（header 或 playback-controls）
+const onControlBarEnter = () => {
+  isHovering.value = true
+  showControls()
+}
+
+// 鼠标离开控制栏区域
+const onControlBarLeave = () => {
+  isHovering.value = false
+  if (isPlaying.value && !isLoading.value && !isScrubbing.value) {
+    scheduleHide()
+  }
+}
+
+// 窗口级别的鼠标移动（用于检测鼠标在视频区域移动）
+const onMouseMove = () => {
+  // 鼠标移动时更新交互时间
+  lastInteractionTime.value = Date.now()
+  
+  // 如果控制栏已隐藏，鼠标移动时显示控制栏
+  if (!controlsVisible.value) {
+    showControls()
+  }
+  
+  // 无论控制栏是否已显示，鼠标移动后都应该重置隐藏定时器
+  // 这样鼠标停止移动3秒后会自动隐藏
+  if (!isHovering.value && isPlaying.value && !isLoading.value && !isScrubbing.value) {
+    scheduleHide()
+  }
+}
+
+// 用户交互时保持显示
+const onUserInteraction = () => {
+  showControls()
+  scheduleHide()
+}
+
 const onSeekStart = () => {
   isScrubbing.value = true
+  onUserInteraction()
 }
 
 const onSeekEnd = () => {
   isScrubbing.value = false
   const time = currentTime.value
+  onUserInteraction()
   if (window.electronAPI) {
     window.electronAPI.send('control-seek', time)
   }
@@ -284,11 +464,13 @@ const onSeekEnd = () => {
 const onSeek = (event: Event) => {
   const target = event.target as HTMLInputElement
   currentTime.value = parseFloat(target.value)
+  onUserInteraction()
 }
 
 const onVolumeChange = (event: Event) => {
   const target = event.target as HTMLInputElement
   volume.value = parseInt(target.value)
+  onUserInteraction()
   if (window.electronAPI) {
     window.electronAPI.send('control-volume', volume.value)
   }
@@ -303,11 +485,70 @@ onMounted(() => {
     window.electronAPI.on('player-embedded', handlePlayerEmbedded)
     window.electronAPI.on('player-state', handlePlayerState)
     window.electronAPI.on('playlist-updated', handlePlaylistUpdated)
+    
+    // 控制栏显示/隐藏 IPC 消息（macOS BrowserView 模式）
+    window.electronAPI.on('control-bar-show', () => {
+      showControls()
+    })
+    window.electronAPI.on('control-bar-schedule-hide', () => {
+      if (isPlaying.value && !isLoading.value && !isScrubbing.value && !isHovering.value) {
+        scheduleHide()
+      }
+    })
+    
     window.electronAPI.send('get-playlist')
+    
+    // 监听整个 window 的鼠标事件（macOS BrowserView 模式下，鼠标事件会穿透到 ControlView）
+    // 这样可以捕获视频区域的鼠标移动
+    windowMouseMoveHandler = () => {
+      if (windowMouseMoveTimer) {
+        clearTimeout(windowMouseMoveTimer)
+      }
+      windowMouseMoveTimer = setTimeout(() => {
+        onMouseMove()
+      }, 100)
+    }
+    
+    windowMouseLeaveHandler = () => {
+      if (windowMouseMoveTimer) {
+        clearTimeout(windowMouseMoveTimer)
+        windowMouseMoveTimer = null
+      }
+      // 鼠标离开窗口时，如果正在播放且不在控制栏上，延迟隐藏
+      if (isPlaying.value && !isLoading.value && !isScrubbing.value && !isHovering.value) {
+        scheduleHide()
+      }
+    }
+    
+    window.addEventListener('mousemove', windowMouseMoveHandler)
+    window.addEventListener('mouseleave', windowMouseLeaveHandler)
+    
+    // 初始化时，如果正在播放，延迟隐藏控制栏
+    if (isPlaying.value) {
+      setTimeout(() => {
+        scheduleHide()
+      }, HIDE_DELAY)
+    }
   }
 })
 
 onUnmounted(() => {
+  clearHideTimer()
+  
+  // 清理全局鼠标事件监听器
+  if (windowMouseMoveHandler) {
+    window.removeEventListener('mousemove', windowMouseMoveHandler)
+    windowMouseMoveHandler = null
+  }
+  if (windowMouseLeaveHandler) {
+    window.removeEventListener('mouseleave', windowMouseLeaveHandler)
+    windowMouseLeaveHandler = null
+  }
+  if (windowMouseMoveTimer) {
+    clearTimeout(windowMouseMoveTimer)
+    windowMouseMoveTimer = null
+  }
+  
   if (window.electronAPI) {
     window.electronAPI.removeListener('video-time-update', handleVideoTimeUpdate)
     window.electronAPI.removeListener('video-ended', handleVideoEnded)
@@ -330,6 +571,13 @@ onUnmounted(() => {
   contain: layout style paint;
   transform: translateZ(0);
   will-change: transform;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 整个 control-view 都可以接收鼠标事件，用于触发控制栏显示 */
+  /* 但背景是透明的，不会遮挡视频 */
 }
 
 .loading-overlay {
@@ -362,6 +610,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  will-change: opacity;
 }
 
 .window-controls {
@@ -506,6 +757,23 @@ onUnmounted(() => {
   pointer-events: auto;
   -webkit-app-region: no-drag;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  will-change: opacity;
+}
+
+/* 只隐藏控制栏，不影响其他元素（如 loading-overlay、playlist-panel） */
+.control-view.controls-hidden .header,
+.control-view.controls-hidden .playback-controls {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 确保 loading-overlay 和 playlist-panel 始终可见（如果它们需要显示） */
+.control-view.controls-hidden .loading-overlay,
+.control-view.controls-hidden .playlist-panel {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .control-bar {
