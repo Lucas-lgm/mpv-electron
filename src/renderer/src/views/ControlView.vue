@@ -1,7 +1,10 @@
 <template>
   <div 
     class="control-view" 
-    :class="{ 'controls-hidden': !controlsVisible }"
+    :class="{ 
+      'controls-hidden': !controlsVisible,
+      'video-not-ready': !isVideoReady
+    }"
   >
     <header 
       class="header"
@@ -139,6 +142,10 @@ const showPlaylist = ref(false)
 const currentPath = ref<string | null>(null)
 const hdrEnabled = ref(true)
 
+// 判断视频是否已准备好（已加载完成，可以播放）
+// 当 phase 为 'playing' 或 'paused' 时，说明视频已加载完成
+const isVideoReady = ref(false)
+
 // 使用控制栏自动隐藏 composable
 const autoHide = useControlBarAutoHide({
   isPlaying,
@@ -214,6 +221,13 @@ const handlePlayerState = (state: PlayerState) => {
   isLoading.value = state.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
   const wasPlaying = isPlaying.value
   isPlaying.value = state.phase === 'playing'
+  
+  // 判断是否应该显示黑色背景
+  // 只在视频真正开始播放（playing）或暂停（paused）时，背景才透明
+  // 其他所有状态（idle、loading、stopped、ended、error）都显示黑色背景
+  isVideoReady.value = 
+    state.phase === 'playing' || 
+    state.phase === 'paused'
   
   // 使用 composable 处理播放状态变化
   handlePlayerStateChange(wasPlaying)
@@ -395,6 +409,12 @@ onUnmounted(() => {
   bottom: 0;
   /* 整个 control-view 都可以接收鼠标事件，用于触发控制栏显示 */
   /* 但背景是透明的，不会遮挡视频 */
+  transition: background 0.3s ease;
+}
+
+/* 视频未准备好时（未加载完成或未开始播放），显示纯黑背景 */
+.control-view.video-not-ready {
+  background: #000;
 }
 
 .loading-overlay {
