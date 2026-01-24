@@ -122,7 +122,7 @@ export class Timeline extends EventEmitter {
   }
 
   async broadcastTimeline(overrides: { currentTime?: number; duration?: number } = {}) {
-    overrides = this.applySeekProtection(overrides)
+    // overrides = this.applySeekProtection(overrides)
     let status: MPVStatus | null = null
     if (this.getStatusFn) {
       const s = await Promise.resolve(this.getStatusFn())
