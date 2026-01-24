@@ -217,14 +217,11 @@ const handlePlayerState = (state: PlayerState) => {
   isNetworkBuffering.value = !!state.isNetworkBuffering
   networkBufferingPercent.value =
     typeof state.networkBufferingPercent === 'number' ? state.networkBufferingPercent : null
-  const wasLoading = isLoading.value
   isLoading.value = state.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
   const wasPlaying = isPlaying.value
   isPlaying.value = state.phase === 'playing'
   
-  // 判断是否应该显示黑色背景
-  // 只在视频真正开始播放（playing）或暂停（paused）时，背景才透明
-  // 其他所有状态（idle、loading、stopped、ended、error）都显示黑色背景
+  // 判断是否应该显示黑色背景（只在视频真正开始播放或暂停时，背景才透明）
   isVideoReady.value = 
     state.phase === 'playing' || 
     state.phase === 'paused'
