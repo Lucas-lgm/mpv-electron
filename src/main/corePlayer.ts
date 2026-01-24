@@ -45,6 +45,12 @@ class CorePlayerImpl implements CorePlayer {
   private readonly DEFAULT_RENDER_INTERVAL_MS = 20 // 默认 50fps
   private currentVideoFps: number | null = null // 当前视频帧率
   private currentRenderInterval: number = 20 // 当前渲染间隔（毫秒）
+  private baseRenderInterval: number = 20 // 基础渲染间隔（根据帧率计算）
+  private lastRenderRequestTime: number = 0 // 上次渲染请求的时间戳
+  private renderRequestCount: number = 0 // 渲染请求计数（用于检测延迟）
+  private readonly MIN_RENDER_INTERVAL_MS = 8 // 最小渲染间隔（120fps）
+  private readonly ADJUSTMENT_FACTOR = 0.75 // 调整因子：降低到75%
+  private readonly CHECK_INTERVAL = 10 // 每10次请求检查一次
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -91,15 +97,21 @@ class CorePlayerImpl implements CorePlayer {
     this.currentVideoFps = fps
     
     if (fps && fps > 0.1) {
-      // 根据视频帧率计算渲染间隔：1000ms / fps
+      // 根据视频帧率计算基础渲染间隔：1000ms / fps
       // 限制范围：最小 8ms (120fps)，最大 42ms (24fps)
       const calculatedInterval = Math.round(1000 / fps)
-      this.currentRenderInterval = Math.max(8, Math.min(calculatedInterval, 42))
-      console.log(`[CorePlayer] 📹 Video FPS: ${fps.toFixed(2)}, Render interval: ${this.currentRenderInterval}ms`)
+      this.baseRenderInterval = Math.max(8, Math.min(calculatedInterval, 42))
+      this.currentRenderInterval = this.baseRenderInterval
+      this.renderRequestCount = 0 // 重置计数
+      this.lastRenderRequestTime = 0 // 重置时间戳
+      console.log(`[CorePlayer] 📹 Video FPS: ${fps.toFixed(2)}, Base render interval: ${this.baseRenderInterval}ms`)
     } else {
       // 帧率未知或无效，使用默认值
-      this.currentRenderInterval = this.DEFAULT_RENDER_INTERVAL_MS
-      console.log(`[CorePlayer] 📹 Video FPS: unknown, using default render interval: ${this.currentRenderInterval}ms`)
+      this.baseRenderInterval = this.DEFAULT_RENDER_INTERVAL_MS
+      this.currentRenderInterval = this.baseRenderInterval
+      this.renderRequestCount = 0 // 重置计数
+      this.lastRenderRequestTime = 0 // 重置时间戳
+      console.log(`[CorePlayer] 📹 Video FPS: unknown, using default render interval: ${this.baseRenderInterval}ms`)
     }
     
     // 如果渲染循环正在运行，需要重启以应用新的间隔
@@ -108,10 +120,61 @@ class CorePlayerImpl implements CorePlayer {
       this.startRenderLoop()
     }
   }
+  
+  /**
+   * 检测渲染是否跟上，如果跟不上则降低渲染间隔（增加渲染频率）
+   * 通过监控实际渲染请求的时间间隔来判断
+   */
+  private checkAndAdjustRenderInterval(): void {
+    const now = Date.now()
+    this.renderRequestCount++
+    
+    // 每 CHECK_INTERVAL 次请求检查一次
+    if (this.renderRequestCount < this.CHECK_INTERVAL) {
+      return
+    }
+    
+    this.renderRequestCount = 0
+    
+    if (this.lastRenderRequestTime === 0) {
+      // 第一次请求，记录时间戳
+      this.lastRenderRequestTime = now
+      return
+    }
+    
+    // 计算实际的时间间隔
+    const actualInterval = now - this.lastRenderRequestTime
+    this.lastRenderRequestTime = now
+    
+    // 如果实际间隔明显小于设置的间隔，说明渲染跟不上
+    // 例如：设置 20ms，但实际只过了 15ms 就调用了，说明需要更频繁的渲染
+    // 或者：实际间隔远小于设置间隔的 80%，说明渲染积压
+    const threshold = this.currentRenderInterval * 0.8
+    
+    if (actualInterval < threshold && actualInterval > 0) {
+      // 渲染跟不上，降低间隔（增加频率）
+      const newInterval = Math.max(
+        this.MIN_RENDER_INTERVAL_MS,
+        Math.floor(this.currentRenderInterval * this.ADJUSTMENT_FACTOR)
+      )
+      
+      if (newInterval < this.currentRenderInterval) {
+        this.currentRenderInterval = newInterval
+        console.log(`[CorePlayer] ⚠️ Render falling behind! Actual interval: ${actualInterval.toFixed(1)}ms, reducing to ${this.currentRenderInterval}ms (base: ${this.baseRenderInterval}ms)`)
+      }
+    } else if (actualInterval >= this.baseRenderInterval * 0.9 && this.currentRenderInterval < this.baseRenderInterval) {
+      // 渲染跟上了，恢复到基础间隔
+      this.currentRenderInterval = this.baseRenderInterval
+      console.log(`[CorePlayer] ✅ Render caught up! Actual interval: ${actualInterval.toFixed(1)}ms, restoring to ${this.currentRenderInterval}ms`)
+    }
+  }
 
-  // JavaScript 驱动渲染循环（根据视频帧率动态调整间隔）
+  // JavaScript 驱动渲染循环（根据视频帧率动态调整间隔，并自适应检测延迟）
   private renderLoop = () => {
     if (!this.renderLoopActive) return
+    
+    // 检测渲染是否跟上，如果跟不上则降低间隔（增加频率）
+    this.checkAndAdjustRenderInterval()
     
     // 请求渲染
     if (this.controller) {
