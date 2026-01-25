@@ -1,7 +1,7 @@
 # 功能规划：播放器语义化重构
 
 > **创建日期**: 2026-01-25  
-> **状态**: 规划中  
+> **状态**: 执行中（阶段1已完成，阶段2进行中）  
 > **最后更新**: 2026-01-25  
 > **优先级**: 中
 
@@ -669,29 +669,29 @@ export class MpvAdapter {
 ### 阶段 1：创建领域模型（不破坏现有代码）
 
 #### 步骤 1.1: 创建目录结构
-- [ ] 创建 `src/main/domain/models/` 目录
-- [ ] 创建 `src/main/domain/services/` 目录
-- [ ] 创建 `src/main/domain/events/` 目录
+- [x] 创建 `src/main/domain/models/` 目录
+- [x] 创建 `src/main/domain/services/` 目录
+- [x] 创建 `src/main/domain/events/` 目录
 
 #### 步骤 1.2: 实现 Media 模型
-- [ ] 创建 `src/main/domain/models/Media.ts`
-- [ ] 实现 `MediaId` 接口
-- [ ] 实现 `MediaMetadata` 接口
-- [ ] 实现 `Media` 类
+- [x] 创建 `src/main/domain/models/Media.ts`
+- [x] 实现 `MediaId` 接口
+- [x] 实现 `MediaMetadata` 接口
+- [x] 实现 `Media` 类
 - [ ] 添加单元测试（可选）
 
 #### 步骤 1.3: 实现 Playback 模型
-- [ ] 创建 `src/main/domain/models/Playback.ts`
-- [ ] 定义 `PlaybackStatus` 枚举
-- [ ] 实现 `PlaybackProgress` 接口
-- [ ] 实现 `NetworkBufferingState` 接口
-- [ ] 实现 `PlaybackSession` 类
+- [x] 创建 `src/main/domain/models/Playback.ts`
+- [x] 定义 `PlaybackStatus` 枚举
+- [x] 实现 `PlaybackProgress` 接口
+- [x] 实现 `NetworkBufferingState` 接口
+- [x] 实现 `PlaybackSession` 类
 - [ ] 添加单元测试（可选）
 
 #### 步骤 1.4: 实现 Playlist 模型
-- [ ] 创建 `src/main/domain/models/Playlist.ts`
-- [ ] 实现 `PlaylistEntry` 接口
-- [ ] 实现 `Playlist` 类
+- [x] 创建 `src/main/domain/models/Playlist.ts`
+- [x] 实现 `PlaylistEntry` 接口
+- [x] 实现 `Playlist` 类
 - [ ] 添加单元测试（可选）
 
 **预期结果**: 领域模型创建完成，但不影响现有代码
@@ -699,13 +699,13 @@ export class MpvAdapter {
 ### 阶段 2：创建适配器层
 
 #### 步骤 2.1: 创建 MPV 适配器
-- [ ] 创建 `src/main/infrastructure/mpv/MpvAdapter.ts`
-- [ ] 实现 `toPlaybackSession` 方法
-- [ ] 实现状态映射方法
+- [x] 创建 `src/main/infrastructure/mpv/MpvAdapter.ts`
+- [x] 实现 `toPlaybackSession` 方法
+- [x] 实现状态映射方法
 
 #### 步骤 2.2: 创建 MediaPlayer 接口
-- [ ] 创建 `src/main/domain/services/MediaPlayer.ts`
-- [ ] 定义接口方法
+- [x] 创建 `src/main/domain/services/MediaPlayer.ts`
+- [x] 定义接口方法
 
 **预期结果**: 适配器层创建完成，可以转换技术模型到领域模型
 
