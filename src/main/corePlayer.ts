@@ -386,6 +386,16 @@ class CorePlayerImpl implements CorePlayer {
     this.lastPhysicalHeight = height
     if (this.controller instanceof LibMPVController) {
       await this.controller.setWindowSize(width, height)
+      
+      const currentState = this.stateMachine.getState()
+      if (currentState.phase === 'paused' && process.platform === 'darwin') {
+        const isJsDriven = this.controller.getJsDrivenRenderMode()
+        if (isJsDriven) {
+          // 暂停状态下 resize，手动触发一次渲染
+          this.controller.requestRender()
+          console.log('[CorePlayer] ✅ Resize during pause, triggered render')
+        }
+      }
     }
   }
 
