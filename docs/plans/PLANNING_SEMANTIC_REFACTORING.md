@@ -1,7 +1,7 @@
 # 功能规划：播放器语义化重构
 
 > **创建日期**: 2026-01-25  
-> **状态**: 执行中（阶段1已完成，阶段2进行中）  
+> **状态**: 执行中（阶段1-4已完成，阶段5待执行）  
 > **最后更新**: 2026-01-25  
 > **优先级**: 中
 
@@ -712,10 +712,10 @@ export class MpvAdapter {
 ### 阶段 3：实现 MediaPlayer（并行实现，不替换现有代码）
 
 #### 步骤 3.1: 创建 MpvMediaPlayer
-- [ ] 创建 `src/main/infrastructure/mpv/MpvMediaPlayer.ts`
-- [ ] 实现 `MediaPlayer` 接口
-- [ ] 内部使用现有的 `LibMPVController`
-- [ ] 使用 `MpvAdapter` 转换状态
+- [x] 创建 `src/main/infrastructure/mpv/MpvMediaPlayer.ts`
+- [x] 实现 `MediaPlayer` 接口
+- [x] 内部使用现有的 `LibMPVController`
+- [x] 使用 `MpvAdapter` 转换状态
 
 #### 步骤 3.2: 集成测试
 - [ ] 测试播放功能
@@ -727,21 +727,23 @@ export class MpvAdapter {
 ### 阶段 4：创建应用层
 
 #### 步骤 4.1: 实现命令处理器
-- [ ] 创建 `src/main/application/commands/` 目录
-- [ ] 实现 `PlayMediaCommand` 和 `PlayMediaCommandHandler`
-- [ ] 实现 `PausePlaybackCommand` 和处理器
-- [ ] 实现 `SeekCommand` 和处理器
-- [ ] 实现 `SetVolumeCommand` 和处理器
+- [x] 创建 `src/main/application/commands/` 目录
+- [x] 实现 `PlayMediaCommand` 和 `PlayMediaCommandHandler`
+- [x] 实现 `PausePlaybackCommand` 和处理器
+- [x] 实现 `ResumePlaybackCommand` 和处理器
+- [x] 实现 `SeekCommand` 和处理器
+- [x] 实现 `SetVolumeCommand` 和处理器
+- [x] 实现 `StopPlaybackCommand` 和处理器
 
 #### 步骤 4.2: 实现查询处理器
-- [ ] 创建 `src/main/application/queries/` 目录
-- [ ] 实现 `GetPlaylistQuery` 和处理器
-- [ ] 实现 `GetPlaybackStatusQuery` 和处理器
+- [x] 创建 `src/main/application/queries/` 目录
+- [x] 实现 `GetPlaylistQuery` 和处理器
+- [x] 实现 `GetPlaybackStatusQuery` 和处理器
 
 #### 步骤 4.3: 创建应用服务
-- [ ] 创建 `src/main/application/ApplicationService.ts`
-- [ ] 协调命令和查询处理器
-- [ ] 管理领域对象生命周期
+- [x] 创建 `src/main/application/ApplicationService.ts`
+- [x] 协调命令和查询处理器
+- [x] 管理领域对象生命周期
 
 **预期结果**: 应用层创建完成，提供统一的业务操作接口
 
