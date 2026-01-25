@@ -230,4 +230,17 @@ export function setupIpcHandlers() {
       }
     }
   })
+
+  // 测试语义化重构的领域模型（开发模式）
+  ipcMain.on('test-semantic-refactoring', () => {
+    if (process.env.NODE_ENV === 'development') {
+      try {
+        const { testDomainModels } = require('./test_semantic_refactoring')
+        testDomainModels()
+        console.log('[Test] ✅ 语义化重构测试完成，查看控制台输出')
+      } catch (error) {
+        console.error('[Test] ❌ 测试失败:', error)
+      }
+    }
+  })
 }

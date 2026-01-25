@@ -16,7 +16,8 @@
     "clean:native": "node-gyp clean --directory native",
     "package": "npm run build && npm run build:native && electron-builder",
     "package:mac": "npm run build && npm run build:native && electron-builder --mac",
-    "dist": "npm run build && npm run build:native && electron-builder --mac --arm64"
+    "dist": "npm run build && npm run build:native && electron-builder --mac --arm64",
+    "test:domain": "echo '🧪 领域模型测试方法：\\n\\n方法1（推荐）：使用 IPC 命令\\n  1. 运行: npm run dev\\n  2. 在渲染进程控制台运行: window.electronAPI.send(\\'test-semantic-refactoring\\')\\n  3. 查看主进程控制台输出\\n\\n方法2：开发模式自动测试\\n  运行: NODE_ENV=development npm run dev\\n  测试会自动运行，查看主进程控制台\\n\\n详细说明请查看: docs/development/TESTING_GUIDE.md'"
   },
   "license": "MIT",
   "devDependencies": {
