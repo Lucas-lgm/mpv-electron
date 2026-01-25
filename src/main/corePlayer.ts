@@ -4,6 +4,7 @@ import type { MPVStatus } from './libmpv'
 import { LibMPVController, isLibMPVAvailable } from './libmpv'
 import { getNSViewPointer, getHWNDPointer } from './nativeHelper'
 import { Timeline } from './timeline'
+import { RenderManager } from './renderManager'
 
 export interface CorePlayer {
   setVideoWindow(window: BrowserWindow | null): void
@@ -36,27 +37,12 @@ class CorePlayerImpl implements CorePlayer {
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
   private pendingResizeTimer: NodeJS.Timeout | null = null
-  private resizeStableTimer: NodeJS.Timeout | null = null // Resize 稳定检测定时器
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
-  // 数据驱动的渲染状态标记
-  private isResizing: boolean = false // 是否正在 resize（resize 过程中不渲染）
-  private pendingResizeRender: boolean = false // resize 完成后需要渲染的标记
-  private pendingSeekRender: boolean = false // seek 完成后需要渲染的标记
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
-  private renderLoopActive: boolean = false
-  private renderLoopHandle: NodeJS.Timeout | null = null
-  private readonly DEFAULT_RENDER_INTERVAL_MS = 20 // 默认 50fps
-  private currentVideoFps: number | null = null // 当前视频帧率
-  private currentRenderInterval: number = 20 // 当前渲染间隔（毫秒）
   private lastIsSeeking: boolean = false // 上次的 isSeeking 状态，用于检测 seek 完成
-  private baseRenderInterval: number = 20 // 基础渲染间隔（根据帧率计算）
-  private lastRenderRequestTime: number = 0 // 上次渲染请求的时间戳
-  private renderRequestCount: number = 0 // 渲染请求计数（用于检测延迟）
-  private readonly MIN_RENDER_INTERVAL_MS = 8 // 最小渲染间隔（120fps）
-  private readonly ADJUSTMENT_FACTOR = 0.75 // 调整因子：降低到75%
-  private readonly CHECK_INTERVAL = 10 // 每10次请求检查一次
+  private renderManager: RenderManager | null = null // 渲染管理器
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -73,15 +59,21 @@ class CorePlayerImpl implements CorePlayer {
         this.sendToPlaybackUIs('video-time-update', payload)
       }
     })
+    
+    // 初始化渲染管理器
+    this.renderManager = new RenderManager(
+      this.controller,
+      () => this.stateMachine.getState()
+    )
+    
     // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染
-    // 不再根据 phase 启动/停止循环，而是让循环持续运行并检查状态
     this.stateMachine.on('state', (st) => {
       this.timeline?.handlePlayerStateChange(st.phase)
       // 确保渲染循环运行（如果还没运行）
-      if (!this.renderLoopActive && this.controller && process.platform === 'darwin') {
+      if (this.renderManager && this.controller && process.platform === 'darwin') {
         const isJsDriven = this.controller.getJsDrivenRenderMode()
-        if (isJsDriven) {
-          this.startRenderLoop()
+        if (isJsDriven && !this.renderManager.isActive()) {
+          this.renderManager.start()
         }
       }
     })
@@ -89,181 +81,11 @@ class CorePlayerImpl implements CorePlayer {
     // 监听视频帧率变化，动态调整渲染间隔
     if (this.controller) {
       this.controller.on('fps-change', (fps: number | null) => {
-        this.updateRenderInterval(fps)
+        this.renderManager?.updateFps(fps)
       })
     }
   }
   
-  /**
-   * 根据视频帧率更新渲染间隔
-   * @param fps 视频帧率（fps），null 表示未知或无效
-   */
-  private updateRenderInterval(fps: number | null): void {
-    this.currentVideoFps = fps
-    
-    if (fps && fps > 0.1) {
-      // 根据视频帧率计算基础渲染间隔：1000ms / fps
-      // 限制范围：最小 8ms (120fps)，最大 42ms (24fps)
-      const calculatedInterval = Math.round(1000 / fps)
-      this.baseRenderInterval = Math.max(8, Math.min(calculatedInterval, 42))
-      this.currentRenderInterval = this.baseRenderInterval
-      this.renderRequestCount = 0 // 重置计数
-      this.lastRenderRequestTime = 0 // 重置时间戳
-      console.log(`[CorePlayer] 📹 Video FPS: ${fps.toFixed(2)}, Base render interval: ${this.baseRenderInterval}ms`)
-    } else {
-      // 帧率未知或无效，使用默认值
-      this.baseRenderInterval = this.DEFAULT_RENDER_INTERVAL_MS
-      this.currentRenderInterval = this.baseRenderInterval
-      this.renderRequestCount = 0 // 重置计数
-      this.lastRenderRequestTime = 0 // 重置时间戳
-      console.log(`[CorePlayer] 📹 Video FPS: unknown, using default render interval: ${this.baseRenderInterval}ms`)
-    }
-    
-    // 如果渲染循环正在运行，需要重启以应用新的间隔
-    if (this.renderLoopActive) {
-      this.stopRenderLoop()
-      this.startRenderLoop()
-    }
-  }
-  
-  /**
-   * 检测渲染是否跟上，如果跟不上则降低渲染间隔（增加渲染频率）
-   * 通过监控实际渲染请求的时间间隔来判断
-   */
-  private checkAndAdjustRenderInterval(): void {
-    const now = Date.now()
-    this.renderRequestCount++
-    
-    // 每 CHECK_INTERVAL 次请求检查一次
-    if (this.renderRequestCount < this.CHECK_INTERVAL) {
-      return
-    }
-    
-    this.renderRequestCount = 0
-    
-    if (this.lastRenderRequestTime === 0) {
-      // 第一次请求，记录时间戳
-      this.lastRenderRequestTime = now
-      return
-    }
-    
-    // 计算实际的时间间隔
-    const actualInterval = now - this.lastRenderRequestTime
-    this.lastRenderRequestTime = now
-    
-    // 如果实际间隔明显小于设置的间隔，说明渲染跟不上
-    // 例如：设置 20ms，但实际只过了 15ms 就调用了，说明需要更频繁的渲染
-    // 或者：实际间隔远小于设置间隔的 80%，说明渲染积压
-    const threshold = this.currentRenderInterval * 0.8
-    
-    if (actualInterval < threshold && actualInterval > 0) {
-      // 渲染跟不上，降低间隔（增加频率）
-      const newInterval = Math.max(
-        this.MIN_RENDER_INTERVAL_MS,
-        Math.floor(this.currentRenderInterval * this.ADJUSTMENT_FACTOR)
-      )
-      
-      if (newInterval < this.currentRenderInterval) {
-        this.currentRenderInterval = newInterval
-        console.log(`[CorePlayer] ⚠️ Render falling behind! Actual interval: ${actualInterval.toFixed(1)}ms, reducing to ${this.currentRenderInterval}ms (base: ${this.baseRenderInterval}ms)`)
-      }
-    } else if (actualInterval >= this.baseRenderInterval * 0.9 && this.currentRenderInterval < this.baseRenderInterval) {
-      // 渲染跟上了，恢复到基础间隔
-      this.currentRenderInterval = this.baseRenderInterval
-      console.log(`[CorePlayer] ✅ Render caught up! Actual interval: ${actualInterval.toFixed(1)}ms, restoring to ${this.currentRenderInterval}ms`)
-    }
-  }
-
-  // JavaScript 驱动渲染循环（根据视频帧率动态调整间隔，并自适应检测延迟）
-  /**
-   * 统一的渲染判断逻辑（完全数据驱动）
-   * 所有渲染决策都基于状态数据，不依赖事件
-   * @param state 播放器状态
-   * @returns 是否应该渲染
-   */
-  private shouldRender(state: PlayerState): boolean {
-    // 1. Seek 过程中不渲染
-    if (state.isSeeking) {
-      return false
-    }
-    
-    // 2. Resize 过程中不渲染（等待稳定）
-    if (this.isResizing) {
-      return false
-    }
-    
-    // 3. Seek 完成后需要渲染（无论什么状态）
-    if (this.pendingSeekRender) {
-      this.pendingSeekRender = false // 清除标记
-      return true
-    }
-    
-    // 4. Resize 完成后需要渲染（非播放状态）
-    if (this.pendingResizeRender) {
-      this.pendingResizeRender = false // 清除标记
-      // 只在非播放状态时渲染（播放中由循环自动处理）
-      if (state.phase !== 'playing') {
-        return true
-      }
-      return false
-    }
-    
-    // 5. 正常播放状态渲染
-    if (state.phase === 'playing') {
-      return true
-    }
-    
-    return false
-  }
-
-
-  private renderLoop = () => {
-    if (!this.renderLoopActive) return
-    
-    const currentState = this.stateMachine.getState()
-    
-    // 使用统一的判断逻辑
-    if (this.shouldRender(currentState)) {
-      // 检测渲染是否跟上，如果跟不上则降低间隔（增加频率）
-      this.checkAndAdjustRenderInterval()
-      
-      // 请求渲染
-      if (this.controller) {
-        this.controller.requestRender()
-      }
-    }
-    
-    // 继续下一帧（使用动态计算的间隔）
-    this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
-  }
-
-  private startRenderLoop() {
-    if (this.renderLoopActive) {
-      return
-    }
-    // 数据驱动架构：renderLoop 持续运行，不依赖播放状态
-    if (this.controller && process.platform === 'darwin') {
-      const isJsDriven = this.controller.getJsDrivenRenderMode()
-      if (isJsDriven) {
-        this.renderLoopActive = true
-        this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
-        console.log(`[CorePlayer] ✅ Started data-driven render loop (interval: ${this.currentRenderInterval}ms)`)
-      }
-    }
-  }
-
-  private stopRenderLoop() {
-    // 数据驱动架构：renderLoop 持续运行，通常不需要停止
-    // 只有在清理时才停止
-    if (!this.renderLoopActive) {
-      return
-    }
-    this.renderLoopActive = false
-    if (this.renderLoopHandle) {
-      clearTimeout(this.renderLoopHandle)
-      this.renderLoopHandle = null
-    }
-  }
 
   setVideoWindow(window: BrowserWindow | null) {
     if (this.videoWindow && !this.videoWindow.isDestroyed()) {
@@ -351,10 +173,14 @@ class CorePlayerImpl implements CorePlayer {
       // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
       if (windowId) {
         await this.controller.setWindowId(windowId)
+        // 更新渲染管理器的 controller
+        if (this.renderManager) {
+          this.renderManager.setController(this.controller)
+        }
         // setWindowId 后，JavaScript 驱动模式已启用，如果正在播放则启动渲染循环
         const currentState = this.getPlayerState()
-        if (currentState.phase === 'playing') {
-          this.startRenderLoop()
+        if (currentState.phase === 'playing' && this.renderManager) {
+          this.renderManager.start()
         }
       }
       await this.syncWindowSize()
@@ -389,28 +215,8 @@ class CorePlayerImpl implements CorePlayer {
     }
     this.videoWindow.removeAllListeners('resize')
     this.videoWindow.on('resize', () => {
-      // 数据驱动：标记正在 resize，renderLoop 会检测并跳过渲染
-      this.isResizing = true
-      
-      // 重置稳定检测定时器（防抖机制）
-      // 只有在 resize 事件停止 100ms 后才认为稳定
-      if (this.resizeStableTimer) {
-        clearTimeout(this.resizeStableTimer)
-      }
-      this.resizeStableTimer = setTimeout(() => {
-        this.resizeStableTimer = null
-        // 100ms 内没有新的 resize 事件，认为已稳定
-        this.isResizing = false
-        const currentState = this.stateMachine.getState()
-        // 只在非播放状态时标记需要渲染（播放中由循环自动处理）
-        if (currentState.phase !== 'playing') {
-          this.pendingResizeRender = true
-          console.log('[CorePlayer] ✅ Resize stabilized, marked for render (non-playing)')
-        } else {
-          console.log('[CorePlayer] Resize stabilized (playing), render loop will handle it')
-        }
-      }, 100) // 100ms 内没有新事件 = 稳定
-      
+      // 通知渲染管理器 resize 开始
+      this.renderManager?.markResizeStart()
       this.scheduleWindowSizeSync()
     })
   }
@@ -467,8 +273,7 @@ class CorePlayerImpl implements CorePlayer {
       // 数据驱动：seek 完成后，标记需要渲染
       // renderLoop 会检测到 pendingSeekRender 并触发渲染
       if (wasSeeking && !isSeeking) {
-        this.pendingSeekRender = true
-        console.log('[CorePlayer] ✅ Seek completed, marked for render')
+        this.renderManager?.markSeekComplete()
       }
       
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
@@ -476,7 +281,7 @@ class CorePlayerImpl implements CorePlayer {
     
     // 监听视频帧率变化，动态调整渲染间隔
     this.controller.on('fps-change', (fps: number | null) => {
-      this.updateRenderInterval(fps)
+      this.renderManager?.updateFps(fps)
     })
     
     // 监听文件加载完成事件，确保自动播放
@@ -486,7 +291,7 @@ class CorePlayerImpl implements CorePlayer {
         // 主动获取一次视频帧率，确保渲染间隔及时更新
         const fps = await this.controller.getProperty('estimated-vf-fps')
         if (typeof fps === 'number' && fps > 0.1) {
-          this.updateRenderInterval(fps)
+          this.renderManager?.updateFps(fps)
         }
         
         // 检查 pause 状态，如果为 true 则自动播放
@@ -563,20 +368,12 @@ class CorePlayerImpl implements CorePlayer {
     this.isCleaningUp = true
     try {
       // 停止渲染循环
-      this.stopRenderLoop()
+      this.renderManager?.cleanup()
       
       if (this.pendingResizeTimer) {
         clearTimeout(this.pendingResizeTimer)
         this.pendingResizeTimer = null
       }
-      if (this.resizeStableTimer) {
-        clearTimeout(this.resizeStableTimer)
-        this.resizeStableTimer = null
-      }
-      // 清除数据驱动的状态标记
-      this.isResizing = false
-      this.pendingResizeRender = false
-      this.pendingSeekRender = false
       this.timeline?.dispose()
       if (this.controller) {
         if (this.controller instanceof LibMPVController) {
