@@ -171,24 +171,69 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   // JavaScript 驱动渲染循环（根据视频帧率动态调整间隔，并自适应检测延迟）
-  private renderLoop = () => {
-    if (!this.renderLoopActive) return
+  /**
+   * 统一的渲染判断逻辑（用于循环渲染）
+   * 特殊场景（seek 完成、resize）使用 forceRender 强制渲染
+   * @param state 播放器状态
+   * @returns 是否应该渲染
+   */
+  private shouldRender(state: PlayerState): boolean {
+    // Seek 过程中不渲染
+    if (state.isSeeking) {
+      return false
+    }
     
-    // 检查是否正在 seek，如果是则跳过本次渲染
-    const currentState = this.stateMachine.getState()
-    if (currentState.isSeeking) {
-      // seek 过程中不渲染，等待 seek 完成
-      // 继续下一帧（使用动态计算的间隔）
-      this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
+    // 只在播放状态渲染
+    if (state.phase === 'playing') {
+      return true
+    }
+    
+    return false
+  }
+
+  /**
+   * 触发渲染（事件驱动模式）
+   * 用于 seek 完成、resize 等特殊情况
+   * @param forceRender 是否强制渲染（跳过 shouldRender 检查，用于 seek 完成、resize 等场景）
+   */
+  private triggerRenderIfNeeded(forceRender: boolean = false): void {
+    if (!this.controller || process.platform !== 'darwin') {
       return
     }
     
-    // 检测渲染是否跟上，如果跟不上则降低间隔（增加频率）
-    this.checkAndAdjustRenderInterval()
+    const isJsDriven = this.controller.getJsDrivenRenderMode()
+    if (!isJsDriven) {
+      return
+    }
     
-    // 请求渲染（只在非 seek 状态下）
-    if (this.controller) {
+    // 强制渲染（用于 seek 完成、resize 等场景，跳过状态检查）
+    // 这些场景都需要立即更新画面，不需要检查状态
+    if (forceRender) {
       this.controller.requestRender()
+      return
+    }
+    
+    // 正常情况：检查状态后决定是否渲染
+    const state = this.stateMachine.getState()
+    if (this.shouldRender(state)) {
+      this.controller.requestRender()
+    }
+  }
+
+  private renderLoop = () => {
+    if (!this.renderLoopActive) return
+    
+    const currentState = this.stateMachine.getState()
+    
+    // 使用统一的判断逻辑
+    if (this.shouldRender(currentState)) {
+      // 检测渲染是否跟上，如果跟不上则降低间隔（增加频率）
+      this.checkAndAdjustRenderInterval()
+      
+      // 请求渲染
+      if (this.controller) {
+        this.controller.requestRender()
+      }
     }
     
     // 继续下一帧（使用动态计算的间隔）
@@ -387,15 +432,9 @@ class CorePlayerImpl implements CorePlayer {
     if (this.controller instanceof LibMPVController) {
       await this.controller.setWindowSize(width, height)
       
-      const currentState = this.stateMachine.getState()
-      if (currentState.phase === 'paused' && process.platform === 'darwin') {
-        const isJsDriven = this.controller.getJsDrivenRenderMode()
-        if (isJsDriven) {
-          // 暂停状态下 resize，手动触发一次渲染
-          this.controller.requestRender()
-          console.log('[CorePlayer] ✅ Resize during pause, triggered render')
-        }
-      }
+      // Resize 时需要立即更新画面，强制渲染（跳过状态检查）
+      this.triggerRenderIfNeeded(true)
+      console.log('[CorePlayer] ✅ Resize completed, triggered render')
     }
   }
 
@@ -415,17 +454,18 @@ class CorePlayerImpl implements CorePlayer {
       const isSeeking = status.isSeeking ?? false
       this.lastIsSeeking = isSeeking
       
-      // 如果 seek 完成，主动触发一次渲染（JavaScript 驱动模式下需要）
-      if (wasSeeking && !isSeeking && this.controller && process.platform === 'darwin') {
-        const isJsDriven = this.controller.getJsDrivenRenderMode()
-        if (isJsDriven) {
-          // seek 完成后立即触发一次渲染，确保画面刷新
-          this.controller.requestRender()
-          console.log('[CorePlayer] ✅ Seek completed, triggered immediate render')
-        }
+      // 先更新状态，确保 stateMachine 中的状态是最新的
+      this.updateFromMPVStatus(status)
+      
+      // 如果 seek 完成，主动触发一次渲染（事件驱动）
+      // forceRender = true：seek 完成后强制渲染，无论当前状态如何
+      // 因为 seek 完成后肯定需要显示新位置的画面
+      if (wasSeeking && !isSeeking) {
+        // 强制渲染，跳过状态检查（seek 完成后肯定需要渲染）
+        this.triggerRenderIfNeeded(true)
+        console.log('[CorePlayer] ✅ Seek completed, triggered immediate render')
       }
       
-      this.updateFromMPVStatus(status)
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
     })
     
