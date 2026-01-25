@@ -34,11 +34,29 @@ This document records the migration from the traditional `vo_opengl` / manual `v
 - **Dolby Vision**: Handled by `libplacebo`'s internal tone mapping (mapping DV metadata to the target display's HDR/SDR capabilities).
 - **HDR on macOS**: The `gpu-next` backend automatically detects and utilizes the macOS EDR capabilities (when available and correctly configured in the windowing system).
 
-## Pending / Known Issues
+## Resolved Issues (v1.3+)
 
-- **HDR Overexposure**: Initial tests showed potential overexposure in DV/HDR content. This is currently under investigation (likely related to how `libplacebo` detects the peak brightness of the `CALayer` vs the reported display metadata).
-- **Green/Purple Artifacts**: Some DV content may exhibit color artifacts, pointing to potential colorspace conversion mismatches or missing DV profile support in the current `libplacebo` version/configuration.
+- **HDR Overexposure**: ✅ **Resolved** - Implemented conservative `target-peak` calculation based on display EDR capability and proper tone mapping (`bt.2390` for HDR10, `st2094-10` for Dolby Vision).
+- **Green/Purple Artifacts**: ✅ **Resolved** - Fixed through proper libplacebo configuration and Dolby Vision profile support (Profile 5 & 8).
+- **Subtitle Rendering Issues**: ✅ **Resolved** - Fixed Y-coordinate flip in `gpu-next` backend when using `FLIP_Y=1` render parameter.
+- **Video Rotation Problems**: ✅ **Resolved** - Proper rotation metadata handling in `gpu-next` backend.
+- **SDR Colors Too Gray**: ✅ **Resolved** - Explicit `target-trc=srgb` configuration with proper primaries detection.
 
 ## Usage
 
 The application now defaults to using the `gpu-next` backend logic embedded within `vo_libmpv`. No special `--vo` flag is needed as the priority has been adjusted in the source code.
+
+---
+
+## Update History
+
+| Date | Changes | Version |
+|------|---------|---------|
+| 2026-01-25 | Updated issue status from "Pending" to "Resolved", matching README.md | v1.4 |
+| 2026-01-19 | Initial documentation of GPU-Next integration | v1.3 |
+
+## Related Documents
+
+- [README.md](../README.md) - Project overview and current status
+- [TROUBLESHOOTING.md](../development/TROUBLESHOOTING.md) - Problem solving guide
+- [ARCHITECTURE.md](../ARCHITECTURE.md) - Complete system architecture

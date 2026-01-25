@@ -213,6 +213,33 @@ git submodule update --init --recursive
 
 The submodule tracks `release/0.41` branch from `git@github.com:Lucas-lgm/mpv.git`.
 
+## Documentation
+
+The project includes comprehensive documentation in the `docs/` directory:
+
+### Core Documentation
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Complete system architecture, interfaces, and design patterns (1700+ lines)
+- **[ARCHITECTURE_UPDATE_GUIDE.md](docs/ARCHITECTURE_UPDATE_GUIDE.md)** - Guide for keeping architecture documentation synchronized with code
+
+### Development Guides
+- **[SETUP_GUIDE.md](docs/development/SETUP_GUIDE.md)** - Development environment setup and configuration
+- **[API_REFERENCE.md](docs/development/API_REFERENCE.md)** - Quick reference for core APIs and usage examples
+- **[TROUBLESHOOTING.md](docs/development/TROUBLESHOOTING.md)** - Common problems and solutions
+
+### Feature Documentation
+- **[GPU_NEXT_INTEGRATION.md](docs/features/GPU_NEXT_INTEGRATION.md)** - Migration to gpu-next (libplacebo) backend for HDR
+- **[PLANNING_SEMANTIC_REFACTORING.md](docs/plans/PLANNING_SEMANTIC_REFACTORING.md)** - Plan for semantic refactoring (domain-driven design)
+
+### Deployment & Distribution
+- **[DEPLOYMENT.md](docs/deployment/DEPLOYMENT.md)** - Complete guide for packaging and distribution
+
+### Development Workflow
+- **[workflow/](docs/workflow/)** - AI-assisted development workflow and templates
+  - `PROMPT_TEMPLATES.md` - Standardized prompt templates
+  - `WORKFLOW_CHECKLIST.md` - Development workflow checklist
+  - `EXAMPLES.md` - Real-world usage examples
+  - `PLANNING_TEMPLATE.md` - Planning document template
+
 ## Contributing
 
 - Issues/PRs are welcome, especially for macOS HDR, color management, and embedding stability.
