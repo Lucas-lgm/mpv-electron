@@ -108,6 +108,8 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
 # 4. 修复依赖路径为 @loader_path 相对路径
 ```
 
+**详细说明**: 查看 [VENDOR_MANAGEMENT.md](VENDOR_MANAGEMENT.md) 了解 vendor 依赖管理的详细信息。
+
 ### 4. 构建 Native Addon
 ```bash
 # 构建 native addon (Node.js 原生模块)

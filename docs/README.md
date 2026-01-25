@@ -10,14 +10,14 @@
 docs/
 ├── ARCHITECTURE.md                    # 核心架构文档（详细）
 ├── ARCHITECTURE_UPDATE_GUIDE.md       # 架构文档更新指南
+├── BUILD.md                           # 快速构建指南
 ├── README.md                          # 本文件，文档索引
 ├── development/                       # 开发相关文档
 │   ├── SETUP_GUIDE.md                 # 开发环境设置指南
 │   ├── API_REFERENCE.md               # API快速参考手册
 │   └── TROUBLESHOOTING.md             # 故障排除指南
 ├── deployment/                        # 部署相关文档
-│   ├── DEPLOYMENT.md                  # 完整部署指南
-│   └── archive/                       # 历史版本（已合并）
+│   └── DEPLOYMENT.md                  # 完整部署指南（已整合所有部署相关内容）
 ├── features/                          # 特性文档
 │   └── GPU_NEXT_INTEGRATION.md        # GPU-Next集成指南
 ├── plans/                             # 规划文档
@@ -34,10 +34,11 @@ docs/
 ## 🎯 文档用途指南
 
 ### 新开发者
-1. **开始开发**: 阅读 [SETUP_GUIDE.md](development/SETUP_GUIDE.md)
-2. **了解架构**: 阅读 [ARCHITECTURE.md](ARCHITECTURE.md)
-3. **API参考**: 查看 [API_REFERENCE.md](development/API_REFERENCE.md)
-4. **解决问题**: 参考 [TROUBLESHOOTING.md](development/TROUBLESHOOTING.md)
+1. **快速构建**: 查看 [BUILD.md](BUILD.md) - 构建流程快速参考
+2. **开始开发**: 阅读 [SETUP_GUIDE.md](development/SETUP_GUIDE.md)
+3. **了解架构**: 阅读 [ARCHITECTURE.md](ARCHITECTURE.md)
+4. **API参考**: 查看 [API_REFERENCE.md](development/API_REFERENCE.md)
+5. **解决问题**: 参考 [TROUBLESHOOTING.md](development/TROUBLESHOOTING.md)
 
 ### 架构师/维护者
 1. **系统设计**: 详细阅读 [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -63,7 +64,9 @@ docs/
 
 ### 2. 开发指南 (development/)
 - **SETUP_GUIDE.md**: 开发环境设置，从零开始配置
+- **VENDOR_MANAGEMENT.md**: Vendor 依赖管理，MPV 库构建和管理
 - **API_REFERENCE.md**: 核心API快速参考，使用示例
+- **TESTING_GUIDE.md**: 测试指南
 - **TROUBLESHOOTING.md**: 常见问题解决方案，调试方法
 
 ### 3. 部署指南 (deployment/)
