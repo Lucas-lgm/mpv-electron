@@ -630,7 +630,7 @@ export interface MPVStatus {
 | `volume` | `number` | 是 | 音量（0-100） | `80` |
 | `path` | `string \| null` | 是 | 当前文件路径 | `"/video.mp4"` |
 | `phase` | `PlayerPhase` | 否 | 播放阶段 | `"playing"` |
-| `isSeeking` | `boolean` | 否 | 是否正在跳转 | `false` |
+| `isSeeking` | `boolean` | 否 | 是否正在跳转（辅助状态标志） | `false` |
 | `isCoreIdle` | `boolean` | 否 | 核心是否空闲 | `false` |
 | `isIdleActive` | `boolean` | 否 | 是否激活空闲 | `false` |
 | `isNetworkBuffering` | `boolean` | 否 | 是否网络缓冲 | `true` |
@@ -678,7 +678,7 @@ export type PlayerPhase =
 | `idle` | 初始空闲状态 | 应用启动、播放器重置 |
 | `loading` | 文件加载中 | 调用 `play()` 方法 |
 | `playing` | 正常播放 | 文件加载完成、恢复播放 |
-| `paused` | 暂停状态 | 调用 `pause()` 方法 |
+| `paused` | 暂停状态 | 调用 `pause()` 方法，可以 seek |
 | `stopped` | 停止状态 | 调用 `stop()` 方法 |
 | `ended` | 播放结束 | 视频播放完成 |
 | `error` | 错误状态 | 加载失败、播放错误 |
@@ -1073,6 +1073,23 @@ macOS上的HDR配置通过`CAOpenGLLayer`实现：
 
 ## 8. 状态机设计与迁移
 
+### 8.0 状态分类
+
+状态机使用**主状态 + 辅助状态标志**的设计：
+
+- **主状态 (`phase`)**：`idle`, `loading`, `playing`, `paused`, `stopped`, `ended`, `error`
+  - 这些是互斥的状态，同一时间只能有一个主状态
+  - 主状态决定播放器的基本行为
+
+- **辅助状态标志**：`isSeeking`, `isNetworkBuffering` 等
+  - 这些是布尔标志，可以与主状态组合
+  - 不影响主状态的迁移，只影响特定行为（如渲染）
+
+**示例**：
+- `phase='playing'` + `isSeeking=true`：播放状态下的跳转中
+- `phase='paused'` + `isSeeking=true`：暂停状态下的跳转中
+- Seek 完成后，`isSeeking=false`，但 `phase` 保持不变
+
 ### 8.1 状态迁移图
 
 ```mermaid
@@ -1083,8 +1100,6 @@ stateDiagram-v2
     Loading --> Paused: 加载后暂停
     Playing --> Paused: pause()
     Paused --> Playing: resume()
-    Playing --> Seeking: seek()
-    Seeking --> Playing: seek完成
     Playing --> Ended: 播放完成
     Ended --> Idle: reset()
     Playing --> Error: 播放错误
@@ -1092,26 +1107,38 @@ stateDiagram-v2
     Error --> Idle: recover()
     
     note right of Idle: 初始状态，等待播放
-    note right of Playing: 主要播放状态
-    note right of Paused: 暂停状态，可恢复
-    note right of Seeking: 跳转中，不渲染
+    note right of Playing: 播放状态<br/>isSeeking=true时跳转中(不渲染)
+    note right of Paused: 暂停状态，可恢复<br/>isSeeking=true时跳转中(不渲染)
 ```
+
+**说明**：
+- `isSeeking` 是辅助状态标志，不是独立状态
+- `Playing` 和 `Paused` 状态下都可以执行 `seek()`，此时 `isSeeking=true`
+- Seek 过程中 `phase` 保持不变（仍为 `playing` 或 `paused`）
+- Seek 完成后 `isSeeking=false`，`phase` 保持不变
 
 ### 8.2 状态迁移矩阵
 
-| 当前状态 | 事件/操作 | 下一状态 | 条件/说明 |
-|----------|-----------|----------|-----------|
-| `Idle` | `play(filePath)` | `Loading` | 开始加载文件 |
-| `Loading` | 文件加载完成 | `Playing` | 自动播放 |
-| `Loading` | 加载后暂停 | `Paused` | 暂停标志已设置 |
-| `Playing` | `pause()` | `Paused` | 暂停播放 |
-| `Paused` | `resume()` | `Playing` | 恢复播放 |
-| `Playing` | `seek(time)` | `Seeking` | 开始跳转 |
-| `Seeking` | 跳转完成 | `Playing` | 跳转结束 |
-| `Playing` | 播放完成 | `Ended` | 到达视频末尾 |
-| `Ended` | 重置 | `Idle` | 播放器重置 |
-| `Playing`/`Paused` | 错误发生 | `Error` | 播放错误 |
-| `Error` | 恢复 | `Idle` | 错误处理完成 |
+| 当前状态 | 事件/操作 | 下一状态 | 辅助状态变化 | 条件/说明 |
+|----------|-----------|----------|--------------|-----------|
+| `Idle` | `play(filePath)` | `Loading` | - | 开始加载文件 |
+| `Loading` | 文件加载完成 | `Playing` | - | 自动播放 |
+| `Loading` | 加载后暂停 | `Paused` | - | 暂停标志已设置 |
+| `Playing` | `pause()` | `Paused` | - | 暂停播放 |
+| `Paused` | `resume()` | `Playing` | - | 恢复播放 |
+| `Playing` | `seek(time)` | `Playing` | `isSeeking=true` | 开始跳转，phase不变 |
+| `Paused` | `seek(time)` | `Paused` | `isSeeking=true` | 开始跳转，phase不变 |
+| `Playing` (isSeeking=true) | 跳转完成 | `Playing` | `isSeeking=false` | 跳转结束，保持播放状态 |
+| `Paused` (isSeeking=true) | 跳转完成 | `Paused` | `isSeeking=false` | 跳转结束，保持暂停状态 |
+| `Playing` | 播放完成 | `Ended` | - | 到达视频末尾 |
+| `Ended` | 重置 | `Idle` | - | 播放器重置 |
+| `Playing`/`Paused` | 错误发生 | `Error` | - | 播放错误 |
+| `Error` | 恢复 | `Idle` | - | 错误处理完成 |
+
+**说明**：
+- `isSeeking` 是辅助状态标志，不影响主状态 `phase`
+- Seek 操作不会改变 `phase`，只会设置 `isSeeking` 标志
+- Seek 过程中 `phase` 保持为 `playing` 或 `paused`
 
 ### 8.3 状态机实现
 
@@ -1123,7 +1150,7 @@ private derivePhase(status: MPVStatus): PlayerPhase {
     return 'error'
   }
   if (this.state.phase === 'paused') {
-    return 'paused'
+    return 'paused'  // 暂停状态保持不变
   }
   if (this.state.phase === 'stopped') {
     return 'stopped'
@@ -1138,7 +1165,38 @@ private derivePhase(status: MPVStatus): PlayerPhase {
 }
 ```
 
-### 8.4 状态更新机制
+**关键点**：
+- `isSeeking` 是独立的状态标志，不影响 `phase` 的推导
+- Seek 操作时，`phase` 保持为 `playing` 或 `paused`，只有 `isSeeking` 标志变化
+- 这允许在暂停状态下也能执行 seek 操作
+
+### 8.4 辅助状态说明
+
+#### isSeeking 标志
+
+- **作用**：标记是否正在执行跳转操作
+- **特点**：
+  - 不影响主状态 `phase`（`playing` 或 `paused` 保持不变）
+  - 在 `Playing` 和 `Paused` 状态下都可以设置
+  - Seek 过程中不进行渲染（`renderManager.ts:52`）
+  - Seek 完成后需要渲染一次（`renderManager.ts:62`）
+
+**使用场景**：
+```typescript
+// 播放状态下 seek
+state.phase = 'playing'
+state.isSeeking = true  // 开始跳转
+// ... 跳转中 ...
+state.isSeeking = false // 跳转完成，phase 仍为 'playing'
+
+// 暂停状态下 seek
+state.phase = 'paused'
+state.isSeeking = true  // 开始跳转
+// ... 跳转中 ...
+state.isSeeking = false // 跳转完成，phase 仍为 'paused'
+```
+
+### 8.5 状态更新机制
 
 状态更新通过MPV事件驱动：
 
