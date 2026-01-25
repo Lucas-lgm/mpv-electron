@@ -1,0 +1,173 @@
+# MPV Player - Cursor AI 工作流规则
+
+> **版本**: 1.0.0  
+> **最后更新**: 2026-01-25  
+> **维护**: 如有问题请更新此文件
+
+## 🎯 核心原则：先规划，再执行
+
+**强制规则：对于任何代码修改请求，必须先提供详细的实现计划，只有在用户明确说"开始实现"、"执行"、"implement"、"go"等指令时，才进行代码修改。**
+
+## 📋 标准工作流程
+
+### 阶段 1：需求理解（Understand）
+- 仔细阅读用户需求
+- 理解业务目标和上下文
+- 识别相关文件和模块
+
+### 阶段 2：代码分析（Analyze）
+- 使用 @文件名 引用相关代码
+- 分析现有架构和模式
+- 识别依赖关系和影响范围
+
+### 阶段 3：规划制定（Plan）
+必须包含以下内容：
+1. **文件清单**：列出所有需要创建/修改的文件
+2. **架构设计**：说明如何融入现有架构
+3. **实现步骤**：分步骤详细说明
+4. **风险评估**：潜在问题和注意事项
+5. **测试方案**：如何验证功能
+
+### 阶段 4：等待确认（Wait）
+- 明确说明"等待确认"
+- 不要直接修改代码
+- 可以回答关于计划的提问
+
+### 阶段 5：执行实现（Implement）
+- 只有在用户明确确认后才执行
+- 严格按照计划实施
+- 保持代码风格一致
+
+## 🏗️ 项目架构理解
+
+### Electron 三层架构
+```
+main/          → 主进程（播放器核心逻辑）
+preload/       → 预加载脚本（IPC 桥接，类型安全）
+renderer/      → 渲染进程（Vue 3 UI）
+native/        → 原生模块（libmpv 绑定，C++/Objective-C）
+```
+
+### 关键模块职责
+- `corePlayer.ts`: 播放器核心，状态管理，窗口管理
+- `libmpv.ts`: MPV 控制器封装，命令执行
+- `renderManager.ts`: 渲染循环，HDR/EDR 管理
+- `ipcHandlers.ts`: IPC 消息处理，文件选择，播放控制
+- `playerState.ts`: 状态机，播放阶段管理
+- `videoPlayerApp.ts`: 应用级逻辑，播放列表管理
+- `timeline.ts`: 时间轴更新，进度同步
+
+### 重要特性
+- macOS HDR (EDR/PQ) 支持
+- gpu-next backend (libplacebo)
+- Dolby Vision 支持
+- 原生渲染（CAOpenGLLayer）
+- 双窗口模式（视频窗口 + 控制窗口）
+
+## 💻 代码规范
+
+### TypeScript
+- 严格模式，类型安全
+- 使用接口定义契约
+- 避免 any，使用 unknown 或具体类型
+
+### Vue 3
+- Composition API
+- TypeScript 支持
+- 组件职责单一
+- 使用 composables 复用逻辑
+
+### IPC 通信模式
+```typescript
+// renderer → preload → main
+// 1. renderer 调用 window.electronAPI.xxx()
+// 2. preload 通过 contextBridge 暴露 API
+// 3. main 通过 ipcMain.on() 处理
+```
+
+### 错误处理
+- Promise 使用 try-catch
+- IPC 通信要有错误回调
+- 原生模块调用要处理异常
+
+## 🔄 规划模板结构
+
+每次规划必须包含：
+
+### 1. 需求分析
+- 用户目标是什么
+- 涉及哪些功能模块
+
+### 2. 影响范围
+- 需要修改的文件（main/preload/renderer/native）
+- 是否需要新增文件
+- 对现有功能的影响
+
+### 3. 实现方案
+- 数据流设计
+- 组件/模块设计
+- IPC 通信设计（如果涉及）
+- 状态管理设计
+
+### 4. 实现步骤
+- 步骤 1：xxx
+- 步骤 2：xxx
+- ...
+
+### 5. 注意事项
+- Electron 进程边界
+- HDR/EDR 相关影响
+- 性能考虑
+- 内存管理
+
+### 6. 测试方案
+- 功能测试点
+- 边界情况
+- 建议的测试命令
+
+## ⚠️ 特殊注意事项
+
+### HDR/EDR 相关
+- 涉及渲染的修改要考虑 HDR 影响
+- 检查 renderManager.ts 和 native/mpv_render_gl.mm
+- 确保颜色空间和 tone mapping 正确
+
+### 进程边界
+- main 和 renderer 不能直接通信
+- 必须通过 preload 桥接
+- 注意数据序列化（不能传递函数、类实例）
+
+### 原生模块
+- 注意内存管理
+- C++/Objective-C 桥接要小心
+- 错误处理要完善
+
+### 状态管理
+- 使用 PlayerStateMachine 管理播放状态
+- 状态变化要触发相应事件
+- 避免状态不一致
+
+## 🚫 禁止行为
+
+- ❌ 未经规划直接修改代码
+- ❌ 忽略 Electron 进程边界
+- ❌ 破坏现有的 HDR 渲染逻辑
+- ❌ 不提供测试方案
+- ❌ 跳过错误处理
+- ❌ 破坏类型安全
+
+## ✅ 推荐行为
+
+- ✅ 先分析再规划
+- ✅ 分步骤详细说明
+- ✅ 考虑架构影响
+- ✅ 提供测试建议
+- ✅ 保持代码风格一致
+- ✅ 遵循现有模式
+
+## 📚 参考文档
+
+- 规划模板：`docs/workflow/PLANNING_TEMPLATE.md`
+- 提示词模板：`docs/workflow/PROMPT_TEMPLATES.md`
+- 工作流检查清单：`docs/workflow/WORKFLOW_CHECKLIST.md`
+- 更新日志：`docs/workflow/CHANGELOG.md`
