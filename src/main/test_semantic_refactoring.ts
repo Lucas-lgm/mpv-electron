@@ -80,7 +80,6 @@ export function testDomainModels(): void {
   console.log('\n✅ ========== 领域模型测试完成 ==========\n')
 }
 
-// 如果直接运行此文件（用于开发测试）
-if (require.main === module) {
-  testDomainModels()
-}
+// 注意：在 ES 模块中，不能使用 require.main === module
+// 如果需要直接运行，可以使用：node --loader tsx src/main/test_semantic_refactoring.ts
+// 或者通过 Electron 应用中的 IPC 命令调用

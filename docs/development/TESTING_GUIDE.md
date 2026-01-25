@@ -22,6 +22,10 @@ window.electronAPI.send('test-semantic-refactoring')
 # 4. 查看主进程控制台的输出
 ```
 
+**注意**：如果控制台出现安全警告（"Don't paste code..."），这是正常的安全提示：
+- 如果是从文档复制的代码，可以安全地输入 `allow pasting` 然后回车
+- 或者直接手动输入代码，避免粘贴
+
 ### 方法2：开发模式自动测试
 
 应用已配置为在开发模式下自动运行测试：
@@ -131,6 +135,25 @@ ls -la out/main/application/
 ---
 
 ## ⚠️ 常见问题
+
+### 问题0：控制台安全警告
+
+**现象**：
+```
+Warning: Don't paste code into the DevTools Console that you don't understand...
+Please type 'allow pasting' below to allow pasting.
+```
+
+**原因**：这是 Electron DevTools 的安全特性，防止意外粘贴恶意代码。
+
+**解决**：
+1. **如果代码来源可信**（如从项目文档复制）：
+   - 输入 `allow pasting` 然后回车
+   - 然后粘贴代码
+
+2. **推荐做法**（更安全）：
+   - 手动输入代码，而不是粘贴
+   - 或者使用 IPC 命令（方法1），避免在控制台粘贴
 
 ### 问题1：找不到模块
 
