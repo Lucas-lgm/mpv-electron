@@ -174,10 +174,19 @@ class CorePlayerImpl implements CorePlayer {
   private renderLoop = () => {
     if (!this.renderLoopActive) return
     
+    // 检查是否正在 seek，如果是则跳过本次渲染
+    const currentState = this.stateMachine.getState()
+    if (currentState.isSeeking) {
+      // seek 过程中不渲染，等待 seek 完成
+      // 继续下一帧（使用动态计算的间隔）
+      this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
+      return
+    }
+    
     // 检测渲染是否跟上，如果跟不上则降低间隔（增加频率）
     this.checkAndAdjustRenderInterval()
     
-    // 请求渲染
+    // 请求渲染（只在非 seek 状态下）
     if (this.controller) {
       this.controller.requestRender()
     }
