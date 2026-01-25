@@ -24,7 +24,7 @@ export class RenderManager {
   private currentVideoFps: number | null = null
   private currentRenderInterval: number = 20
   private baseRenderInterval: number = 20
-  private readonly MIN_RENDER_INTERVAL_MS = 8 // 最小渲染间隔（120fps）
+  private readonly MIN_RENDER_INTERVAL_MS = 16 // 最小渲染间隔（60fps）
   private readonly ADJUSTMENT_FACTOR = 0.75 // 调整因子
   private readonly CHECK_INTERVAL = 10 // 每10次请求检查一次
   
@@ -193,13 +193,15 @@ export class RenderManager {
    * 根据视频帧率更新渲染间隔
    */
   updateFps(fps: number | null): void {
+    // return;
+    console.log(`[RenderManager] 📹 Video FPS: ${fps?.toFixed(2)}`)
     this.currentVideoFps = fps
     
     if (fps && fps > 0.1) {
       // 根据视频帧率计算基础渲染间隔：1000ms / fps
-      // 限制范围：最小 8ms (120fps)，最大 42ms (24fps)
+      // 限制范围：最小 16ms (60fps)，最大 42ms (24fps)
       const calculatedInterval = Math.round(1000 / fps)
-      this.baseRenderInterval = Math.max(8, Math.min(calculatedInterval, 42))
+      this.baseRenderInterval = Math.max(16, Math.min(calculatedInterval, 42))
       this.currentRenderInterval = this.baseRenderInterval
       this.renderRequestCount = 0 // 重置计数
       this.lastRenderRequestTime = 0 // 重置时间戳
