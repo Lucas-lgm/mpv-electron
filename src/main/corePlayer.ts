@@ -36,8 +36,13 @@ class CorePlayerImpl implements CorePlayer {
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
   private pendingResizeTimer: NodeJS.Timeout | null = null
+  private resizeStableTimer: NodeJS.Timeout | null = null // Resize 稳定检测定时器
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
+  // 数据驱动的渲染状态标记
+  private isResizing: boolean = false // 是否正在 resize（resize 过程中不渲染）
+  private pendingResizeRender: boolean = false // resize 完成后需要渲染的标记
+  private pendingSeekRender: boolean = false // seek 完成后需要渲染的标记
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
   private renderLoopActive: boolean = false
@@ -68,17 +73,16 @@ class CorePlayerImpl implements CorePlayer {
         this.sendToPlaybackUIs('video-time-update', payload)
       }
     })
-    let lastPhase: PlayerPhase | null = null
+    // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染
+    // 不再根据 phase 启动/停止循环，而是让循环持续运行并检查状态
     this.stateMachine.on('state', (st) => {
       this.timeline?.handlePlayerStateChange(st.phase)
-      // 根据播放状态启动/停止渲染循环（只在状态真正改变时）
-      if (lastPhase !== st.phase) {
-        if (st.phase === 'playing') {
+      // 确保渲染循环运行（如果还没运行）
+      if (!this.renderLoopActive && this.controller && process.platform === 'darwin') {
+        const isJsDriven = this.controller.getJsDrivenRenderMode()
+        if (isJsDriven) {
           this.startRenderLoop()
-        } else {
-          this.stopRenderLoop()
         }
-        lastPhase = st.phase
       }
     })
     
@@ -172,18 +176,39 @@ class CorePlayerImpl implements CorePlayer {
 
   // JavaScript 驱动渲染循环（根据视频帧率动态调整间隔，并自适应检测延迟）
   /**
-   * 统一的渲染判断逻辑（用于循环渲染）
-   * 特殊场景（seek 完成、resize）使用 forceRender 强制渲染
+   * 统一的渲染判断逻辑（完全数据驱动）
+   * 所有渲染决策都基于状态数据，不依赖事件
    * @param state 播放器状态
    * @returns 是否应该渲染
    */
   private shouldRender(state: PlayerState): boolean {
-    // Seek 过程中不渲染
+    // 1. Seek 过程中不渲染
     if (state.isSeeking) {
       return false
     }
     
-    // 只在播放状态渲染
+    // 2. Resize 过程中不渲染（等待稳定）
+    if (this.isResizing) {
+      return false
+    }
+    
+    // 3. Seek 完成后需要渲染（无论什么状态）
+    if (this.pendingSeekRender) {
+      this.pendingSeekRender = false // 清除标记
+      return true
+    }
+    
+    // 4. Resize 完成后需要渲染（非播放状态）
+    if (this.pendingResizeRender) {
+      this.pendingResizeRender = false // 清除标记
+      // 只在非播放状态时渲染（播放中由循环自动处理）
+      if (state.phase !== 'playing') {
+        return true
+      }
+      return false
+    }
+    
+    // 5. 正常播放状态渲染
     if (state.phase === 'playing') {
       return true
     }
@@ -191,34 +216,6 @@ class CorePlayerImpl implements CorePlayer {
     return false
   }
 
-  /**
-   * 触发渲染（事件驱动模式）
-   * 用于 seek 完成、resize 等特殊情况
-   * @param forceRender 是否强制渲染（跳过 shouldRender 检查，用于 seek 完成、resize 等场景）
-   */
-  private triggerRenderIfNeeded(forceRender: boolean = false): void {
-    if (!this.controller || process.platform !== 'darwin') {
-      return
-    }
-    
-    const isJsDriven = this.controller.getJsDrivenRenderMode()
-    if (!isJsDriven) {
-      return
-    }
-    
-    // 强制渲染（用于 seek 完成、resize 等场景，跳过状态检查）
-    // 这些场景都需要立即更新画面，不需要检查状态
-    if (forceRender) {
-      this.controller.requestRender()
-      return
-    }
-    
-    // 正常情况：检查状态后决定是否渲染
-    const state = this.stateMachine.getState()
-    if (this.shouldRender(state)) {
-      this.controller.requestRender()
-    }
-  }
 
   private renderLoop = () => {
     if (!this.renderLoopActive) return
@@ -242,30 +239,23 @@ class CorePlayerImpl implements CorePlayer {
 
   private startRenderLoop() {
     if (this.renderLoopActive) {
-      console.log('[CorePlayer] ⚠️ Render loop already active')
       return
     }
-    // 检查是否使用 JavaScript 驱动渲染模式
-    // macOS 上默认启用 JavaScript 驱动模式，所以直接启动循环
+    // 数据驱动架构：renderLoop 持续运行，不依赖播放状态
     if (this.controller && process.platform === 'darwin') {
       const isJsDriven = this.controller.getJsDrivenRenderMode()
-      console.log('[CorePlayer] Checking JS-driven render mode:', isJsDriven)
       if (isJsDriven) {
         this.renderLoopActive = true
         this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
-        console.log(`[CorePlayer] ✅ Started JavaScript-driven render loop (interval: ${this.currentRenderInterval}ms)`)
-      } else {
-        console.log('[CorePlayer] ⚠️ JavaScript-driven render mode not enabled, skipping render loop')
-        console.log('[CorePlayer] Controller exists:', !!this.controller, 'Platform:', process.platform)
+        console.log(`[CorePlayer] ✅ Started data-driven render loop (interval: ${this.currentRenderInterval}ms)`)
       }
-    } else {
-      console.log('[CorePlayer] ⚠️ Cannot start render loop: controller=', !!this.controller, 'platform=', process.platform)
     }
   }
 
   private stopRenderLoop() {
+    // 数据驱动架构：renderLoop 持续运行，通常不需要停止
+    // 只有在清理时才停止
     if (!this.renderLoopActive) {
-      console.log('[CorePlayer] ⚠️ Render loop already stopped')
       return
     }
     this.renderLoopActive = false
@@ -399,7 +389,28 @@ class CorePlayerImpl implements CorePlayer {
     }
     this.videoWindow.removeAllListeners('resize')
     this.videoWindow.on('resize', () => {
-      console.log('[CorePlayer] Window resize event triggered')
+      // 数据驱动：标记正在 resize，renderLoop 会检测并跳过渲染
+      this.isResizing = true
+      
+      // 重置稳定检测定时器（防抖机制）
+      // 只有在 resize 事件停止 100ms 后才认为稳定
+      if (this.resizeStableTimer) {
+        clearTimeout(this.resizeStableTimer)
+      }
+      this.resizeStableTimer = setTimeout(() => {
+        this.resizeStableTimer = null
+        // 100ms 内没有新的 resize 事件，认为已稳定
+        this.isResizing = false
+        const currentState = this.stateMachine.getState()
+        // 只在非播放状态时标记需要渲染（播放中由循环自动处理）
+        if (currentState.phase !== 'playing') {
+          this.pendingResizeRender = true
+          console.log('[CorePlayer] ✅ Resize stabilized, marked for render (non-playing)')
+        } else {
+          console.log('[CorePlayer] Resize stabilized (playing), render loop will handle it')
+        }
+      }, 100) // 100ms 内没有新事件 = 稳定
+      
       this.scheduleWindowSizeSync()
     })
   }
@@ -431,10 +442,6 @@ class CorePlayerImpl implements CorePlayer {
     this.lastPhysicalHeight = height
     if (this.controller instanceof LibMPVController) {
       await this.controller.setWindowSize(width, height)
-      
-      // Resize 时需要立即更新画面，强制渲染（跳过状态检查）
-      this.triggerRenderIfNeeded(true)
-      console.log('[CorePlayer] ✅ Resize completed, triggered render')
     }
   }
 
@@ -457,13 +464,11 @@ class CorePlayerImpl implements CorePlayer {
       // 先更新状态，确保 stateMachine 中的状态是最新的
       this.updateFromMPVStatus(status)
       
-      // 如果 seek 完成，主动触发一次渲染（事件驱动）
-      // forceRender = true：seek 完成后强制渲染，无论当前状态如何
-      // 因为 seek 完成后肯定需要显示新位置的画面
+      // 数据驱动：seek 完成后，标记需要渲染
+      // renderLoop 会检测到 pendingSeekRender 并触发渲染
       if (wasSeeking && !isSeeking) {
-        // 强制渲染，跳过状态检查（seek 完成后肯定需要渲染）
-        this.triggerRenderIfNeeded(true)
-        console.log('[CorePlayer] ✅ Seek completed, triggered immediate render')
+        this.pendingSeekRender = true
+        console.log('[CorePlayer] ✅ Seek completed, marked for render')
       }
       
       this.sendToPlaybackUIs('player-state', this.getPlayerState())
@@ -564,6 +569,14 @@ class CorePlayerImpl implements CorePlayer {
         clearTimeout(this.pendingResizeTimer)
         this.pendingResizeTimer = null
       }
+      if (this.resizeStableTimer) {
+        clearTimeout(this.resizeStableTimer)
+        this.resizeStableTimer = null
+      }
+      // 清除数据驱动的状态标记
+      this.isResizing = false
+      this.pendingResizeRender = false
+      this.pendingSeekRender = false
       this.timeline?.dispose()
       if (this.controller) {
         if (this.controller instanceof LibMPVController) {
