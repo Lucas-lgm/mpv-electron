@@ -21,11 +21,18 @@
         :active-filter="activeFilter"
         :mount-paths="mountPathsList"
         :selected-mount-path="selectedMountPath"
+        :nas-connections="nasConnectionsList"
+        :selected-nas-connection="selectedNasConnection"
         @filter-change="handleFilterChange"
         @mount-path-select="handleMountPathSelect"
         @mount-path-add="handleMountPathAdd"
         @mount-path-remove="handleMountPathRemove"
         @mount-path-refresh="handleMountPathRefresh"
+        @nas-add="handleNasAdd"
+        @nas-select="handleNasSelect"
+        @nas-open="handleNasOpen"
+        @nas-remove="handleNasRemove"
+        @nas-refresh="handleNasRefresh"
       />
       <div class="content-area-wrapper">
         <Toolbar
@@ -35,7 +42,16 @@
           @mount-path="handleMountPathAdd"
           @update:view-mode="handleViewModeChange"
         />
+        <!-- NAS 文件浏览器 -->
+        <NasFileBrowser
+          v-if="showNasFileBrowser"
+          :nas-connection="selectedNasConnectionData"
+          @file-play="handleNasFilePlay"
+          @mount-share="handleNasFileBrowserMount"
+        />
+        <!-- 资源列表 -->
         <ContentArea
+          v-else
           :title="contentTitle"
           :subtitle="contentSubtitle"
           :videos="filteredResources"
@@ -69,6 +85,12 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- NAS 配置对话框 -->
+    <NasConfigDialog
+      v-model="nasDialogVisible"
+      @confirm="handleNasConfirm"
+    />
   </div>
 </template>
 
@@ -79,13 +101,17 @@ import Sidebar from '../components/Sidebar.vue'
 import Toolbar from '../components/Toolbar.vue'
 import ContentArea from '../components/ContentArea.vue'
 import SearchBox from '../components/SearchBox.vue'
+import NasConfigDialog from '../components/NasConfigDialog.vue'
+import NasFileBrowser from '../components/NasFileBrowser.vue'
 import { useMediaLibrary } from '../composables/useMediaLibrary'
 import { useMountPaths } from '../composables/useMountPaths'
+import { useNas } from '../composables/useNas'
 import type { MediaResource } from '../types/media'
 
 // 使用 composables
 const mediaLibrary = useMediaLibrary()
 const mountPaths = useMountPaths()
+const nas = useNas()
 
 const {
   resources,
@@ -105,13 +131,25 @@ const {
   setMountPathFilter
 } = mediaLibrary
 
-const { mountPaths: mountPathsList, addMountPath, removeMountPath, refreshMountPath, initMountPaths } = mountPaths
+const { mountPaths: mountPathsList, removeMountPath, refreshMountPath, initMountPaths } = mountPaths
+const { nasConnections: nasConnectionsList, addNasConnection, removeNasConnection, refreshNasConnection, initNasConnections } = nas
 
 const loading = ref(false)
+const selectedNasConnection = ref<string | null>(null)
+const showNasFileBrowser = ref(false)
+
+// 计算选中的 NAS 连接数据
+const selectedNasConnectionData = computed(() => {
+  if (!selectedNasConnection.value) return null
+  return nasConnectionsList.value.find(nc => nc.id === selectedNasConnection.value) || null
+})
 
 // URL 对话框相关
 const urlDialogVisible = ref(false)
 const urlInput = ref('')
+
+// NAS 对话框相关
+const nasDialogVisible = ref(false)
 
 // 内容标题和副标题
 const contentTitle = computed(() => {
@@ -137,6 +175,9 @@ const contentSubtitle = computed(() => {
 // 处理筛选器改变
 const handleFilterChange = (filter: string) => {
   setFilter(filter)
+  // 切换到资源列表视图
+  showNasFileBrowser.value = false
+  selectedNasConnection.value = null
 }
 
 // 处理挂载路径选择
@@ -224,12 +265,151 @@ const handleMountPathRefresh = async (id: string) => {
   }
 }
 
+// 处理 NAS 添加
+const handleNasAdd = () => {
+  nasDialogVisible.value = true
+}
+
+// 处理 NAS 确认添加
+const handleNasConfirm = async (data: { name: string; config: any }) => {
+  const connection = await addNasConnection(data.name, data.config)
+  if (connection) {
+    ElMessage.success('NAS 连接添加成功')
+  } else {
+    ElMessage.error('添加 NAS 连接失败')
+  }
+}
+
+// 处理 NAS 选择
+const handleNasSelect = (id: string) => {
+  selectedNasConnection.value = id
+  const nasConnection = nasConnectionsList.value.find(nc => nc.id === id)
+  if (nasConnection) {
+    // 显示文件浏览器
+    showNasFileBrowser.value = true
+  }
+}
+
+// 处理 NAS 文件浏览器挂载请求
+const handleNasFileBrowserMount = () => {
+  if (selectedNasConnection.value) {
+    handleNasOpen(selectedNasConnection.value)
+  }
+}
+
+// 处理 NAS 文件播放
+const handleNasFilePlay = (file: any) => {
+  if (!window.electronAPI || !selectedNasConnectionData.value) return
+  
+  // 查找对应的 NAS 连接
+  const nasConnection = selectedNasConnectionData.value
+  
+  // 构建播放路径
+  let playPath = file.path
+  
+  // 如果路径是挂载点路径，转换为 SMB 路径
+  if (file.path.startsWith('/Volumes/')) {
+    // 从挂载点路径提取相对路径
+    const shareName = nasConnection.config.share
+    const relativePath = file.path.replace(`/Volumes/${shareName}`, '')
+    playPath = `smb://${nasConnection.config.host}/${shareName}${relativePath}`
+    
+    // 如果有用户名和密码，添加到路径中
+    if (nasConnection.config.username) {
+      const authPart = nasConnection.config.password
+        ? `${nasConnection.config.username}:${nasConnection.config.password}`
+        : nasConnection.config.username
+      playPath = playPath.replace(`smb://${nasConnection.config.host}`, `smb://${authPart}@${nasConnection.config.host}`)
+    }
+  }
+  
+  window.electronAPI.send('play-video', {
+    name: file.name,
+    path: playPath
+  })
+}
+
+// 处理 NAS 移除
+const handleNasRemove = (id: string) => {
+  const nasConnection = nasConnectionsList.value.find(nc => nc.id === id)
+  if (nasConnection) {
+    // 移除该 NAS 连接的所有资源
+    removeResourcesByMountPath(`nas://${nasConnection.config.host}/${nasConnection.config.share}`)
+    // 移除 NAS 连接
+    removeNasConnection(id)
+  }
+}
+
+// 处理 NAS 打开/挂载
+const handleNasOpen = async (id: string) => {
+  if (!window.electronAPI) return
+
+  try {
+    const result = await new Promise<{ success: boolean; error?: string }>((resolve) => {
+      const handler = (data: { success: boolean; error?: string }) => {
+        window.electronAPI.removeListener('nas-open-share-result', handler)
+        resolve(data)
+      }
+      window.electronAPI.on('nas-open-share-result', handler)
+      window.electronAPI.send('nas-open-share', { connectionId: id })
+      
+      // 超时处理
+      setTimeout(() => {
+        window.electronAPI.removeListener('nas-open-share-result', handler)
+        resolve({ success: false, error: '操作超时' })
+      }, 5000)
+    })
+
+    if (result.success) {
+      ElMessage.success('正在打开共享，请在弹出的窗口中输入用户名和密码（如果需要）')
+    } else {
+      ElMessage.error(result.error || '打开共享失败')
+    }
+  } catch (error) {
+    ElMessage.error('打开共享时发生错误')
+    console.error('打开 NAS 共享失败:', error)
+  }
+}
+
+// 处理 NAS 刷新
+const handleNasRefresh = async (id: string) => {
+  await refreshNasConnection(id)
+}
+
 // 处理播放视频
 const handlePlayVideo = (video: MediaResource) => {
   if (!window.electronAPI) return
+  
+  // 如果是 NAS 资源，需要构建完整的 SMB 路径
+  let playPath = video.path
+  if (video.source === 'nas') {
+    // 查找对应的 NAS 连接
+    const nasConnection = nasConnectionsList.value.find(nc => {
+      const smbPath = `smb://${nc.config.host}/${nc.config.share}`
+      return video.path.startsWith(smbPath) || video.path.startsWith(`/Volumes/${nc.config.share}`)
+    })
+    
+    if (nasConnection) {
+      // 如果路径是挂载点路径，转换为 SMB 路径
+      if (video.path.startsWith('/Volumes/')) {
+        // 从挂载点路径提取相对路径
+        const relativePath = video.path.replace(`/Volumes/${nasConnection.config.share}`, '')
+        playPath = `smb://${nasConnection.config.host}/${nasConnection.config.share}${relativePath}`
+        
+        // 如果有用户名和密码，添加到路径中
+        if (nasConnection.config.username) {
+          const authPart = nasConnection.config.password
+            ? `${nasConnection.config.username}:${nasConnection.config.password}`
+            : nasConnection.config.username
+          playPath = playPath.replace(`smb://${nasConnection.config.host}`, `smb://${authPart}@${nasConnection.config.host}`)
+        }
+      }
+    }
+  }
+  
   window.electronAPI.send('play-video', {
     name: video.name,
-    path: video.path
+    path: playPath
   })
 }
 
@@ -318,13 +498,57 @@ const handleMountPathScanned = (data: { id: string; resources: any[] }) => {
   syncPlaylist()
 }
 
+// 处理 NAS 连接添加成功
+const handleNasConnectionAdded = (data: { connection: any; resources: any[] }) => {
+  // 将扫描到的资源添加到媒体库
+  const newResources: MediaResource[] = data.resources.map((r: any) => ({
+    id: r.id || `nas-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: r.name || r.path.split(/[/\\]/).pop() || '未知文件',
+    path: r.path,
+    source: 'nas' as const,
+    duration: r.duration,
+    size: r.size,
+    addedAt: new Date()
+  }))
+  addResources(newResources)
+  syncPlaylist()
+}
+
+// 处理 NAS 连接扫描完成
+const handleNasConnectionScanned = (data: { id: string; resources: any[] }) => {
+  // 先移除该 NAS 连接的旧资源
+  const nasConnection = nasConnectionsList.value.find(nc => nc.id === data.id)
+  if (nasConnection) {
+    removeResourcesByMountPath(`nas://${nasConnection.config.host}/${nasConnection.config.share}`)
+  }
+  
+  // 添加新扫描到的资源
+  const newResources: MediaResource[] = data.resources.map((r: any) => ({
+    id: r.id || `nas-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: r.name || r.path.split(/[/\\]/).pop() || '未知文件',
+    path: r.path,
+    source: 'nas' as const,
+    duration: r.duration,
+    size: r.size,
+    addedAt: new Date()
+  }))
+  addResources(newResources)
+  syncPlaylist()
+}
+
 onMounted(() => {
   if (window.electronAPI) {
     // 初始化挂载路径
     initMountPaths()
     
+    // 初始化 NAS 连接
+    initNasConnections()
+    
     // 请求挂载路径列表
     window.electronAPI.send('get-mount-paths')
+    
+    // 请求 NAS 连接列表
+    window.electronAPI.send('get-nas-connections')
     
     // 监听文件选择
     window.electronAPI.on('video-file-selected', handleVideoFileSelected)
@@ -334,6 +558,13 @@ onMounted(() => {
     window.electronAPI.on('mount-path-scanned', handleMountPathScanned)
     window.electronAPI.on('mount-paths-updated', (data: { mountPaths: any[] }) => {
       mountPathsList.value = data.mountPaths
+    })
+    
+    // 监听 NAS 连接相关事件
+    window.electronAPI.on('nas-connection-added', handleNasConnectionAdded)
+    window.electronAPI.on('nas-connection-scanned', handleNasConnectionScanned)
+    window.electronAPI.on('nas-connections-updated', (data: { connections: any[] }) => {
+      nasConnectionsList.value = data.connections
     })
     
     // 获取现有播放列表
@@ -368,6 +599,9 @@ onUnmounted(() => {
     window.electronAPI.removeListener('mount-path-added', handleMountPathAdded)
     window.electronAPI.removeListener('mount-path-scanned', handleMountPathScanned)
     window.electronAPI.removeListener('mount-paths-updated', () => {})
+    window.electronAPI.removeListener('nas-connection-added', handleNasConnectionAdded)
+    window.electronAPI.removeListener('nas-connection-scanned', handleNasConnectionScanned)
+    window.electronAPI.removeListener('nas-connections-updated', () => {})
   }
 })
 </script>

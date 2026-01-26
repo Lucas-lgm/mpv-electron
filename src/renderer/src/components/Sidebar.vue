@@ -47,6 +47,24 @@
       />
     </SidebarSection>
 
+    <SidebarSection
+      title="NAS 连接"
+      :show-add-button="true"
+      add-button-title="添加 NAS"
+      @add="$emit('nas-add')"
+    >
+      <NasConnectionItem
+        v-for="nasConnection in props.nasConnections"
+        :key="nasConnection.id"
+        :nas-connection="nasConnection"
+        :active="props.selectedNasConnection === nasConnection.id"
+        @select="$emit('nas-select', nasConnection.id)"
+        @open="$emit('nas-open', nasConnection.id)"
+        @refresh="$emit('nas-refresh', nasConnection.id)"
+        @remove="$emit('nas-remove', nasConnection.id)"
+      />
+    </SidebarSection>
+
     <SidebarSection title="最近">
       <SidebarItem
         icon="🕒"
@@ -71,13 +89,16 @@
 import SidebarSection from './SidebarSection.vue'
 import SidebarItem from './SidebarItem.vue'
 import MountPathItem from './MountPathItem.vue'
-import type { MountPath } from '../types/mount'
+import NasConnectionItem from './NasConnectionItem.vue'
+import type { MountPath, NasConnection } from '../types/mount'
 import type { ResourceFilter } from '../types/media'
 
 interface Props {
   activeFilter: ResourceFilter
   mountPaths: MountPath[]
   selectedMountPath: string | null
+  nasConnections: NasConnection[]
+  selectedNasConnection: string | null
 }
 
 const props = defineProps<Props>()
@@ -88,6 +109,11 @@ defineEmits<{
   'mount-path-add': []
   'mount-path-remove': [id: string]
   'mount-path-refresh': [id: string]
+  'nas-add': []
+  'nas-select': [id: string]
+  'nas-open': [id: string]
+  'nas-remove': [id: string]
+  'nas-refresh': [id: string]
 }>()
 </script>
 

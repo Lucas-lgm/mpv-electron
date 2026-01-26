@@ -2,6 +2,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import type { VideoPlayerApp, PlaylistItem } from '../videoPlayerApp'
 import type { CorePlayer } from '../core/corePlayer'
 import { mountPathService } from '../services/mountPathService'
+import { nasService } from '../services/nasService'
 
 /**
  * IPC 协议适配层：只做路由、参数解析、调用 App 方法、event.reply
@@ -12,6 +13,7 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
   const mainWindow = videoPlayerApp.windowManager.getWindow('main')
   if (mainWindow) {
     mountPathService.setMainWindow(mainWindow)
+    nasService.setMainWindow(mainWindow)
   }
   
   // 监听主窗口创建事件（延迟设置，因为窗口可能还未创建）
@@ -19,6 +21,7 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
     const mainWindow = videoPlayerApp.windowManager.getWindow('main')
     if (mainWindow) {
       mountPathService.setMainWindow(mainWindow)
+      nasService.setMainWindow(mainWindow)
     }
   }, 1000)
   // 文件选择（薄编排：dialog → 调用 App 方法）
@@ -200,6 +203,81 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
       console.error('扫描目录失败:', error)
       event.reply('directory-scan-error', {
         message: `扫描目录失败: ${error instanceof Error ? error.message : String(error)}`
+      })
+    }
+  })
+
+  // NAS 连接管理
+  ipcMain.on('nas-test-connection', async (event, data: { config: any }) => {
+    try {
+      const result = await nasService.testConnection(data.config)
+      event.reply('nas-test-connection-result', result)
+    } catch (error) {
+      console.error('测试 NAS 连接失败:', error)
+      event.reply('nas-test-connection-result', {
+        success: false,
+        error: error instanceof Error ? error.message : '连接测试失败'
+      })
+    }
+  })
+
+  ipcMain.on('nas-add', async (event, data: { name: string; config: any }) => {
+    try {
+      await nasService.addNasConnection(data.name, data.config)
+      // 成功消息通过 nas-connection-added 事件发送
+    } catch (error) {
+      console.error('添加 NAS 连接失败:', error)
+      event.reply('nas-connection-error', {
+        message: `添加 NAS 连接失败: ${error instanceof Error ? error.message : String(error)}`
+      })
+    }
+  })
+
+  ipcMain.on('nas-remove', (_event, data: { id: string }) => {
+    nasService.removeNasConnection(data.id)
+  })
+
+  ipcMain.on('nas-refresh', async (event, data: { id: string }) => {
+    try {
+      await nasService.refreshNasConnection(data.id)
+      // 成功消息通过 nas-connection-scanned 事件发送
+    } catch (error) {
+      console.error('刷新扫描失败:', error)
+      event.reply('nas-connection-error', {
+        message: `刷新扫描失败: ${error instanceof Error ? error.message : String(error)}`
+      })
+    }
+  })
+
+  ipcMain.on('get-nas-connections', (event) => {
+    const connections = nasService.getAllNasConnections()
+    event.reply('nas-connections-updated', { connections })
+  })
+
+  // NAS 文件系统操作
+  ipcMain.on('nas-read-directory', async (event, data: { connectionId: string; path?: string }) => {
+    try {
+      const result = await nasService.readNasDirectory(data.connectionId, data.path)
+      event.reply('nas-directory-read-result', result)
+    } catch (error) {
+      console.error('读取 NAS 目录失败:', error)
+      event.reply('nas-directory-read-result', {
+        items: [],
+        error: error instanceof Error ? error.message : '读取目录失败'
+      })
+    }
+  })
+
+  // NAS 打开/挂载共享
+  ipcMain.on('nas-open-share', async (event, data: { connectionId: string }) => {
+    try {
+      const result = await nasService.openSmbShare(data.connectionId)
+      event.reply('nas-open-share-result', result)
+    } catch (error) {
+      console.error('打开 NAS 共享失败:', error)
+      event.reply('nas-open-share-result', {
+        success: false,
+        error: error instanceof Error ? error.message : '打开共享失败'
       })
     }
   })

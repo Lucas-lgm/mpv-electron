@@ -107,6 +107,7 @@ graph TB
 | **业务逻辑层** | VideoPlayerApp, CorePlayer, PlayerStateMachine, RenderManager | 应用协调、播放控制、状态管理、渲染调度、窗口管理 | `src/main/application/` |
 | **领域层** | Media, PlaybackSession, Playlist | 领域模型（媒体、播放会话、播放列表） | `src/main/domain/models/` |
 | **基础设施层** | MpvAdapter, MpvMediaPlayer；libmpv, nativeHelper, RenderManager | MPV→领域适配、MediaPlayer 实现、窗口句柄、渲染循环 | `src/main/infrastructure/` |
+| **服务层** | MountPathService, NasService | 挂载路径管理、NAS 连接管理、资源扫描 | `src/main/application/services/` |
 | **MediaPlayer 接口** | 播放契约（与 CorePlayer 同属应用核心） | 定义在 `application/core/MediaPlayer.ts`，MpvMediaPlayer 实现 | `src/main/application/core/` |
 | **原生绑定层** | MPVBinding, binding.cc, mpv_render_gl.mm | 跨语言桥接、平台特定渲染、HDR配置 | `native/` |
 | **MPV核心层** | libmpv库 | 视频解码、音频处理、渲染管道、HDR色调映射 | 外部依赖 |
@@ -835,6 +836,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 | `play-playlist-prev` | 无 | 播放上一项 | `application/presentation/ipcHandlers.ts` |
 | `control-keypress` | `string` | 发送按键 | `application/presentation/ipcHandlers.ts` |
 | `debug-hdr-status` | 无 | 调试 HDR 状态 | `application/presentation/ipcHandlers.ts` |
+| `select-mount-path` | 无 | 选择挂载路径 | `application/presentation/ipcHandlers.ts` |
+| `mount-path-add` | `{path: string}` | 添加挂载路径 | `application/presentation/ipcHandlers.ts` |
+| `mount-path-remove` | `{id: string}` | 移除挂载路径 | `application/presentation/ipcHandlers.ts` |
+| `mount-path-refresh` | `{id: string}` | 刷新扫描挂载路径 | `application/presentation/ipcHandlers.ts` |
+| `get-mount-paths` | 无 | 获取挂载路径列表 | `application/presentation/ipcHandlers.ts` |
+| `nas-test-connection` | `{config: NasConfig}` | 测试 NAS 连接 | `application/presentation/ipcHandlers.ts` |
+| `nas-add` | `{name: string, config: NasConfig}` | 添加 NAS 连接 | `application/presentation/ipcHandlers.ts` |
+| `nas-remove` | `{id: string}` | 移除 NAS 连接 | `application/presentation/ipcHandlers.ts` |
+| `nas-refresh` | `{id: string}` | 刷新扫描 NAS 连接 | `application/presentation/ipcHandlers.ts` |
+| `get-nas-connections` | 无 | 获取 NAS 连接列表 | `application/presentation/ipcHandlers.ts` |
 
 #### 主进程 → 渲染进程消息
 
@@ -849,8 +860,90 @@ contextBridge.exposeInMainWorld('electronAPI', {
 | `video-ended` | 无 | 视频结束 | `application/presentation/ipcHandlers.ts` 转发 |
 | `control-bar-show` | 无 | 显示控制栏 | `application/presentation/ipcHandlers.ts` |
 | `control-bar-schedule-hide` | 无 | 计划隐藏控制栏 | `application/presentation/ipcHandlers.ts` |
+| `mount-path-added` | `{mountPath: MountPath, resources: ScannedResource[]}` | 挂载路径已添加 | `application/services/mountPathService.ts` |
+| `mount-path-removed` | `{id: string}` | 挂载路径已移除 | `application/services/mountPathService.ts` |
+| `mount-path-scanned` | `{id: string, resources: ScannedResource[]}` | 挂载路径扫描完成 | `application/services/mountPathService.ts` |
+| `mount-paths-updated` | `{mountPaths: MountPath[]}` | 挂载路径列表更新 | `application/services/mountPathService.ts` |
+| `nas-test-connection-result` | `{success: boolean, error?: string}` | NAS 连接测试结果 | `application/presentation/ipcHandlers.ts` |
+| `nas-connection-added` | `{connection: NasConnection, resources: ScannedResource[]}` | NAS 连接已添加 | `application/services/nasService.ts` |
+| `nas-connection-removed` | `{id: string}` | NAS 连接已移除 | `application/services/nasService.ts` |
+| `nas-connection-scanned` | `{id: string, resources: ScannedResource[], status?: string, error?: string}` | NAS 连接扫描完成 | `application/services/nasService.ts` |
+| `nas-connections-updated` | `{connections: NasConnection[]}` | NAS 连接列表更新 | `application/services/nasService.ts` |
+| `nas-connection-error` | `{message: string}` | NAS 连接错误 | `application/presentation/ipcHandlers.ts` |
 
-### 5.4 IPC通信示例
+### 5.4 服务层组件
+
+#### 5.4.1 MountPathService 挂载路径服务
+
+`MountPathService` 负责管理本地挂载路径，定义在 `application/services/mountPathService.ts`。
+
+**主要功能**：
+- 添加/移除挂载路径
+- 扫描挂载路径中的视频文件
+- 持久化挂载路径配置
+- 通过 IPC 与渲染进程通信
+
+**接口**：
+```typescript
+export class MountPathService {
+  addMountPath(path: string): Promise<MountPath>
+  removeMountPath(id: string): boolean
+  refreshMountPath(id: string): Promise<void>
+  getAllMountPaths(): MountPath[]
+  getMountPath(id: string): MountPath | undefined
+  setMainWindow(window: BrowserWindow | null): void
+}
+```
+
+#### 5.4.2 NasService NAS 连接服务
+
+`NasService` 负责管理 NAS（网络附加存储）连接，定义在 `application/services/nasService.ts`。
+
+**主要功能**：
+- 管理 NAS 连接配置（SMB/CIFS 协议）
+- 测试 NAS 连接
+- 扫描 NAS 上的视频文件
+- 使用 Electron 的 `safeStorage` API 加密存储密码
+- 构建 SMB 路径（`smb://` 格式）供 MPV 播放
+
+**接口**：
+```typescript
+export class NasService {
+  testConnection(config: NasConfig): Promise<{success: boolean, error?: string}>
+  addNasConnection(name: string, config: NasConfig): Promise<NasConnection>
+  removeNasConnection(id: string): boolean
+  refreshNasConnection(id: string): Promise<void>
+  getAllNasConnections(): NasConnection[]
+  getNasConnection(id: string): NasConnection | undefined
+  buildResourcePath(connection: NasConnection, resourcePath: string): string
+  setMainWindow(window: BrowserWindow | null): void
+}
+```
+
+**NAS 配置结构**：
+```typescript
+interface NasConfig {
+  protocol: 'smb'
+  host: string              // 主机地址（IP 或域名）
+  share: string             // 共享名称
+  username?: string         // 用户名（可选）
+  password?: string         // 密码（可选，加密存储）
+  port?: number             // 端口（可选，默认 445）
+  path?: string             // 共享内的子路径（可选）
+}
+```
+
+**安全存储**：
+- 使用 Electron 的 `safeStorage.encryptString()` 加密密码
+- 密码以 base64 编码的加密缓冲区形式存储
+- 读取时使用 `safeStorage.decryptString()` 解密
+
+**路径构建**：
+- SMB 路径格式：`smb://[username[:password]@]host[:port]/share[/path]`
+- 在 macOS 上，SMB 共享需要先通过系统挂载（通常在 `/Volumes/ShareName`）
+- 扫描时检查 `/Volumes` 下的挂载点，如果存在则扫描挂载点路径
+
+### 5.5 IPC通信示例
 
 **渲染进程发送消息**：
 ```typescript
@@ -1966,6 +2059,7 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-26 | 1.12 | 新增 **2.2.2 CorePlayer、ApplicationService、VideoPlayerApp 三者关系**：角色与依赖表、创建/注入顺序、典型调用链、小结 | - |
 | 2026-01-26 | 1.13 | **移除 ApplicationService**：播放控制（playMedia / pause / seek / setVolume / stop）内联到 VideoPlayerApp；删除 `ApplicationService`、`commands/`、`queries/`；ipcHandlers 路由到 VideoPlayerApp 或 CorePlayer；2.2.2 改为「CorePlayer 与 VideoPlayerApp 关系」；架构图、职责表、IPC 表、11.4、12.2 同步更新 | - |
 | 2026-01-26 | 1.14 | **IPC 层与 App 层边界优化**：ipcHandlers 移除业务逻辑（列表操作、状态判断、窗口操作）和状态（isFullscreen），只做路由、参数解析、调用 App 方法、event.reply；VideoPlayerApp 新增 `handlePlayVideo` / `handlePlayUrl` / `handleControlPlay` / `toggleFullscreen` / `windowAction` / `handleFileSelected` / `forwardVideoTimeUpdate` / `showControlBar` 等封装业务逻辑的方法；所有业务广播统一经 VideoPlayerApp，ipcHandlers 不再直接 `webContents.send`；更新 2.2.1 职责表 | - |
+| 2026-01-26 | 1.15 | **新增 NAS 功能**：创建 `NasService` 管理 NAS 连接（SMB/CIFS 协议）；使用 Electron `safeStorage` API 加密存储密码；扩展类型定义（`NasConfig`、`NasConnection`）；创建 NAS 配置对话框组件；更新侧边栏添加 NAS 管理区域；更新 IPC handlers 添加 NAS 相关消息处理；更新架构文档添加服务层说明和 NAS 服务接口 | - |
 | 2026-01-26 | 1.15 | **文件拆分：一个文件一个类**：`libmpv.ts` 拆分为 `types.ts`（MPVBinding、MPVStatus 类型）、`LibMPVController.ts`（类，包含 native binding 加载逻辑）；`libmpv.ts` 删除，所有导入改为从 `LibMPVController.ts`；关于命名：`LibMPVController` 保留（虽从架构看更像"客户端"，但"Controller"在此上下文中合理，且已广泛使用）；更新 12.2 | - |
 | 2026-01-26 | 1.16 | **统一入口文件**：创建 `infrastructure/mpv/index.ts` 统一导出所有类型、类、函数；所有外部导入改为从 `infrastructure/mpv` 导入；内部文件间仍使用相对路径；更新 12.2、11.4 | - |
 | 2026-01-26 | 1.17 | **UI组件库集成**：引入 Element Plus 作为 UI 组件库；ControlView 中的进度条改为使用 `el-slider` 组件，移除自绘进度条逻辑（scrubbingProgress、fillWidth、ResizeObserver 等）；更新 1.2 技术栈、12.2 | - |
