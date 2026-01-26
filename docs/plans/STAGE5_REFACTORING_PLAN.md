@@ -15,7 +15,7 @@
 | 适配层 | 作用 | 保留期 | 清理时机 |
 |--------|------|--------|----------|
 | `PlayerState` ↔ `PlaybackSession` | 桥接旧状态接口与领域模型 | 阶段 5–6 | ✅ 阶段 7 已移除：逻辑内联至 `playerState.ts`（`sessionToPlayerState`） |
-| `PlaylistManager` ↔ `Playlist` | 桥接旧播放列表接口与领域模型 | 阶段 5–6 | ✅ 阶段 7 已移除：`PlaylistAdapter` 删除，改为 `videoPlayerApp` 内 `PlaylistFacade` + `_playlist` |
+| `PlaylistManager` ↔ `Playlist` | 桥接旧播放列表接口与领域模型 | 阶段 5–6 | ✅ 阶段 7 已移除：单一 `playlist`（Playlist）+ `getList`/`setList` 等方法 |
 | `CorePlayer` 包装 `MediaPlayer` | 保持现有调用方不变 | 阶段 5–6 | 阶段 7：当调用方改为直接使用 `ApplicationService` 或 `MediaPlayer` 后，可移除 `CorePlayer` 包装 |
 
 **原则**：
@@ -199,7 +199,7 @@
 
 ### 步骤 5.1: videoPlayerApp
 - [x] 创建 `ApplicationService` 实例
-- [x] 迁移 `PlaylistManager` 到 `Playlist`（经 `PlaylistAdapter`）→ 阶段 7 已移除适配器，改为 `PlaylistFacade` 内联
+- [x] 迁移 `PlaylistManager` 到 `Playlist` → 阶段 7 已移除适配器，单一 `playlist` + `getList`/`setList` 等方法
 - [x] 迁移播放控制方法（pause/resume/seek/setVolume/stop → ApplicationService）
 - [x] 保持窗口管理逻辑
 - [x] 测试播放列表功能
