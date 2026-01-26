@@ -13,15 +13,6 @@ export interface PlaylistItem {
   name: string
 }
 
-export interface PlaylistFacade {
-  getList(): PlaylistItem[]
-  setList(items: PlaylistItem[]): void
-  setCurrentByPath(path: string): void
-  getCurrent(): PlaylistItem | null
-  next(): PlaylistItem | null
-  prev(): PlaylistItem | null
-}
-
 class ConfigManager {
   private volume: number = 100
   private readonly configPath: string
@@ -86,10 +77,9 @@ class ConfigManager {
 
 export class VideoPlayerApp {
   readonly windowManager: WindowManager
-  readonly playlist: PlaylistFacade
+  readonly playlist: Playlist
   readonly config: ConfigManager
   readonly appService: ApplicationService
-  private readonly _playlist = new Playlist()
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false
@@ -98,40 +88,48 @@ export class VideoPlayerApp {
   constructor() {
     this.windowManager = new WindowManager()
     this.config = new ConfigManager()
+    this.playlist = new Playlist()
     this.appService = new ApplicationService(
       corePlayer.getMediaPlayer(),
-      this._playlist
+      this.playlist
     )
-    this.playlist = {
-      getList: () =>
-        this._playlist.getAll().map((e) => ({
-          path: e.media.uri,
-          name: e.media.displayName
-        })),
-      setList: (items: PlaylistItem[]) => {
-        this._playlist.clear()
-        for (const it of items) {
-          this._playlist.add(Media.create(it.path, { title: it.name }))
-        }
-        if (items.length > 0) this._playlist.setCurrentByIndex(0)
-      },
-      setCurrentByPath: (path: string) => this._playlist.setCurrentByUri(path),
-      getCurrent: () => {
-        const cur = this._playlist.getCurrent()
-        return cur ? { path: cur.media.uri, name: cur.media.displayName } : null
-      },
-      next: () => {
-        const n = this._playlist.next()
-        return n ? { path: n.media.uri, name: n.media.displayName } : null
-      },
-      prev: () => {
-        const p = this._playlist.previous()
-        return p ? { path: p.media.uri, name: p.media.displayName } : null
-      }
-    }
     corePlayer.onPlayerState((state) => {
       if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
     })
+  }
+
+  getList(): PlaylistItem[] {
+    return this.playlist.getAll().map((e) => ({
+      path: e.media.uri,
+      name: e.media.displayName
+    }))
+  }
+
+  setList(items: PlaylistItem[]): void {
+    this.playlist.clear()
+    for (const it of items) {
+      this.playlist.add(Media.create(it.path, { title: it.name }))
+    }
+    if (items.length > 0) this.playlist.setCurrentByIndex(0)
+  }
+
+  setCurrentByPath(path: string): void {
+    this.playlist.setCurrentByUri(path)
+  }
+
+  getCurrent(): PlaylistItem | null {
+    const cur = this.playlist.getCurrent()
+    return cur ? { path: cur.media.uri, name: cur.media.displayName } : null
+  }
+
+  next(): PlaylistItem | null {
+    const n = this.playlist.next()
+    return n ? { path: n.media.uri, name: n.media.displayName } : null
+  }
+
+  prev(): PlaylistItem | null {
+    const p = this.playlist.previous()
+    return p ? { path: p.media.uri, name: p.media.displayName } : null
   }
 
   async play(target: PlaylistItem) {
@@ -189,26 +187,20 @@ export class VideoPlayerApp {
   }
 
   async playCurrentFromPlaylist() {
-    const current = this.playlist.getCurrent()
-    if (!current) {
-      return
-    }
+    const current = this.getCurrent()
+    if (!current) return
     await this.play(current)
   }
 
   async playNextFromPlaylist() {
-    const item = this.playlist.next()
-    if (!item) {
-      return
-    }
+    const item = this.next()
+    if (!item) return
     await this.play(item)
   }
 
   async playPrevFromPlaylist() {
-    const item = this.playlist.prev()
-    if (!item) {
-      return
-    }
+    const item = this.prev()
+    if (!item) return
     await this.play(item)
   }
 
@@ -452,7 +444,7 @@ export class VideoPlayerApp {
           videoWindow.setBrowserView(this.controlView)
         }
         // 发送播放列表（如果已加载）
-        const items = this.playlist.getList()
+        const items = this.getList()
         if (items.length > 0) {
           this.controlView.webContents.send('playlist-updated', items)
         }
@@ -500,7 +492,7 @@ export class VideoPlayerApp {
 
       // 播放列表初始化
       view.webContents.on('did-finish-load', () => {
-        const items = this.playlist.getList()
+        const items = this.getList()
         if (items.length > 0) {
           view.webContents.send('playlist-updated', items)
         }
@@ -529,7 +521,7 @@ export class VideoPlayerApp {
           this.controlWindow.show()
         }
         // 发送播放列表（如果已加载）
-        const items = this.playlist.getList()
+        const items = this.getList()
         if (items.length > 0) {
           this.controlWindow.webContents.send('playlist-updated', items)
         }
@@ -594,7 +586,7 @@ export class VideoPlayerApp {
 
       // 控制窗口加载完成后发送播放列表，并设置焦点
       controlWindow.webContents.on('did-finish-load', () => {
-        const items = this.playlist.getList()
+        const items = this.getList()
         if (items.length > 0) {
           controlWindow.webContents.send('playlist-updated', items)
         }

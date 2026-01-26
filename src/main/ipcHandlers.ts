@@ -36,13 +36,13 @@ export function setupIpcHandlers() {
 
   // 处理播放视频
   ipcMain.on('play-video', async (event, file: { name: string; path: string }) => {
-    const currentList = videoPlayerApp.playlist.getList()
+    const currentList = videoPlayerApp.getList()
     let nextList = currentList
     if (!currentList.some(item => item.path === file.path)) {
       nextList = [...currentList, { name: file.name, path: file.path }]
-      videoPlayerApp.playlist.setList(nextList)
+      videoPlayerApp.setList(nextList)
     }
-    videoPlayerApp.playlist.setCurrentByPath(file.path)
+    videoPlayerApp.setCurrentByPath(file.path)
     await handlePlayMedia(file)
     if (nextList.length > 0) {
       corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
@@ -71,8 +71,8 @@ export function setupIpcHandlers() {
   // 处理 URL 播放
   ipcMain.on('play-url', async (_event, url: string) => {
     const item: PlaylistItem = { path: url, name: url }
-    videoPlayerApp.playlist.setList([item])
-    videoPlayerApp.playlist.setCurrentByPath(item.path)
+    videoPlayerApp.setList([item])
+    videoPlayerApp.setCurrentByPath(item.path)
     await handlePlayMedia(item)
     corePlayer.broadcastToPlaybackUIs('playlist-updated', [item])
   })
@@ -153,7 +153,7 @@ export function setupIpcHandlers() {
   })
 
   ipcMain.on('set-playlist', async (_event, items: PlaylistItem[]) => {
-    videoPlayerApp.playlist.setList(items)
+    videoPlayerApp.setList(items)
     corePlayer.broadcastToPlaybackUIs('playlist-updated', items)
   })
 
