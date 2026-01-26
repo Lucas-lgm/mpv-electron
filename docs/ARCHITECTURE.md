@@ -21,7 +21,7 @@ mpv-player 是一个基于 Electron + Vue + TypeScript 的桌面播放器应用�
 - **构建工具**: electron-vite + node-gyp
 
 ### 1.3 核心设计原则
-1. **分层架构**: 清晰的 UI层、业务逻辑层、原生绑定层、MPV核心层
+1. **分层架构**: UI层、业务逻辑层、领域层（含领域模型与基础设施）、原生绑定层、MPV核心层
 2. **平台抽象**: 统一的接口，平台特定的实现
 3. **数据驱动**: 状态机驱动的渲染决策
 4. **类型安全**: TypeScript 接口定义，跨进程类型安全
@@ -39,16 +39,29 @@ graph TB
         A2 --> A4[IPC通信]
         A3 --> A4
     end
-    
+
     subgraph "业务逻辑层 (主进程)"
-        B1[CorePlayer] --> B2[RenderManager]
-        B1 --> B3[PlayerStateMachine]
-        B1 --> B4[Timeline]
-        B2 --> B5[状态驱动渲染循环]
-        B3 --> B6[状态事件分发]
-        B1 --> B7[VideoPlayerApp]
+        B1[VideoPlayerApp] --> B2[ApplicationService]
+        B1 --> B3[CorePlayer]
+        B3 --> B4[RenderManager]
+        B3 --> B5[PlayerStateMachine]
+        B3 --> B6[Timeline]
+        B4 --> B7[状态驱动渲染循环]
+        B5 --> B8[状态事件分发]
     end
-    
+
+    subgraph "领域层"
+        D1[Media / PlaybackSession / Playlist]
+        D2[MpvAdapter]
+        D3[MpvMediaPlayer]
+        B2 --> D1
+        B2 --> D3
+        B1 --> D1
+        B3 --> D3
+        B5 --> D1
+        D3 --> D2
+    end
+
     subgraph "原生绑定层"
         C1[libmpv.ts] --> C2[TypeScript接口]
         C2 --> C3[MPVBinding接口]
@@ -57,27 +70,32 @@ graph TB
         C5 --> C6[mpv_render_gl.mm<br/>macOS渲染]
         C5 --> C7[Windows wid模式]
     end
-    
+
     subgraph "MPV核心层"
-        D1[libmpv库] --> D2[视频解码]
-        D1 --> D3[音频输出]
-        D1 --> D4[渲染管道]
-        D1 --> D5[gpu-next后端]
+        E1[libmpv库] --> E2[视频解码]
+        E1 --> E3[音频输出]
+        E1 --> E4[渲染管道]
+        E1 --> E5[gpu-next后端]
     end
-    
+
     A4 --> B1
-    B6 --> A4
-    B5 --> C3
-    C6 --> D4
-    C7 --> D4
+    A4 --> B2
+    B8 --> A4
+    B7 --> C3
+    D3 --> C3
+    C6 --> E4
+    C7 --> E4
 ```
+
+**说明**：业务逻辑层以 `VideoPlayerApp` 为入口，协调 `ApplicationService`（命令/查询）与 `CorePlayer`（播放、渲染、状态）。领域层提供 `Media`/`PlaybackSession`/`Playlist` 及 `MpvAdapter`、`MpvMediaPlayer`；IPC 部分走 ApplicationService，部分走 VideoPlayerApp/CorePlayer。
 
 ### 2.2 各层职责说明
 
 | 层级 | 主要组件 | 职责 | 文件位置 |
 |------|----------|------|----------|
 | **UI层** | Vue组件 | 用户界面、用户交互、IPC通信 | `src/renderer/` |
-| **业务逻辑层** | CorePlayer, RenderManager, PlayerStateMachine | 播放控制、状态管理、渲染调度、窗口管理 | `src/main/` |
+| **业务逻辑层** | VideoPlayerApp, ApplicationService, CorePlayer, PlayerStateMachine, RenderManager | 应用协调、命令/查询、播放控制、状态管理、渲染调度、窗口管理 | `src/main/` |
+| **领域层** | Media, PlaybackSession, Playlist；MpvAdapter, MpvMediaPlayer | 领域模型、MPV→领域适配、播放器实现 | `src/main/domain/`, `src/main/infrastructure/mpv/` |
 | **原生绑定层** | MPVBinding, binding.cc, mpv_render_gl.mm | 跨语言桥接、平台特定渲染、HDR配置 | `native/` |
 | **MPV核心层** | libmpv库 | 视频解码、音频处理、渲染管道、HDR色调映射 | 外部依赖 |
 
@@ -703,7 +721,7 @@ export interface PlaylistItem {
 | **领域模型** | `Media`, `PlaybackSession`, `Playlist` | 业务实体与状态 |
 | **应用服务** | `ApplicationService` | 命令/查询协调（`playMedia`, `pausePlayback`, `seek`, `getPlaylist` 等） |
 | **基础设施** | `MpvAdapter`, `MpvMediaPlayer` | MPV 状态→领域模型、播放器实现 |
-| **表现** | `PlayerStateMachine`, `videoPlayerApp.playlist` | 对内使用 `PlaybackSession`/`Playlist`，对外仍暴露 `PlayerState`、`PlaylistItem`（`sessionToPlayerState`、`PlaylistFacade` 内联，无独立适配器模块） |
+| **表现** | `PlayerStateMachine`, `videoPlayerApp` | 对内使用 `PlaybackSession`/`Playlist`；`playerState` 内联 `sessionToPlayerState`，`videoPlayerApp` 持单一 `playlist`（`Playlist`）并通过 `getList`/`setList` 等暴露 `PlaylistItem`，无独立适配器模块 |
 
 IPC 层部分通道已走 `ApplicationService`（如 `control-pause`、`control-seek`、`get-playlist`）；窗口管理与播放列表设置等仍经 `videoPlayerApp`。
 
@@ -715,8 +733,11 @@ IPC（进程间通信）是渲染进程（UI）与主进程（业务逻辑）之
 
 **通信路径**：
 ```
-渲染进程 (Vue组件) → preload脚本 → IPC通道 → 主进程 → CorePlayer → MPV
+渲染进程 (Vue组件) → preload脚本 → IPC通道 → 主进程 (ipcHandlers)
+  → VideoPlayerApp / ApplicationService / CorePlayer
+  → 领域层 (Playlist、MediaPlayer) 或 CorePlayer → MPV
 ```
+部分通道（如 `control-pause`、`control-seek`、`get-playlist`）经 `ApplicationService`；`play-video`、`set-playlist`、窗口操作等经 `VideoPlayerApp` 或 `CorePlayer`。
 
 ### 5.2 electronAPI 接口
 
