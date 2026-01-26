@@ -102,9 +102,10 @@ export class PlayerStateMachine extends EventEmitter {
     if (status.phase === 'stopped') return 'stopped'
     if (status.phase === 'idle' || !status.path) return 'idle'
     if (status.phase === 'paused') return 'paused'
-    if (this.state.session.status === PlaybackStatus.ERROR) return 'error'
-    if (status.duration > 0 && status.position >= status.duration) return 'ended'
-    return 'playing'
+    if (status.phase === 'playing') return 'playing'
+    if (status.phase === 'ended') return 'ended'
+    if (status.phase === 'error') return 'error'
+    return 'idle'
   }
 
   private setState(next: InternalState): void {
