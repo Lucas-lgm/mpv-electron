@@ -25,7 +25,10 @@ export function useMediaLibrary() {
     } else if (activeFilter.value === 'nas') {
       filtered = filtered.filter(r => r.source === 'nas')
     } else if (activeFilter.value && activeFilter.value !== 'all') {
-      // 挂载路径筛选
+      // 挂载路径筛选（activeFilter.value 是挂载路径ID）
+      // 需要找到对应的挂载路径，然后筛选 mountPath 匹配的资源
+      // 注意：这里需要从外部传入 mountPaths 列表，或者通过其他方式获取
+      // 暂时通过 selectedMountPath 来筛选（selectedMountPath 存储的是挂载路径的 path）
       if (selectedMountPath.value) {
         filtered = filtered.filter(r => r.mountPath === selectedMountPath.value)
       }
@@ -100,11 +103,19 @@ export function useMediaLibrary() {
   const setFilter = (filter: ResourceFilter) => {
     activeFilter.value = filter
     if (filter !== 'all' && !['local', 'network', 'nas'].includes(filter)) {
-      // 如果是挂载路径ID，设置selectedMountPath
-      selectedMountPath.value = filter
+      // 如果是挂载路径ID，selectedMountPath 应该由外部设置（通过挂载路径列表找到对应的path）
+      // 这里不设置，由调用方负责设置正确的path
     } else {
       selectedMountPath.value = null
     }
+  }
+  
+  /**
+   * 设置挂载路径筛选（需要传入挂载路径的path）
+   */
+  const setMountPathFilter = (mountPathId: string, mountPath: string) => {
+    activeFilter.value = mountPathId
+    selectedMountPath.value = mountPath
   }
 
   /**
@@ -144,6 +155,7 @@ export function useMediaLibrary() {
     removeResource,
     removeResourcesByMountPath,
     setFilter,
+    setMountPathFilter,
     setSearchQuery,
     setViewMode,
     clearResources

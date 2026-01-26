@@ -77,7 +77,8 @@ const {
   removeResourcesByMountPath,
   setFilter,
   setSearchQuery,
-  setViewMode
+  setViewMode,
+  setMountPathFilter
 } = mediaLibrary
 
 const { mountPaths: mountPathsList, addMountPath, removeMountPath, refreshMountPath, initMountPaths } = mountPaths
@@ -112,7 +113,15 @@ const handleFilterChange = (filter: string) => {
 
 // 处理挂载路径选择
 const handleMountPathSelect = (id: string) => {
-  setFilter(id)
+  // 找到对应的挂载路径
+  const mountPath = mountPathsList.value.find(mp => mp.id === id)
+  if (mountPath) {
+    // 使用专门的挂载路径筛选方法
+    setMountPathFilter(id, mountPath.path)
+  } else {
+    // 如果找不到，只设置筛选器
+    setFilter(id)
+  }
 }
 
 // 处理添加文件

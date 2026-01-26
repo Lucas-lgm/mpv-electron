@@ -14,7 +14,7 @@ mpv-player 是一个基于 Electron + Vue + TypeScript 的桌面播放器应用�
 - 正确的 SDR 色彩空间处理
 
 ### 1.2 技术栈
-- **前端**: Vue 3 + TypeScript + Vue Router
+- **前端**: Vue 3 + TypeScript + Vue Router + Element Plus
 - **主进程**: Electron + TypeScript
 - **原生模块**: Node Addon API + C++/Objective-C
 - **视频渲染**: MPV (libmpv) + gpu-next (libplacebo) 后端
@@ -1968,10 +1968,11 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-26 | 1.14 | **IPC 层与 App 层边界优化**：ipcHandlers 移除业务逻辑（列表操作、状态判断、窗口操作）和状态（isFullscreen），只做路由、参数解析、调用 App 方法、event.reply；VideoPlayerApp 新增 `handlePlayVideo` / `handlePlayUrl` / `handleControlPlay` / `toggleFullscreen` / `windowAction` / `handleFileSelected` / `forwardVideoTimeUpdate` / `showControlBar` 等封装业务逻辑的方法；所有业务广播统一经 VideoPlayerApp，ipcHandlers 不再直接 `webContents.send`；更新 2.2.1 职责表 | - |
 | 2026-01-26 | 1.15 | **文件拆分：一个文件一个类**：`libmpv.ts` 拆分为 `types.ts`（MPVBinding、MPVStatus 类型）、`LibMPVController.ts`（类，包含 native binding 加载逻辑）；`libmpv.ts` 删除，所有导入改为从 `LibMPVController.ts`；关于命名：`LibMPVController` 保留（虽从架构看更像"客户端"，但"Controller"在此上下文中合理，且已广泛使用）；更新 12.2 | - |
 | 2026-01-26 | 1.16 | **统一入口文件**：创建 `infrastructure/mpv/index.ts` 统一导出所有类型、类、函数；所有外部导入改为从 `infrastructure/mpv` 导入；内部文件间仍使用相对路径；更新 12.2、11.4 | - |
+| 2026-01-26 | 1.17 | **UI组件库集成**：引入 Element Plus 作为 UI 组件库；ControlView 中的进度条改为使用 `el-slider` 组件，移除自绘进度条逻辑（scrubbingProgress、fillWidth、ResizeObserver 等）；更新 1.2 技术栈、12.2 | - |
 
 ---
 
-**文档版本**: 1.16  
+**文档版本**: 1.17  
 **最后更新**: 2026年1月26日  
 **维护者**: 架构文档维护小组  
 **更新策略**: 代码变更时**同一轮工作内**同步更新，实时维护、不依赖用户提醒，详见第13章  

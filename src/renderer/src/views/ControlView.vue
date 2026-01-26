@@ -63,17 +63,18 @@
     >
       <div class="control-bar">
         <div class="progress-container">
-          <input
-            type="range"
+          <el-slider
+            :model-value="currentTime"
             :min="0"
             :max="duration > 0 ? duration : 100"
-            :value="currentTime"
+            :step="0.1"
+            :show-tooltip="true"
+            :format-tooltip="formatTime"
             @mousedown="onSeekStart"
             @touchstart.prevent="onSeekStart"
             @input="onSeek"
-            @mouseup="onSeekEnd"
-            @touchend.prevent="onSeekEnd"
-            class="progress-bar-large"
+            @change="onSeekEnd"
+            class="progress-slider"
           />
           <div class="time-display">
             <span class="time-current">{{ formatTime(currentTime) }}</span>
@@ -146,6 +147,7 @@ const playlist = ref<PlaylistItem[]>([])
 const showPlaylist = ref(false)
 const currentPath = ref<string | null>(null)
 const hdrEnabled = ref(true)
+
 
 // 判断视频是否已准备好（已加载完成，可以播放）
 // 当 phase 为 'playing' 或 'paused' 时，说明视频已加载完成
@@ -226,6 +228,7 @@ const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
 const handlePlayerState = (state: PlayerState) => {
   console.log('state:', state)
   const wasSeeking = isSeeking.value
+  
   isSeeking.value = !!state.isSeeking
   isNetworkBuffering.value = !!state.isNetworkBuffering
   networkBufferingPercent.value =
@@ -360,21 +363,19 @@ const onSeekStart = () => {
   onUserInteraction()
 }
 
-const onSeekEnd = () => {
-  const time = currentTime.value
+const onSeek = (value: number) => {
+  currentTime.value = value
   onUserInteraction()
-  if (window.electronAPI) {
-    window.electronAPI.send('control-seek', time)
-  }
-  // 保持 isScrubbing = true，直到 isSeeking 状态更新
-  // 这样可以确保拖动位置不会被 handleVideoTimeUpdate 覆盖
-  // handlePlayerState 会在 isSeeking 变为 true 时处理，然后在 isSeeking 变为 false 时重置 isScrubbing
 }
 
-const onSeek = (event: Event) => {
-  const target = event.target as HTMLInputElement
-  currentTime.value = parseFloat(target.value)
+const onSeekEnd = (value: number) => {
+  currentTime.value = value
   onUserInteraction()
+  if (window.electronAPI) {
+    window.electronAPI.send('control-seek', value)
+  }
+  // 保持 isScrubbing = true，直到 isSeeking 状态更新
+  // handlePlayerState 会在 isSeeking 变为 true 时处理，然后在 isSeeking 变为 false 时重置 isScrubbing
 }
 
 const onVolumeChange = (event: Event) => {
@@ -658,46 +659,80 @@ onUnmounted(() => {
 
 .control-bar {
   width: 100%;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
+  background: rgba(0, 0, 0, 0.4);
   border-radius: 0;
   overflow: hidden;
 }
 
 .progress-container {
-  padding: 16px 20px 8px;
-  margin-bottom: 16px;
+  padding: 6px 12px 0;
+  margin-bottom: 0;
 }
 
-.progress-bar-large {
+/* Element Plus Slider 自定义样式 */
+.progress-slider {
   width: 100%;
-  height: 8px;
-  border-radius: 4px;
-  background: #2a2a32;
-  outline: none;
-  cursor: pointer;
-  -webkit-appearance: none;
-  appearance: none;
 }
 
-.progress-bar-large::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #4a9eff;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(74, 158, 255, 0.5);
+.progress-slider :deep(.el-slider__runway) {
+  height: 6px;
+  background-color: #3a3a3a;
+  border-radius: 3px;
+  margin: 0;
 }
 
-.progress-bar-large::-moz-range-thumb {
+.progress-slider :deep(.el-slider__bar) {
+  height: 6px;
+  background-color: #ffffff;
+  border-radius: 3px;
+}
+
+.progress-slider :deep(.el-slider__button-wrapper) {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
-  background: #4a9eff;
-  cursor: pointer;
+  top: 0;
+  margin-top: -7px;
+}
+
+.progress-slider :deep(.el-slider__button) {
+  width: 16px;
+  height: 16px;
   border: none;
-  box-shadow: 0 2px 8px rgba(74, 158, 255, 0.5);
+  background-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.3);
+  transition: all 0.2s;
+}
+
+.progress-slider :deep(.el-slider__button):hover {
+  width: 18px;
+  height: 18px;
+  box-shadow: 0 2px 12px rgba(255, 255, 255, 0.5);
+}
+
+.progress-slider :deep(.el-slider__button-wrapper):hover {
+  width: 18px;
+  height: 18px;
+}
+
+.progress-slider :deep(.el-slider__button-wrapper):hover .el-slider__button {
+  width: 18px;
+  height: 18px;
+}
+
+/* Tooltip 样式 */
+.progress-slider :deep(.el-slider__button-wrapper .el-tooltip__trigger) {
+  width: 100%;
+  height: 100%;
+}
+
+.progress-slider :deep(.el-tooltip__popper) {
+  background-color: rgba(0, 0, 0, 0.85);
+  border: none;
+  color: #ffffff;
+  font-size: 0.85rem;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  padding: 4px 8px;
+  border-radius: 4px;
 }
 
 .time-display {
@@ -717,14 +752,15 @@ onUnmounted(() => {
 }
 
 .time-total {
-  color: #888;
+  color: #ccc;
+  font-weight: 400;
 }
 
 .control-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px 16px;
+  padding: 8px 12px 10px;
   gap: 12px;
 }
 
@@ -735,23 +771,22 @@ onUnmounted(() => {
 }
 
 .btn-control {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   border: none;
   background: transparent;
   color: #ffffff;
-  border-radius: 6px;
+  border-radius: 0;
   font-size: 1.2rem;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s, transform 0.1s;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .btn-control:hover {
-  background: rgba(255, 255, 255, 0.1);
-  transform: scale(1.1);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .btn-control:active {
@@ -759,14 +794,9 @@ onUnmounted(() => {
 }
 
 .btn-control.play-pause {
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   font-size: 1.5rem;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.btn-control.play-pause:hover {
-  background: rgba(255, 255, 255, 0.25);
 }
 
 .progress-container {
@@ -810,16 +840,16 @@ onUnmounted(() => {
 
 .volume-percent {
   font-size: 0.85rem;
-  min-width: 35px;
+  min-width: 40px;
   text-align: right;
-  color: #888;
+  color: #ccc;
 }
 
 .volume-slider {
   width: 80px;
   height: 4px;
   border-radius: 2px;
-  background: #2a2a32;
+  background: #3a3a3a;
   outline: none;
   cursor: pointer;
   -webkit-appearance: none;
@@ -832,16 +862,32 @@ onUnmounted(() => {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #4a9eff;
+  background: #ffffff;
   cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(30, 30, 36, 0.8), 0 2px 8px rgba(255, 255, 255, 0.3);
+  transition: all 0.2s;
+}
+
+.volume-slider:hover::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 0 0 2px rgba(30, 30, 36, 0.8), 0 2px 12px rgba(255, 255, 255, 0.5);
 }
 
 .volume-slider::-moz-range-thumb {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #4a9eff;
+  background: #ffffff;
   cursor: pointer;
-  border: none;
+  border: 2px solid rgba(30, 30, 36, 0.8);
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.3);
+  transition: all 0.2s;
+}
+
+.volume-slider:hover::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 2px 12px rgba(255, 255, 255, 0.5);
 }
 </style>
