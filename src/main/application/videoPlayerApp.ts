@@ -677,7 +677,7 @@ export class VideoPlayerApp {
         view.webContents.loadURL(url).catch(() => {})
         view.webContents.openDevTools({ mode: 'detach' })
       } else {
-        view.webContents.loadFile(join(__dirname, '../../renderer/index.html'), {
+        view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
           hash: 'control'
         }).catch(() => {})
       }
