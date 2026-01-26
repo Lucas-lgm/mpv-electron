@@ -36,18 +36,27 @@ graph TB
     subgraph "UI层 (渲染进程)"
         A1[Vue组件] --> A2[控制栏UI]
         A1 --> A3[播放列表UI]
-        A2 --> A4[IPC通信]
+        A2 --> A4[IPC]
         A3 --> A4
     end
 
     subgraph "业务逻辑层 (主进程)"
-        B1[VideoPlayerApp] --> B2[ApplicationService]
-        B1 --> B3[CorePlayer]
-        B3 --> B4[RenderManager]
-        B3 --> B5[PlayerStateMachine]
-        B3 --> B6[Timeline]
+        B0[ipcHandlers<br/>协议适配与路由]
+        B1[VideoPlayerApp]
+        B2[ApplicationService]
+        B3[CorePlayer]
+        B4[RenderManager]
+        B5[PlayerStateMachine]
+        B6[Timeline]
+        B1 --> B2
+        B1 --> B3
+        B3 --> B4
+        B3 --> B5
+        B3 --> B6
         B4 --> B7[状态驱动渲染循环]
-        B5 --> B8[状态事件分发]
+        B5 --> B3
+        B6 --> B3
+        B3 -.->|emit 事件| B1
     end
 
     subgraph "领域层"
@@ -78,16 +87,18 @@ graph TB
         E1 --> E5[gpu-next后端]
     end
 
-    A4 --> B1
-    A4 --> B2
-    B8 --> A4
+    A4 --> B0
+    B0 --> B1
+    B0 --> B2
+    B0 --> B3
+    B1 -->|sendToPlaybackUIs| A4
     B7 --> C3
     D3 --> C3
     C6 --> E4
     C7 --> E4
 ```
 
-**说明**：业务逻辑层以 `VideoPlayerApp` 为入口，协调 `ApplicationService`（命令/查询）与 `CorePlayer`（播放、渲染、状态）。领域层提供 `Media`/`PlaybackSession`/`Playlist` 及 `MpvAdapter`、`MpvMediaPlayer`；IPC 部分走 ApplicationService，部分走 VideoPlayerApp/CorePlayer。
+**说明**：入口为 `main` → `runApp()`（bootstrap）；`app.whenReady` 后创建 `CorePlayer`、`VideoPlayerApp`，再 `setupIpcHandlers`、`createMainWindow`、`registerAppListeners`。UI 的 IPC 经 **ipcHandlers** 路由到 VideoPlayerApp / ApplicationService / CorePlayer；**CorePlayer** 发出 `video-time-update`、`player-state` 等事件，**VideoPlayerApp** 监听后经 `sendToPlaybackUIs` 广播到播放 UI。领域层提供 `Media`/`PlaybackSession`/`Playlist` 及 `MpvAdapter`、`MpvMediaPlayer`。
 
 ### 2.2 各层职责说明
 
@@ -1936,7 +1947,7 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-26 | 1.7 | 主进程目录重组阶段 2：playerState/playerStateTypes → application/state/，timeline → application/timeline/；更新 3.5、4.2、4.3、11.3、12.2、MAIN_PROCESS_REORGANIZATION 执行记录 | - |
 | 2026-01-26 | 1.8 | 主进程目录重组阶段 3：windowManager → application/windows/，corePlayer → application/core/，ipcHandlers → application/presentation/，videoPlayerApp → application/；更新所有导入路径与 __dirname 路径；更新 3.3、5.3、11.3、12.2、MAIN_PROCESS_REORGANIZATION | - |
 | 2026-01-26 | 1.9 | MediaPlayer 接口移至 `application/core/` 与 CorePlayer 同目录；CorePlayer 改为 `createCorePlayer()` 工厂，在 `app.whenReady` 后由 `bootstrap.runApp()` 创建；新增 `bootstrap`、`VideoPlayerApp(core)`、`setupIpcHandlers(app,core)`；main 导出 `getWindowManager`；更新 11.3、12.2 | - |
-| 2026-01-26 | 1.10 | **架构文档完善**：2.2 业务逻辑层路径→`application/`；2.2.1 VideoPlayerApp 补充 `releaseCorePlayerListeners`、监听器销毁；主进程→渲染进程消息表更正 `playlist-updated`/`player-state`/`video-time-update` 发送归属；5.3 IPC 表去掉行号、统一路径；3.1–3.4、6.1 libmpv/renderManager/nativeHelper→`infrastructure/` 路径；3.3 CorePlayer 接口补 `ensureControllerReadyForPlayback`、`setVideoWindow` 返回 Promise，使用说明改为 bootstrap 注入；12.2 main/domain 表述修正；13.2 内存泄漏排查补 `releaseCorePlayerListeners` | - |
+| 2026-01-26 | 1.10 | **架构文档完善**：2.1 **架构图**补充 ipcHandlers、IPC 路由、CorePlayer→VideoPlayerApp 事件流与 sendToPlaybackUIs、bootstrap 启动说明；2.2 业务逻辑层路径→`application/`；2.2.1 VideoPlayerApp 补充 `releaseCorePlayerListeners`、监听器销毁；主进程→渲染进程消息表更正 `playlist-updated`/`player-state`/`video-time-update` 发送归属；5.3 IPC 表去掉行号、统一路径；3.1–3.4、6.1 libmpv/renderManager/nativeHelper→`infrastructure/` 路径；3.3 CorePlayer 接口补 `ensureControllerReadyForPlayback`、`setVideoWindow` 返回 Promise，使用说明改为 bootstrap 注入；12.2 main/domain 表述修正；13.2 内存泄漏排查补 `releaseCorePlayerListeners` | - |
 
 ---
 
