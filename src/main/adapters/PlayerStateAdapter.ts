@@ -14,7 +14,7 @@ export function toPlayerState(
   session: PlaybackSession,
   extras: PlayerStateExtras = {}
 ): PlayerState {
-  const phase = statusToPhase(session.status)
+  const phase = session.status as unknown as PlayerPhase
   return {
     phase,
     currentTime: session.progress.currentTime,
@@ -28,10 +28,6 @@ export function toPlayerState(
     isNetworkBuffering: session.networkBuffering.isBuffering,
     networkBufferingPercent: session.networkBuffering.bufferingPercent
   }
-}
-
-export function statusToPhase(s: PlaybackStatus): PlayerPhase {
-  return s as unknown as PlayerPhase
 }
 
 export function phaseToStatus(p: PlayerPhase): PlaybackStatus {

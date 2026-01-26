@@ -3,7 +3,7 @@ import type { MPVStatus } from './libmpv'
 import { Media } from './domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from './domain/models/Playback'
 import { MpvAdapter } from './infrastructure/mpv/MpvAdapter'
-import { toPlayerState, statusToPhase, phaseToStatus } from './adapters/PlayerStateAdapter'
+import { toPlayerState, phaseToStatus } from './adapters/PlayerStateAdapter'
 import type { PlayerPhase } from './playerStateTypes'
 
 export type { PlayerState, PlayerPhase } from './playerStateTypes'
@@ -76,11 +76,10 @@ export class PlayerStateMachine extends EventEmitter {
   }
 
   private derivePhase(status: MPVStatus): PlayerPhase {
-    const prevPhase = statusToPhase(this.state.session.status)
-    if (prevPhase === 'error') return 'error'
-    if (prevPhase === 'paused') return 'paused'
-    if (prevPhase === 'stopped') return 'stopped'
-    if (!status.path) return 'idle'
+    if (status.phase === 'stopped') return 'stopped'
+    if (status.phase === 'idle' || !status.path) return 'idle'
+    if (status.phase === 'paused') return 'paused'
+    if (this.state.session.status === PlaybackStatus.ERROR) return 'error'
     if (status.duration > 0 && status.position >= status.duration) return 'ended'
     return 'playing'
   }
