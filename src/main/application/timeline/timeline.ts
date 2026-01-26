@@ -11,7 +11,6 @@ type TimelinePayload = {
 type TimelineOptions = {
   interval?: number
   getStatus?: () => MPVStatus | Promise<MPVStatus | null> | null
-  send?: (payload: TimelinePayload) => void
 }
 
 export class Timeline extends EventEmitter {
@@ -23,13 +22,11 @@ export class Timeline extends EventEmitter {
   private lastSeekTime: number = 0
   private readonly SEEK_PROTECTION_PERIOD_MS: number = 2000
   private getStatusFn?: TimelineOptions['getStatus']
-  private sendFn?: TimelineOptions['send']
 
   constructor(options: TimelineOptions = {}) {
     super()
     this.intervalMs = typeof options.interval === 'number' ? options.interval : 100
     this.getStatusFn = options.getStatus
-    this.sendFn = options.send
   }
 
   handlePlayerStateChange(state: PlayerPhase) {
@@ -68,9 +65,6 @@ export class Timeline extends EventEmitter {
       updatedAt: Date.now()
     }
     this.emit('timeline', payload)
-    if (this.sendFn) {
-      this.sendFn(payload)
-    }
   }
 
   start() {
@@ -151,6 +145,5 @@ export class Timeline extends EventEmitter {
     this.lastSeekTargetTime = null
     this.lastSeekTime = 0
     this.getStatusFn = undefined
-    this.sendFn = undefined
   }
 }

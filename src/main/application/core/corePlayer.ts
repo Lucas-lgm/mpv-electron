@@ -42,6 +42,9 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   private initPromise: Promise<void> | null = null
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
+  private timelineListener?: (payload: { currentTime: number; duration: number; updatedAt: number }) => void
+  private stateMachineStateListener?: (st: PlayerState) => void
+  private controllerFpsChangeListener?: (fps: number | null) => void
   private pendingResizeTimer: NodeJS.Timeout | null = null
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
@@ -62,11 +65,12 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     }
     this.timeline = new Timeline({
       interval: 100,
-      getStatus: () => this.getStatus(),
-      send: (payload) => {
-        this.emit('video-time-update', payload)
-      }
+      getStatus: () => this.getStatus()
     })
+    this.timelineListener = (payload) => {
+      this.emit('video-time-update', payload)
+    }
+    this.timeline.on('timeline', this.timelineListener)
     
     // 初始化渲染管理器
     this.renderManager = new RenderManager(
@@ -75,7 +79,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     )
     
     // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染
-    this.stateMachine.on('state', (st) => {
+    this.stateMachineStateListener = (st: PlayerState) => {
       this.timeline?.handlePlayerStateChange(st.phase)
       // 确保渲染循环运行（如果还没运行）
       if (this.renderManager && this.controller && process.platform === 'darwin') {
@@ -84,13 +88,15 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
           this.renderManager.start()
         }
       }
-    })
+    }
+    this.stateMachine.on('state', this.stateMachineStateListener)
     
-    // 监听视频帧率变化，动态调整渲染间隔
+    // 监听视频帧率变化，动态调整渲染间隔（构造函数中的初始监听）
     if (this.controller) {
-      this.controller.on('fps-change', (fps: number | null) => {
+      this.controllerFpsChangeListener = (fps: number | null) => {
         this.renderManager?.updateFps(fps)
-      })
+      }
+      this.controller.on('fps-change', this.controllerFpsChangeListener)
     }
   }
   
@@ -413,6 +419,21 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       if (this.pendingResizeTimer) {
         clearTimeout(this.pendingResizeTimer)
         this.pendingResizeTimer = null
+      }
+      if (this.timeline && this.timelineListener) {
+        this.timeline.off('timeline', this.timelineListener)
+        this.timelineListener = undefined
+      }
+      if (this.stateMachine && this.stateMachineStateListener) {
+        this.stateMachine.off('state', this.stateMachineStateListener)
+        this.stateMachineStateListener = undefined
+      }
+      if (this.controller && this.controllerFpsChangeListener) {
+        this.controller.off('fps-change', this.controllerFpsChangeListener)
+        this.controllerFpsChangeListener = undefined
+      }
+      if (this.videoWindow) {
+        this.videoWindow.removeAllListeners('resize')
       }
       this.timeline?.dispose()
       await this.mediaPlayer.cleanup()
