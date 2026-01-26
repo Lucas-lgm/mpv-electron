@@ -1,90 +1,93 @@
 import { EventEmitter } from 'events'
 import * as path from 'path'
 import { existsSync } from 'fs'
+import type { MPVBinding, MPVStatus } from './types'
 
-// Set DLL search path for Windows (must be before native module loading)
-if (process.platform === 'win32') {
-  const dllPath = path.join(__dirname, '../../vendor/mpv/win32-x64/lib')
-  if (existsSync(dllPath)) {
-    process.env.PATH = `${dllPath};${process.env.PATH}`
-    console.log('[DLL] Added to PATH:', dllPath)
-  } else {
-    console.warn('[DLL] DLL path not found:', dllPath)
-  }
-}
-
-// 定义 native binding 的类型
-interface MPVBinding {
-  create(): number
-  initialize(instanceId: number): boolean
-  setOption(instanceId: number, name: string, value: string | number | boolean): boolean
-  setWindowId(instanceId: number, windowId: number): boolean
-  loadFile(instanceId: number, path: string): boolean
-  getProperty(instanceId: number, name: string): any
-  setProperty(instanceId: number, name: string, value: string | number | boolean): boolean
-  command(instanceId: number, args: string[]): boolean
-  // 事件现在会传递一个对象，包含 eventId / name / value 等
-  setEventCallback(instanceId: number, callback: (event: any) => void): boolean
-  attachView(instanceId: number, viewPtr: number): void
-  setWindowSize(instanceId: number, width: number, height: number): void
-  setForceBlackMode(instanceId: number, enabled: boolean): void
-  setHdrMode(instanceId: number, enabled: boolean): void
-  debugHdrStatus(instanceId: number): void
-  setJsDrivenRenderMode(instanceId: number, enabled: boolean): void
-  getJsDrivenRenderMode(instanceId: number): boolean
-  requestRender(instanceId: number): void
-  destroy(instanceId: number): boolean
-}
-
-// 尝试加载 native binding
+// Native binding 实例（延迟加载）
 let mpvBinding: MPVBinding | null = null
-try {
-  // 尝试多个可能的路径（相对于编译后的 out/main 目录）
-  // 在开发和生产环境中的不同路径
-  const possiblePaths = [
-    // 开发环境：从 out/main 到 native/build/Release
-    path.join(__dirname, '../../native/build/Release/mpv_binding.node'),
-    // 如果 native 在项目根目录
-    path.join(__dirname, '../../../native/build/Release/mpv_binding.node'),
-    // 生产环境可能的位置
-    path.join(process.resourcesPath || __dirname, 'native/build/Release/mpv_binding.node'),
-  ]
+let bindingLoadAttempted = false
+
+/**
+ * 加载 native binding
+ * @returns 是否成功加载
+ */
+export function loadMPVBinding(): boolean {
+  if (bindingLoadAttempted) {
+    return mpvBinding !== null
+  }
   
-  for (const bindingPath of possiblePaths) {
-    try {
-      // @ts-ignore - native module
-      mpvBinding = require(bindingPath)
-      console.log('[libmpv] ✅ Native binding loaded from:', bindingPath)
-      break
-    } catch (e: any) {
-      // 继续尝试下一个路径
-      if (e.code !== 'MODULE_NOT_FOUND') {
-        console.warn('[libmpv] Error loading from', bindingPath, ':', e.message)
-      }
+  bindingLoadAttempted = true
+
+  // Set DLL search path for Windows (must be before native module loading)
+  if (process.platform === 'win32') {
+    const dllPath = path.join(__dirname, '../../vendor/mpv/win32-x64/lib')
+    if (existsSync(dllPath)) {
+      process.env.PATH = `${dllPath};${process.env.PATH}`
+      console.log('[DLL] Added to PATH:', dllPath)
+    } else {
+      console.warn('[DLL] DLL path not found:', dllPath)
     }
   }
-  
-  if (!mpvBinding) {
-    console.warn('[libmpv] ⚠️ Native binding not found. Will use IPC mode.')
-    console.warn('[libmpv] Tried paths:', possiblePaths)
+
+  // 尝试加载 native binding
+  try {
+    // 尝试多个可能的路径（相对于编译后的 out/main 目录）
+    // 在开发和生产环境中的不同路径
+    const possiblePaths = [
+      // 开发环境：从 out/main 到 native/build/Release
+      path.join(__dirname, '../../native/build/Release/mpv_binding.node'),
+      // 如果 native 在项目根目录
+      path.join(__dirname, '../../../native/build/Release/mpv_binding.node'),
+      // 生产环境可能的位置
+      path.join(process.resourcesPath || __dirname, 'native/build/Release/mpv_binding.node'),
+    ]
+    
+    for (const bindingPath of possiblePaths) {
+      try {
+        // @ts-ignore - native module
+        mpvBinding = require(bindingPath)
+        console.log('[libmpv] ✅ Native binding loaded from:', bindingPath)
+        return true
+      } catch (e: any) {
+        // 继续尝试下一个路径
+        if (e.code !== 'MODULE_NOT_FOUND') {
+          console.warn('[libmpv] Error loading from', bindingPath, ':', e.message)
+        }
+      }
+    }
+    
+    if (!mpvBinding) {
+      console.warn('[libmpv] ⚠️ Native binding not found. Will use IPC mode.')
+      console.warn('[libmpv] Tried paths:', possiblePaths)
+    }
+  } catch (error: any) {
+    console.warn('[libmpv] Native binding not available, falling back to IPC mode:', error.message)
   }
-} catch (error: any) {
-  console.warn('[libmpv] Native binding not available, falling back to IPC mode:', error.message)
+  
+  return mpvBinding !== null
 }
 
-export interface MPVStatus {
-  position: number
-  duration: number
-  volume: number
-  path: string | null
-  phase?: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
-  isSeeking?: boolean
-  isCoreIdle?: boolean
-  isIdleActive?: boolean
-  isNetworkBuffering?: boolean
-  networkBufferingPercent?: number
+/**
+ * 获取 native binding（供 LibMPVController 使用）
+ */
+function getMPVBinding(): MPVBinding | null {
+  return mpvBinding
 }
 
+/**
+ * 检查 native binding 是否可用
+ * 如果还未尝试加载，会先尝试加载
+ */
+export function isLibMPVAvailable(): boolean {
+  if (!bindingLoadAttempted) {
+    loadMPVBinding()
+  }
+  return mpvBinding !== null
+}
+
+/**
+ * LibMPV 控制器：封装 MPV 实例的操作
+ */
 export class LibMPVController extends EventEmitter {
   private instanceId: number | null = null
   private hdrEnabled = true
@@ -104,8 +107,21 @@ export class LibMPVController extends EventEmitter {
     networkBufferingPercent: 0
   }
 
+  private get binding(): MPVBinding {
+    const binding = getMPVBinding()
+    if (!binding) {
+      throw new Error('libmpv native binding is not available. Please build the native module first.')
+    }
+    return binding
+  }
+
   constructor() {
     super()
+    
+    // 如果还未尝试加载，则先加载
+    if (!bindingLoadAttempted) {
+      loadMPVBinding()
+    }
     
     if (!mpvBinding) {
       throw new Error('libmpv native binding is not available. Please build the native module first.')
@@ -123,13 +139,13 @@ export class LibMPVController extends EventEmitter {
 
     try {
       // 创建实例（未初始化）
-      this.instanceId = mpvBinding!.create()
+      this.instanceId = this.binding.create()
       
       // 在初始化前设置选项
       // 注意：libmpv 默认已经设置了 no-terminal，不需要再设置
       try {
         // macOS: 使用 render API (vo=libmpv)
-        // Windows: 使用 wid 嵌入 (vo=gpu)
+        // Windows: 使用 wid 嵌入 (vo=gpu-next)
         if (process.platform === 'darwin') {
           await this.setOption('vo', 'libmpv')
           console.log('[libmpv] ✅ Set vo=libmpv for render API (macOS)')
@@ -140,7 +156,7 @@ export class LibMPVController extends EventEmitter {
           if (windowId !== undefined) {
             console.log('[libmpv] Setting wid to HWND:', windowId, '(0x' + windowId.toString(16) + ')')
             try {
-              const result = mpvBinding!.setWindowId(this.instanceId, windowId)
+              const result = this.binding.setWindowId(this.instanceId, windowId)
               if (result) {
                 console.log('[libmpv] ✅ Set wid before initialization (Windows)')
               } else {
@@ -162,14 +178,6 @@ export class LibMPVController extends EventEmitter {
       } catch (error) {
         // 忽略，可能不存在
       }
-      
-      // 启用 mpv 日志（verbose 级别，可以看到 letterbox 计算等详细信息）
-      // try {
-      //   await this.setOption('log-level', 'v')
-      //   console.log('[libmpv] ✅ Enabled mpv verbose logging')
-      // } catch (error) {
-      //   console.warn('[libmpv] Failed to set log-level:', error)
-      // }
       
       try {
         await this.setOption('no-osd-bar', true)
@@ -218,7 +226,7 @@ export class LibMPVController extends EventEmitter {
       }
 
       // 现在初始化（初始化后不能再设置 vo 和 wid）
-      mpvBinding!.initialize(this.instanceId)
+      this.binding.initialize(this.instanceId)
       
       try {
         await this.setProperty('keepaspect', true)
@@ -235,7 +243,7 @@ export class LibMPVController extends EventEmitter {
       }
 
       // 设置事件回调
-      mpvBinding!.setEventCallback(this.instanceId, (event: any) => {
+      this.binding.setEventCallback(this.instanceId, (event: any) => {
         this.handleEvent(event)
       })
       
@@ -256,17 +264,17 @@ export class LibMPVController extends EventEmitter {
     try {
       if (process.platform === 'darwin') {
         // macOS: 使用 render API，把 libmpv 绑定到 Electron 的 NSView 上
-        mpvBinding!.attachView(this.instanceId, windowId)
-        mpvBinding!.setHdrMode(this.instanceId, this.hdrEnabled)
+        this.binding.attachView(this.instanceId, windowId)
+        this.binding.setHdrMode(this.instanceId, this.hdrEnabled)
         // 默认启用 JavaScript 驱动渲染模式
-        mpvBinding!.setJsDrivenRenderMode(this.instanceId, true)
+        this.binding.setJsDrivenRenderMode(this.instanceId, true)
         console.log('[libmpv] ✅ Enabled JavaScript-driven render mode by default')
       } else if (process.platform === 'win32') {
         // Windows: 使用 wid 嵌入方式
         // 注意：wid 应该在初始化前设置，但如果已经在 initialize 中设置过，这里可以跳过
         // 或者如果初始化时没有设置，这里尝试设置（可能失败，取决于 mpv 版本）
         try {
-          mpvBinding!.setWindowId(this.instanceId, windowId)
+          this.binding.setWindowId(this.instanceId, windowId)
         } catch (error) {
           console.warn('[libmpv] Failed to set wid after initialization, may need to set before init:', error)
         }
@@ -312,7 +320,7 @@ export class LibMPVController extends EventEmitter {
       // macOS: Native 实现会自动触发渲染，并处理 letterbox
       // Windows: wid 模式下，需要确保 MPV 知道窗口大小变化
       if (process.platform === 'darwin') {
-        mpvBinding!.setWindowSize(this.instanceId, width, height)
+        this.binding.setWindowSize(this.instanceId, width, height)
       } else if (process.platform === 'win32') {
         console.log(`[libmpv] Setting window size: ${width}x${height}`)
         // Windows wid 模式下，MPV 会自动适应窗口大小
@@ -328,7 +336,7 @@ export class LibMPVController extends EventEmitter {
           console.warn('[libmpv] Failed to set window-scale:', error)
         }
         // 调用 native 的 setWindowSize（虽然 Windows 实现可能是空的，但保持接口一致）
-        mpvBinding!.setWindowSize(this.instanceId, width, height)
+        this.binding.setWindowSize(this.instanceId, width, height)
         console.log('[libmpv] Called native setWindowSize')
       }
     } catch (error) {
@@ -338,10 +346,10 @@ export class LibMPVController extends EventEmitter {
 
   setHdrEnabled(enabled: boolean): void {
     this.hdrEnabled = enabled
-    if (!mpvBinding || this.instanceId === null) return
+    if (this.instanceId === null) return
     // HDR 模式仅在 macOS 上支持（通过 render API）
     if (process.platform === 'darwin') {
-      mpvBinding.setHdrMode(this.instanceId, enabled)
+      this.binding.setHdrMode(this.instanceId, enabled)
     }
   }
 
@@ -350,9 +358,9 @@ export class LibMPVController extends EventEmitter {
    * @param enabled true = JavaScript 驱动模式，false = CVDisplayLink 驱动模式（默认）
    */
   setJsDrivenRenderMode(enabled: boolean): void {
-    if (!mpvBinding || this.instanceId === null) return
+    if (this.instanceId === null) return
     if (process.platform === 'darwin') {
-      mpvBinding.setJsDrivenRenderMode(this.instanceId, enabled)
+      this.binding.setJsDrivenRenderMode(this.instanceId, enabled)
     }
   }
 
@@ -360,9 +368,9 @@ export class LibMPVController extends EventEmitter {
    * 获取当前是否使用 JavaScript 驱动渲染模式
    */
   getJsDrivenRenderMode(): boolean {
-    if (!mpvBinding || this.instanceId === null) return false
+    if (this.instanceId === null) return false
     if (process.platform === 'darwin') {
-      return mpvBinding.getJsDrivenRenderMode(this.instanceId)
+      return this.binding.getJsDrivenRenderMode(this.instanceId)
     }
     return false
   }
@@ -371,9 +379,9 @@ export class LibMPVController extends EventEmitter {
    * 请求渲染（JavaScript 驱动模式下使用）
    */
   requestRender(): void {
-    if (!mpvBinding || this.instanceId === null) return
+    if (this.instanceId === null) return
     if (process.platform === 'darwin') {
-      mpvBinding.requestRender(this.instanceId)
+      this.binding.requestRender(this.instanceId)
     }
   }
 
@@ -407,7 +415,7 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      mpvBinding!.setOption(this.instanceId, name, value)
+      this.binding.setOption(this.instanceId, name, value)
     } catch (error) {
       throw new Error(`Failed to set option ${name}: ${error}`)
     }
@@ -422,7 +430,7 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      mpvBinding!.loadFile(this.instanceId, path)
+      this.binding.loadFile(this.instanceId, path)
       this.currentStatus.path = path
       this.currentStatus.position = 0
       this.currentStatus.duration = 0
@@ -443,7 +451,7 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      return mpvBinding!.getProperty(this.instanceId, name)
+      return this.binding.getProperty(this.instanceId, name)
     } catch (error) {
       console.warn(`Failed to get property ${name}:`, error)
       return null
@@ -527,7 +535,7 @@ export class LibMPVController extends EventEmitter {
       console.log(
         `[debug-hdr-status] dvProfile=${dvProfile ?? '(null)'} primaries=${primaries ?? '(null)'} gamma=${gamma ?? '(null)'}`
       )
-      mpvBinding!.debugHdrStatus(this.instanceId)
+      this.binding.debugHdrStatus(this.instanceId)
     } catch (error) {
       console.warn('[libmpv] Failed to debug HDR status:', error)
     }
@@ -542,7 +550,7 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      mpvBinding!.setProperty(this.instanceId, name, value)
+      this.binding.setProperty(this.instanceId, name, value)
     } catch (error) {
       throw new Error(`Failed to set property ${name}: ${error}`)
     }
@@ -572,7 +580,7 @@ export class LibMPVController extends EventEmitter {
     }
 
     try {
-      mpvBinding!.command(this.instanceId, args)
+      this.binding.command(this.instanceId, args)
     } catch (error) {
       throw new Error(`Command failed: ${error}`)
     }
@@ -587,7 +595,7 @@ export class LibMPVController extends EventEmitter {
     }
     try {
       // 使用命令而不是属性设置，响应更快，特别是对于高分辨率视频
-      mpvBinding!.command(this.instanceId, ['set', 'pause', 'yes'])
+      this.binding.command(this.instanceId, ['set', 'pause', 'yes'])
     } catch (error) {
       // 如果命令失败，回退到属性设置
       await this.setProperty('pause', true)
@@ -603,7 +611,7 @@ export class LibMPVController extends EventEmitter {
     }
     try {
       // 使用命令而不是属性设置，响应更快
-      mpvBinding!.command(this.instanceId, ['set', 'pause', 'no'])
+      this.binding.command(this.instanceId, ['set', 'pause', 'no'])
     } catch (error) {
       // 如果命令失败，回退到属性设置
       await this.setProperty('pause', false)
@@ -632,13 +640,11 @@ export class LibMPVController extends EventEmitter {
   }
 
   setForceBlackMode(enabled: boolean): void {
-    if (this.instanceId === null || !mpvBinding) {
-      return
-    }
+    if (this.instanceId === null) return
     try {
       // Force black mode 仅在 macOS 上支持（通过 render API）
       if (process.platform === 'darwin') {
-        mpvBinding.setForceBlackMode(this.instanceId, enabled)
+        this.binding.setForceBlackMode(this.instanceId, enabled)
       }
     } catch (error) {
     }
@@ -698,11 +704,6 @@ export class LibMPVController extends EventEmitter {
         }
 
         console.log(line)
-
-        // if (level === 'fatal' || level === 'error' || level === 'warn') {
-        //   this.lastMpvErrorLogLine = line
-        //   console.warn(line)
-        // }
         break
       }
       case MPV_EVENT_PROPERTY_CHANGE: {
@@ -835,16 +836,6 @@ export class LibMPVController extends EventEmitter {
     }
   }
 
-
-  private coerceNumber(value: unknown): number | null {
-    if (typeof value === 'number') return isFinite(value) ? value : null
-    if (typeof value === 'string') {
-      const n = Number(value)
-      return isFinite(n) ? n : null
-    }
-    return null
-  }
-
   /**
    * 清理资源
    */
@@ -852,7 +843,7 @@ export class LibMPVController extends EventEmitter {
     if (this.instanceId !== null) {
       try {
         // 通知 mpv 正常退出，释放所有资源和窗口
-        mpvBinding!.destroy(this.instanceId)
+        this.binding.destroy(this.instanceId)
       } catch (error) {
         console.error('Error destroying MPV instance:', error)
       }
@@ -861,11 +852,4 @@ export class LibMPVController extends EventEmitter {
 
     this.emit('destroyed')
   }
-}
-
-/**
- * 检查 native binding 是否可用
- */
-export function isLibMPVAvailable(): boolean {
-  return mpvBinding !== null
 }

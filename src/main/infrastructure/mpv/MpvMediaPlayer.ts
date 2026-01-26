@@ -1,7 +1,8 @@
 // src/main/infrastructure/mpv/MpvMediaPlayer.ts
 
 import { EventEmitter } from 'events'
-import { LibMPVController, isLibMPVAvailable, type MPVStatus } from './libmpv'
+import { LibMPVController, isLibMPVAvailable } from './LibMPVController'
+import type { MPVStatus } from './types'
 import type { MediaPlayer } from '../../application/core/MediaPlayer'
 import { Media } from '../../domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'

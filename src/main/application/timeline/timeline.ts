@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import type { MPVStatus } from '../../infrastructure/mpv/libmpv'
+import type { MPVStatus } from '../../infrastructure/mpv'
 import type { PlayerPhase } from '../state/playerState'
 
 type TimelinePayload = {

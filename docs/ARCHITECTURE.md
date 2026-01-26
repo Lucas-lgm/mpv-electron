@@ -189,7 +189,7 @@ setupIpcHandlers(videoPlayerApp, corePlayer)
 
 ### 3.1 MPVBinding 原生接口
 
-`MPVBinding` 接口是 TypeScript 层与 C++ 原生绑定之间的桥梁，定义在 `infrastructure/mpv/libmpv.ts`。
+`MPVBinding` 接口是 TypeScript 层与 C++ 原生绑定之间的桥梁，定义在 `infrastructure/mpv/types.ts`（内部接口，不导出）。
 
 ```typescript
 interface MPVBinding {
@@ -258,7 +258,7 @@ interface MPVBinding {
 
 ### 3.2 LibMPVController 控制器接口
 
-`LibMPVController` 类是业务逻辑层与原生绑定层之间的主要接口，继承自 `EventEmitter`，定义在 `infrastructure/mpv/libmpv.ts`。
+`LibMPVController` 类是业务逻辑层与原生绑定层之间的主要接口，继承自 `EventEmitter`，定义在 `infrastructure/mpv/LibMPVController.ts`。**命名说明**：虽从架构角度看它更像是基础设施层的"客户端"或"适配器"，但"Controller"在此上下文中合理（它确实在"控制"MPV实例），且已在代码库中广泛使用，故保留此命名。
 
 #### 核心方法说明
 
@@ -671,7 +671,7 @@ export class PlayerStateMachine extends EventEmitter {
 
 ### 4.1 MPVStatus 接口
 
-`MPVStatus` 接口表示 MPV 内部状态，定义在 `infrastructure/mpv/libmpv.ts`。
+`MPVStatus` 接口表示 MPV 内部状态，定义在 `infrastructure/mpv/types.ts`。
 
 ```typescript
 export interface MPVStatus {
@@ -907,7 +907,7 @@ ipcMain.on('play-video', async (event, file: { name: string; path: string }) => 
 | **渲染驱动** | JavaScript 驱动或 CVDisplayLink | MPV 内部驱动 | `infrastructure/rendering/renderManager.ts` |
 | **HDR支持** | 完整 EDR 支持 | 有限支持 | `native/mpv_render_gl.mm` |
 | **窗口句柄** | NSView 指针 | HWND | `infrastructure/platform/nativeHelper.ts` |
-| **初始化** | `vo=libmpv` | `vo=gpu-next` | `infrastructure/mpv/libmpv.ts` |
+| **初始化** | `vo=libmpv` | `vo=gpu-next` | `infrastructure/mpv/LibMPVController.ts` |
 | **控制层** | BrowserView | BrowserWindow | `application/videoPlayerApp.ts` |
 
 ### 6.2 平台检测与条件编译
@@ -966,7 +966,7 @@ export function getHWNDPointer(window: BrowserWindow): number | null {
 
 ### 6.4 渲染初始化差异
 
-**macOS 渲染初始化**（`infrastructure/mpv/libmpv.ts`）：
+**macOS 渲染初始化**（`infrastructure/mpv/LibMPVController.ts`）：
 ```typescript
 if (process.platform === 'darwin') {
   await this.setOption('vo', 'libmpv')
@@ -978,7 +978,7 @@ if (process.platform === 'darwin') {
 }
 ```
 
-**Windows 渲染初始化**（`infrastructure/mpv/libmpv.ts`）：
+**Windows 渲染初始化**（`infrastructure/mpv/LibMPVController.ts`）：
 ```typescript
 if (process.platform === 'win32') {
   await this.setOption('vo', 'gpu-next')
@@ -1681,7 +1681,7 @@ src/
 │   ├── domain/             # 领域模型
 │   │   └── models/         # Media, Playback, Playlist
 │   └── infrastructure/
-│       ├── mpv/            # libmpv, MpvAdapter, MpvMediaPlayer
+│       ├── mpv/            # MPVStatus.ts, MPVBinding.ts, LibMPVController.ts, libmpv.ts（native binding 加载）, MpvAdapter, MpvMediaPlayer
 │       ├── platform/       # nativeHelper（窗口句柄）
 │       └── rendering/      # renderManager
 ├── renderer/               # UI层 (Vue组件)
@@ -1803,7 +1803,7 @@ const MPV_END_FILE_REASON_REDIRECT = 5 // 重定向
 | `src/main/application/windows/windowManager.ts` | 窗口管理 | - |
 | `src/main/application/` | VideoPlayerApp、CorePlayer、bootstrap、ipcHandlers、state、timeline、windows、core | - |
 | `src/main/domain/models/` | Media、Playback、Playlist（领域模型） | - |
-| `src/main/infrastructure/mpv/` | libmpv、MpvAdapter、MpvMediaPlayer | - |
+| `src/main/infrastructure/mpv/` | types.ts（MPVBinding、MPVStatus 类型）、LibMPVController.ts（类，包含 native binding 加载）、MpvAdapter、MpvMediaPlayer | - |
 | `src/main/infrastructure/platform/` | nativeHelper（NSView/HWND 窗口句柄） | - |
 | `src/main/infrastructure/rendering/` | renderManager（渲染循环） | - |
 | `native/binding.cc` | C++ N-API 绑定 | - |
@@ -1945,7 +1945,7 @@ if (elapsed > 100) { // 超过100ms警告
 - **次版本号**：新增功能、接口变更
 - **修订号**：文档修正、格式调整
 
-当前版本：**1.14**
+当前版本：**1.15**
 
 ### 13.6 更新历史
 
@@ -1966,10 +1966,11 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-26 | 1.12 | 新增 **2.2.2 CorePlayer、ApplicationService、VideoPlayerApp 三者关系**：角色与依赖表、创建/注入顺序、典型调用链、小结 | - |
 | 2026-01-26 | 1.13 | **移除 ApplicationService**：播放控制（playMedia / pause / seek / setVolume / stop）内联到 VideoPlayerApp；删除 `ApplicationService`、`commands/`、`queries/`；ipcHandlers 路由到 VideoPlayerApp 或 CorePlayer；2.2.2 改为「CorePlayer 与 VideoPlayerApp 关系」；架构图、职责表、IPC 表、11.4、12.2 同步更新 | - |
 | 2026-01-26 | 1.14 | **IPC 层与 App 层边界优化**：ipcHandlers 移除业务逻辑（列表操作、状态判断、窗口操作）和状态（isFullscreen），只做路由、参数解析、调用 App 方法、event.reply；VideoPlayerApp 新增 `handlePlayVideo` / `handlePlayUrl` / `handleControlPlay` / `toggleFullscreen` / `windowAction` / `handleFileSelected` / `forwardVideoTimeUpdate` / `showControlBar` 等封装业务逻辑的方法；所有业务广播统一经 VideoPlayerApp，ipcHandlers 不再直接 `webContents.send`；更新 2.2.1 职责表 | - |
+| 2026-01-26 | 1.15 | **文件拆分：一个文件一个类**：`libmpv.ts` 拆分为 `MPVStatus.ts`（接口）、`MPVBinding.ts`（接口）、`LibMPVController.ts`（类）、`libmpv.ts`（native binding 加载与 `getMPVBinding` / `isLibMPVAvailable`）；`libmpv.ts` 重新导出以保持向后兼容；关于命名：`LibMPVController` 保留（虽从架构看更像"客户端"，但"Controller"在此上下文中合理，且已广泛使用）；更新 12.2 | - |
 
 ---
 
-**文档版本**: 1.14  
+**文档版本**: 1.15  
 **最后更新**: 2026年1月26日  
 **维护者**: 架构文档维护小组  
 **更新策略**: 代码变更时**同一轮工作内**同步更新，实时维护、不依赖用户提醒，详见第13章  

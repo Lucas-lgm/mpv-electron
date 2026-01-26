@@ -1,6 +1,6 @@
 // src/main/infrastructure/mpv/MpvAdapter.ts
 
-import type { MPVStatus } from './libmpv'
+import type { MPVStatus } from './types'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 import type { Media } from '../../domain/models/Media'
 import type { PlayerPhase } from '../../application/state/playerStateTypes'
