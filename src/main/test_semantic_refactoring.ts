@@ -77,12 +77,9 @@ export async function testDomainModels(): Promise<void> {
   console.log(`   ✅ MPV phase → PlaybackStatus: ${mpvStatus.phase} → ${adaptedSession.status}`)
   console.log(`   ✅ 进度转换: ${adaptedSession.progress.percentage.toFixed(1)}%`)
 
-  // 测试 PlayerStateAdapter + PlayerStateMachine（阶段 5）
-  console.log('\n5️⃣ 测试 PlayerStateAdapter + PlayerStateMachine')
-  const { toPlayerState } = await import('./adapters/PlayerStateAdapter')
+  // 测试 PlayerStateMachine（session → getState）
+  console.log('\n5️⃣ 测试 PlayerStateMachine')
   const { PlayerStateMachine } = await import('./playerState')
-  const ps = toPlayerState(adaptedSession, { isCoreIdle: true, isIdleActive: false })
-  console.log(`   ✅ PlaybackSession → PlayerState: phase=${ps.phase} path=${ps.path} isCoreIdle=${ps.isCoreIdle}`)
   const sm = new PlayerStateMachine()
   sm.updateFromStatus({
     ...mpvStatus,
@@ -90,7 +87,7 @@ export async function testDomainModels(): Promise<void> {
     isIdleActive: true
   })
   const state = sm.getState()
-  console.log(`   ✅ updateFromStatus → getState: phase=${state.phase} isCoreIdle=${state.isCoreIdle} isIdleActive=${state.isIdleActive}`)
+  console.log(`   ✅ updateFromStatus → getState: phase=${state.phase} path=${state.path} isCoreIdle=${state.isCoreIdle}`)
   let emitted = false
   sm.on('state', () => { emitted = true })
   sm.setPhase('paused')

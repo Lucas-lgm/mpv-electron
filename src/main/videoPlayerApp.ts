@@ -4,10 +4,23 @@ import { join } from 'path'
 import { WindowManager } from './windowManager'
 import { corePlayer } from './corePlayer'
 import { setupIpcHandlers } from './ipcHandlers'
-import { PlaylistAdapter, type PlaylistItem } from './adapters/PlaylistAdapter'
 import { ApplicationService } from './application/ApplicationService'
+import { Playlist } from './domain/models/Playlist'
+import { Media } from './domain/models/Media'
 
-export type { PlaylistItem }
+export interface PlaylistItem {
+  path: string
+  name: string
+}
+
+export interface PlaylistFacade {
+  getList(): PlaylistItem[]
+  setList(items: PlaylistItem[]): void
+  setCurrentByPath(path: string): void
+  getCurrent(): PlaylistItem | null
+  next(): PlaylistItem | null
+  prev(): PlaylistItem | null
+}
 
 class ConfigManager {
   private volume: number = 100
@@ -73,9 +86,10 @@ class ConfigManager {
 
 export class VideoPlayerApp {
   readonly windowManager: WindowManager
-  readonly playlist: PlaylistAdapter
+  readonly playlist: PlaylistFacade
   readonly config: ConfigManager
   readonly appService: ApplicationService
+  private readonly _playlist = new Playlist()
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false
@@ -83,12 +97,38 @@ export class VideoPlayerApp {
 
   constructor() {
     this.windowManager = new WindowManager()
-    this.playlist = new PlaylistAdapter()
     this.config = new ConfigManager()
     this.appService = new ApplicationService(
       corePlayer.getMediaPlayer(),
-      this.playlist.getPlaylist()
+      this._playlist
     )
+    this.playlist = {
+      getList: () =>
+        this._playlist.getAll().map((e) => ({
+          path: e.media.uri,
+          name: e.media.displayName
+        })),
+      setList: (items: PlaylistItem[]) => {
+        this._playlist.clear()
+        for (const it of items) {
+          this._playlist.add(Media.create(it.path, { title: it.name }))
+        }
+        if (items.length > 0) this._playlist.setCurrentByIndex(0)
+      },
+      setCurrentByPath: (path: string) => this._playlist.setCurrentByUri(path),
+      getCurrent: () => {
+        const cur = this._playlist.getCurrent()
+        return cur ? { path: cur.media.uri, name: cur.media.displayName } : null
+      },
+      next: () => {
+        const n = this._playlist.next()
+        return n ? { path: n.media.uri, name: n.media.displayName } : null
+      },
+      prev: () => {
+        const p = this._playlist.previous()
+        return p ? { path: p.media.uri, name: p.media.displayName } : null
+      }
+    }
     corePlayer.onPlayerState((state) => {
       if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
     })

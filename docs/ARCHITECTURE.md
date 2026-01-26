@@ -685,7 +685,7 @@ export type PlayerPhase =
 
 ### 4.4 PlaylistItem 接口
 
-`PlaylistItem` 接口表示播放列表项，定义在 `videoPlayerApp.ts:8-11`。
+`PlaylistItem` 接口表示播放列表项，定义在 `videoPlayerApp.ts`。
 
 ```typescript
 export interface PlaylistItem {
@@ -693,6 +693,19 @@ export interface PlaylistItem {
   name: string  // 显示名称
 }
 ```
+
+### 4.5 领域模型与应用层（语义化重构）
+
+主进程业务逻辑已引入领域模型与应用服务，结构如下：
+
+| 层次 | 组件 | 职责 |
+|------|------|------|
+| **领域模型** | `Media`, `PlaybackSession`, `Playlist` | 业务实体与状态 |
+| **应用服务** | `ApplicationService` | 命令/查询协调（`playMedia`, `pausePlayback`, `seek`, `getPlaylist` 等） |
+| **基础设施** | `MpvAdapter`, `MpvMediaPlayer` | MPV 状态→领域模型、播放器实现 |
+| **表现** | `PlayerStateMachine`, `videoPlayerApp.playlist` | 对内使用 `PlaybackSession`/`Playlist`，对外仍暴露 `PlayerState`、`PlaylistItem`（`sessionToPlayerState`、`PlaylistFacade` 内联，无独立适配器模块） |
+
+IPC 层部分通道已走 `ApplicationService`（如 `control-pause`、`control-seek`、`get-playlist`）；窗口管理与播放列表设置等仍经 `videoPlayerApp`。
 
 ## 5. IPC通信设计
 

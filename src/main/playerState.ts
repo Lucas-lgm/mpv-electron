@@ -3,8 +3,7 @@ import type { MPVStatus } from './libmpv'
 import { Media } from './domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from './domain/models/Playback'
 import { MpvAdapter } from './infrastructure/mpv/MpvAdapter'
-import { toPlayerState, phaseToStatus } from './adapters/PlayerStateAdapter'
-import type { PlayerPhase } from './playerStateTypes'
+import type { PlayerPhase, PlayerState } from './playerStateTypes'
 
 export type { PlayerState, PlayerPhase } from './playerStateTypes'
 
@@ -12,6 +11,30 @@ type InternalState = {
   session: PlaybackSession
   isCoreIdle: boolean
   isIdleActive: boolean
+}
+
+function sessionToPlayerState(
+  session: PlaybackSession,
+  extras: { isCoreIdle: boolean; isIdleActive: boolean }
+): PlayerState {
+  const phase = session.status as unknown as PlayerPhase
+  return {
+    phase,
+    currentTime: session.progress.currentTime,
+    duration: session.progress.duration,
+    volume: session.volume,
+    path: session.media?.uri ?? null,
+    error: session.error,
+    isSeeking: session.isSeeking,
+    isCoreIdle: extras.isCoreIdle,
+    isIdleActive: extras.isIdleActive,
+    isNetworkBuffering: session.networkBuffering.isBuffering,
+    networkBufferingPercent: session.networkBuffering.bufferingPercent
+  }
+}
+
+function phaseToStatus(p: PlayerPhase): PlaybackStatus {
+  return p as unknown as PlaybackStatus
 }
 
 const defaultSession = (): PlaybackSession =>
@@ -31,7 +54,7 @@ export class PlayerStateMachine extends EventEmitter {
   }
 
   getState() {
-    return toPlayerState(this.state.session, {
+    return sessionToPlayerState(this.state.session, {
       isCoreIdle: this.state.isCoreIdle,
       isIdleActive: this.state.isIdleActive
     })
@@ -87,11 +110,11 @@ export class PlayerStateMachine extends EventEmitter {
   private setState(next: InternalState): void {
     const prev = this.state
     this.state = next
-    const prevPs = toPlayerState(prev.session, {
+    const prevPs = sessionToPlayerState(prev.session, {
       isCoreIdle: prev.isCoreIdle,
       isIdleActive: prev.isIdleActive
     })
-    const nextPs = toPlayerState(next.session, {
+    const nextPs = sessionToPlayerState(next.session, {
       isCoreIdle: next.isCoreIdle,
       isIdleActive: next.isIdleActive
     })

@@ -786,15 +786,15 @@ export class MpvAdapter {
 ### 阶段 7：清理和优化
 
 #### 步骤 7.1: 移除旧代码
-- [ ] 确认所有功能已迁移
-- [ ] **移除阶段 5–6 引入的过渡性适配层**（如 PlayerState↔PlaybackSession、PlaylistManager↔Playlist 等），表现层改为直接使用领域模型/DTO
-- [ ] 移除未使用的旧代码
-- [ ] 更新导入路径
+- [x] 确认所有功能已迁移
+- [x] **移除阶段 5–6 引入的过渡性适配层**：删除 `adapters/PlayerStateAdapter`、`adapters/PlaylistAdapter`；`sessionToPlayerState`/`phaseToStatus` 内联至 `playerState.ts`，播放列表逻辑以 `PlaylistFacade` 形式内联至 `videoPlayerApp`
+- [x] 移除未使用的旧代码、空 `adapters/` 目录
+- [x] 更新导入路径
 
 #### 步骤 7.2: 文档更新
-- [ ] 更新代码注释
-- [ ] 更新架构文档
-- [ ] 更新 README（如果需要）
+- [ ] 更新代码注释（如需要）
+- [x] 更新架构文档（4.4 PlaylistItem、4.5 领域模型与应用层）
+- [ ] 更新 README（如需要）
 
 **预期结果**: 代码清理完成，文档更新
 
