@@ -768,15 +768,20 @@ export class MpvAdapter {
 ### 阶段 6：重构 IPC 层
 
 #### 步骤 6.1: 重构 IPC Handlers
-- [ ] 修改 `ipcHandlers.ts` 使用命令/查询模式
-- [ ] 使用 `ApplicationService` 处理请求
-- [ ] 保持 IPC 消息格式兼容（如果需要）
+- [x] 修改 `ipcHandlers.ts` 使用命令/查询模式
+- [x] 使用 `ApplicationService` 处理请求（pause/resume/stop/seek/volume/get-playlist）
+- [x] 保持 IPC 消息格式兼容（窗口管理和播放列表管理保留现有逻辑）
 
 #### 步骤 6.2: 测试 IPC 通信
 - [ ] 测试所有 IPC 消息
 - [ ] 确保 UI 正常工作
 
 **预期结果**: IPC 层使用新架构，功能正常
+
+**说明**: 
+- 播放控制类 IPC（pause/resume/stop/seek/volume）已迁移到 `ApplicationService`
+- `get-playlist` 已使用 `appService.getPlaylist()` 查询
+- `play-video`、`play-url`、`set-playlist` 等涉及窗口管理或复杂播放列表逻辑的保留现有实现（通过 `videoPlayerApp` 方法）
 
 ### 阶段 7：清理和优化
 

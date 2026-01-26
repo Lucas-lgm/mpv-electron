@@ -75,7 +75,7 @@ export class VideoPlayerApp {
   readonly windowManager: WindowManager
   readonly playlist: PlaylistAdapter
   readonly config: ConfigManager
-  private readonly appService: ApplicationService
+  readonly appService: ApplicationService
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false

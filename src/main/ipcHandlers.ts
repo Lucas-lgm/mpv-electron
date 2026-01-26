@@ -50,18 +50,22 @@ export function setupIpcHandlers() {
   })
 
   ipcMain.on('get-playlist', (event) => {
-    const items = videoPlayerApp.playlist.getList()
+    const result = videoPlayerApp.appService.getPlaylist({})
+    const items = result.entries.map(e => ({
+      path: e.media.uri,
+      name: e.media.displayName
+    }))
     event.reply('playlist-updated', items)
   })
 
   // 处理播放控制 - 暂停
   ipcMain.on('control-pause', async () => {
-    await videoPlayerApp.pause()
+    await videoPlayerApp.appService.pausePlayback({})
   })
 
   // 处理播放控制 - 播放
   ipcMain.on('control-play', async () => {
-    await videoPlayerApp.resume()
+    await videoPlayerApp.appService.resumePlayback({})
   })
 
   // 处理 URL 播放
@@ -74,17 +78,18 @@ export function setupIpcHandlers() {
   })
 
   ipcMain.on('control-stop', async () => {
-    await videoPlayerApp.stop()
+    await videoPlayerApp.appService.stopPlayback({})
   })
 
   // 处理播放控制 - 跳转
   ipcMain.on('control-seek', async (_event, time: number) => {
-    await videoPlayerApp.seek(time)
+    await videoPlayerApp.appService.seek({ time })
   })
 
   // 处理音量控制
   ipcMain.on('control-volume', async (_event, volume: number) => {
-    await videoPlayerApp.setVolume(volume)
+    await videoPlayerApp.appService.setVolume({ volume })
+    videoPlayerApp.config.setVolume(volume)
   })
 
   ipcMain.on('control-hdr', async (_event, enabled: boolean) => {
