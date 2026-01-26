@@ -15,6 +15,19 @@ export interface PlayMediaCommand {
     duration?: number
     format?: string
   }
+  /**
+   * 播放选项
+   */
+  readonly options?: {
+    /**
+     * 音量（0-100），如果提供则设置音量
+     */
+    volume?: number
+    /**
+     * 是否自动恢复播放（默认 true）
+     */
+    autoResume?: boolean
+  }
 }
 
 /**
@@ -38,5 +51,21 @@ export class PlayMediaCommandHandler {
     
     // 播放
     await this.player.play(media)
+    
+    // 处理播放选项
+    if (command.options) {
+      // 设置音量
+      if (command.options.volume !== undefined) {
+        await this.player.setVolume(command.options.volume)
+      }
+      
+      // 自动恢复播放
+      if (command.options.autoResume !== false) {
+        const session = this.player.getCurrentSession()
+        if (session && session.status !== 'playing') {
+          await this.player.resume()
+        }
+      }
+    }
   }
 }

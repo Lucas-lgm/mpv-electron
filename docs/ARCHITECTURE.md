@@ -1624,7 +1624,7 @@ native/                     # 原生绑定层
 └── binding.gyp            # 构建配置
 ```
 
-**主进程优化要点**：`ipcHandlers` 仅依赖 `videoPlayerApp`、`corePlayer`，不再依赖 `main`，避免循环依赖。播放触发统一通过 `videoPlayerApp.play()`（原 `playbackController` 已内联）。`VideoPlayerApp` 提供 `getControlWindow()`、`getControlView()` 供 IPC 使用，无需 `as any`。`corePlayer` 仅导出单例，不再导出冗余自由函数。播放控制（pause/stop/seek/volume）由 IPC 直接调 `videoPlayerApp.appService`；`control-play` 在 `ended`/`stopped` 时播当前列表项，否则 `resumePlayback`。`VideoPlayerApp` 已删除 pause/resume/stop/seek/setVolume 包装方法。
+**主进程优化要点**：`ipcHandlers` 仅依赖 `videoPlayerApp`、`corePlayer`，不再依赖 `main`，避免循环依赖。播放触发统一通过 `videoPlayerApp.play()`（原 `playbackController` 已内联）。`VideoPlayerApp` 提供 `getControlWindow()`、`getControlView()` 供 IPC 使用，无需 `as any`。`corePlayer` 仅导出单例，不再导出冗余自由函数。播放控制（pause/stop/seek/volume）由 IPC 直接调 `videoPlayerApp.appService`；`control-play` 在 `ended`/`stopped` 时播当前列表项，否则 `resumePlayback`。`VideoPlayerApp` 已删除 pause/resume/stop/seek/setVolume 包装方法。**阶段 2 完成**：`videoPlayerApp.play()` 统一通过 `appService.playMedia()`，窗口创建和广播保留在 `VideoPlayerApp`（UI 层），播放逻辑（play、setVolume、resume）统一在 `ApplicationService` 中处理。
 
 ### 11.4 测试策略
 
@@ -1866,7 +1866,7 @@ if (elapsed > 100) { // 超过100ms警告
 - **次版本号**：新增功能、接口变更
 - **修订号**：文档修正、格式调整
 
-当前版本：**1.2**
+当前版本：**1.3**
 
 ### 13.6 更新历史
 
@@ -1875,10 +1875,11 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-25 | 1.0 | 初始版本，建立文档更新机制 | - |
 | 2026-01-25 | 1.1 | 主进程优化：移除 playbackController、corePlayer 自由函数；ipcHandlers 去 main 依赖；VideoPlayerApp 暴露 getControlWindow/getControlView；更新 11.3/12.2 | - |
 | 2026-01-25 | 1.2 | VideoPlayerApp 与 ApplicationService 去重：删除 pause/resume/stop/seek/setVolume 包装；control-play 在 ended/stopped 时播当前项；更新 11.3、VIDEOPLAYERAPP_REFACTORING 执行记录 | - |
+| 2026-01-25 | 1.3 | 统一播放入口：videoPlayerApp.play() 通过 appService.playMedia()；扩展 PlayMediaCommand 支持音量/自动恢复选项；播放逻辑统一在 ApplicationService 中处理 | - |
 
 ---
 
-**文档版本**: 1.2  
+**文档版本**: 1.3  
 **最后更新**: 2026年1月25日  
 **维护者**: 架构文档维护小组  
 **更新策略**: 代码变更时**同一轮工作内**同步更新，实时维护、不依赖用户提醒，详见第13章  

@@ -241,6 +241,15 @@ ipcMain.on('play-video', async (event, file) => {
 - 删除 `VideoPlayerApp` 的 `pause`、`resume`、`stop`、`seek`、`setVolume` 包装方法；IPC 已直接调用 `appService`。
 - `control-play` 逻辑：`ended`/`stopped` 时调用 `videoPlayerApp.playCurrentFromPlaylist()`，否则 `appService.resumePlayback({})`。
 
-### 阶段 2（待办）
+### 阶段 2（已完成）
 
-- 将 `play()` 统一走 `ApplicationService`（含 WindowCoordinator / 窗口创建协调）。
+- ✅ 扩展 `PlayMediaCommand` 支持 `options`（音量、自动恢复）
+- ✅ 修改 `PlayMediaCommandHandler` 处理播放选项（设置音量、自动恢复）
+- ✅ 重构 `videoPlayerApp.play()`：保留窗口创建和广播（UI 层），播放逻辑通过 `appService.playMedia()`
+- ✅ 统一调用路径：所有播放控制都通过 `ApplicationService`
+
+**结果**：
+- `videoPlayerApp.play()` 现在通过 `appService.playMedia()` 调用
+- 窗口创建和广播消息保留在 `VideoPlayerApp`（UI 层职责）
+- 播放逻辑（play、setVolume、resume）统一在 `ApplicationService` 中处理
+- 架构统一：所有业务逻辑都走 `ApplicationService`

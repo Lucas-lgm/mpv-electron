@@ -141,6 +141,7 @@ export class VideoPlayerApp {
   }
 
   async play(target: PlaylistItem) {
+    // UI 层职责：窗口管理
     const mainWindow = this.windowManager.getWindow('main')
     if (mainWindow && mainWindow.isVisible()) {
       mainWindow.hide()
@@ -166,24 +167,31 @@ export class VideoPlayerApp {
 
     corePlayer.setVideoWindow(videoWindow)
 
+    // UI 层职责：广播消息
     corePlayer.broadcastToPlaybackUIs('play-video', {
       name: target.name,
       path: target.path
     })
 
+    // 业务逻辑层：通过 ApplicationService 播放
     try {
-      await corePlayer.play(target.path)
-      const volume = this.config.getVolume()
-      await corePlayer.setVolume(volume)
-      await corePlayer.resume()
+      await this.appService.playMedia({
+        mediaUri: target.path,
+        mediaName: target.name,
+        options: {
+          volume: this.config.getVolume(),
+          autoResume: true
+        }
+      })
+
+      // UI 层职责：播放成功后的广播
       const isEmbedded = corePlayer.isUsingEmbeddedMode()
-      // 发送到视频窗口和控制窗口
       corePlayer.broadcastToPlaybackUIs('player-embedded', {
         embedded: isEmbedded,
         mode: isEmbedded ? 'native' : 'ipc'
       })
     } catch (error) {
-      // 发送错误消息到所有窗口
+      // UI 层职责：错误处理和广播
       corePlayer.broadcastToPlaybackUIs('player-error', {
         message: error instanceof Error ? error.message : 'Unknown error'
       })
