@@ -1,4 +1,5 @@
 import { BrowserWindow, BrowserView, screen } from 'electron'
+import { EventEmitter } from 'events'
 import { PlayerStateMachine, type PlayerState, type PlayerPhase } from '../state/playerState'
 import type { MPVStatus } from '../../infrastructure/mpv/libmpv'
 import { LibMPVController, isLibMPVAvailable } from '../../infrastructure/mpv/libmpv'
@@ -9,7 +10,7 @@ import { MpvMediaPlayer } from '../../infrastructure/mpv/MpvMediaPlayer'
 import { Media } from '../../domain/models/Media'
 import type { MediaPlayer } from './MediaPlayer'
 
-export interface CorePlayer {
+export interface CorePlayer extends EventEmitter {
   setVideoWindow(window: BrowserWindow | null): Promise<void>
   /** 在 playMedia 前调用：初始化 controller、挂载窗口、setExternalController，供 RenderManager / Timeline 使用 */
   ensureControllerReadyForPlayback(): Promise<void>
@@ -26,7 +27,6 @@ export interface CorePlayer {
   getPlayerState(): PlayerState
   onPlayerState(listener: (state: PlayerState) => void): void
   offPlayerState(listener: (state: PlayerState) => void): void
-  broadcastToPlaybackUIs(channel: string, payload?: any): void
   sendKey(key: string): Promise<void>
   debugVideoState(): Promise<void>
   debugHdrStatus(): Promise<void>
@@ -34,7 +34,7 @@ export interface CorePlayer {
   getMediaPlayer(): MediaPlayer
 }
 
-class CorePlayerImpl implements CorePlayer {
+class CorePlayerImpl extends EventEmitter implements CorePlayer {
   private controller: LibMPVController | null = null
   private videoWindow: BrowserWindow | null = null
   private useLibMPV: boolean = false
@@ -52,6 +52,7 @@ class CorePlayerImpl implements CorePlayer {
   private readonly mediaPlayer = new MpvMediaPlayer()
 
   constructor() {
+    super()
     if (isLibMPVAvailable()) {
       this.controller = new LibMPVController()
       this.initPromise = this.controller.initialize().catch(() => {
@@ -63,7 +64,7 @@ class CorePlayerImpl implements CorePlayer {
       interval: 100,
       getStatus: () => this.getStatus(),
       send: (payload) => {
-        this.sendToPlaybackUIs('video-time-update', payload)
+        this.emit('video-time-update', payload)
       }
     })
     
@@ -329,7 +330,7 @@ class CorePlayerImpl implements CorePlayer {
         this.renderManager?.markSeekComplete()
       }
       
-      this.sendToPlaybackUIs('player-state', this.getPlayerState())
+      this.emit('player-state', this.getPlayerState())
     })
     
     // 监听视频帧率变化，动态调整渲染间隔
@@ -384,7 +385,7 @@ class CorePlayerImpl implements CorePlayer {
     if (status) {
       this.updateFromMPVStatus(status as MPVStatus)
       await this.timeline?.broadcastTimeline({ currentTime: time, duration: status.duration })
-      this.sendToPlaybackUIs('player-state', this.getPlayerState())
+      this.emit('player-state', this.getPlayerState())
     }
   }
 
@@ -450,27 +451,6 @@ class CorePlayerImpl implements CorePlayer {
     this.stateMachine.off('state', listener)
   }
 
-  private sendToPlaybackUIs(channel: string, payload?: any) {
-    // 发送到视频窗口
-    const vw = this.videoWindow
-    if (vw && !vw.isDestroyed()) {
-      vw.webContents.send(channel, payload)
-    }
-    // 发送到控制窗口（双窗口模式）
-    const cw = this.controlWindow
-    if (cw && !cw.isDestroyed()) {
-      cw.webContents.send(channel, payload)
-    }
-    // 发送到控制视图（BrowserView，向后兼容）
-    const cv = this.controlView
-    if (cv && !cv.webContents.isDestroyed()) {
-      cv.webContents.send(channel, payload)
-    }
-  }
-
-  broadcastToPlaybackUIs(channel: string, payload?: any) {
-    this.sendToPlaybackUIs(channel, payload)
-  }
 
   async sendKey(key: string): Promise<void> {
     if (!this.controller) {

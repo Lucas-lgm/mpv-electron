@@ -106,16 +106,16 @@ graph TB
 
 | 组件 | 职责 | 不负责 |
 |------|------|--------|
-| **VideoPlayerApp** | 应用入口；窗口管理（主窗口/视频窗口/控制栏的创建、显示、隐藏、同步）；播放列表的 **UI 层** facade（`getList` / `setList` / `setCurrentByPath` / `getCurrent` / `next` / `prev`）；**播放入口** `play(target)`：创建视频窗口 → `setVideoWindow` → `ensureControllerReadyForPlayback` → 广播 `play-video` → `appService.playMedia` → 广播 `player-embedded` / `player-error`；`playCurrentFromPlaylist` / `playNext` / `playPrev`；**ended 时自动播放下一首**（监听 `corePlayer` state，`phase === 'ended'` 时 `playNextFromPlaylist`）；**列表变更广播** `broadcastPlaylistUpdated()`（`corePlayer.broadcastToPlaybackUIs('playlist-updated', getList())`，供 ipcHandlers 在 play-video / play-url / set-playlist 后触发）；HDR 开关 `setHdrEnabled`；配置（音量持久化）；`sendKey` 转调 `corePlayer`；暴露 `getControlWindow` / `getControlView` 供 IPC 使用。 | 不直接操作 MPV；不实现暂停/恢复/停止/跳转/音量（委托 `appService`）。 |
+| **VideoPlayerApp** | 应用入口；窗口管理（主窗口/视频窗口/控制栏的创建、显示、隐藏、同步）；播放列表的 **UI 层** facade（`getList` / `setList` / `setCurrentByPath` / `getCurrent` / `next` / `prev`）；**播放入口** `play(target)`：创建视频窗口 → `setVideoWindow` → `ensureControllerReadyForPlayback` → **私有** `sendToPlaybackUIs('play-video', …)` → `appService.playMedia` → `sendToPlaybackUIs('player-embedded'|'player-error', …)`；`playCurrentFromPlaylist` / `playNext` / `playPrev`；**ended 时自动播放下一首**（监听 `corePlayer.onPlayerState`）；**列表变更广播** `broadcastPlaylistUpdated()`（内部 `sendToPlaybackUIs('playlist-updated', getList())`，ipcHandlers 仅触发）；**监听 CorePlayer 事件**（`video-time-update`、`player-state`）并转发到播放 UI；HDR、配置、`sendKey` 转调 `corePlayer`；暴露 `getControlWindow` / `getControlView`。**向播放 UI 的广播**（play-video、player-embedded、player-error、playlist-updated、video-time-update、player-state）由 VideoPlayerApp **统一** 经 `sendToPlaybackUIs` 完成。 | 不直接操作 MPV；不实现暂停/恢复/停止/跳转/音量（委托 `appService`）。 |
 | **ApplicationService** | 命令/查询协调。**命令**：`playMedia`、`pausePlayback`、`resumePlayback`、`seek`、`setVolume`、`stopPlayback`。**查询**：`getPlaylist`、`getPlaybackStatus`。委托 `MediaPlayer` + `Playlist` 执行，不关心窗口、渲染、IPC 广播。**依赖**：不依赖 `CorePlayer` 类型；`MediaPlayer` 与 `Playlist` 由 **VideoPlayerApp** 注入（当前从 `corePlayer.getMediaPlayer()` 与 `videoPlayerApp.playlist` 传入）。 | 不管理窗口；不负责 `ensureControllerReadyForPlayback` 或渲染；不持久化配置。 |
-| **CorePlayer** | 播放基础设施与 **MPV 桥接**。`setVideoWindow`：保存视频窗口引用，并为 `MpvMediaPlayer` 设置 `windowId`。`ensureControllerReadyForPlayback`：在 `playMedia` 前调用；通过 **私有** `prepareControllerForPlayback` 完成 controller 创建、初始化、`setWindowId`、`setExternalController`、`syncWindowSize`、`setupResizeHandler`、`setupEventHandlers`，供 RenderManager / Timeline 使用。`play(filePath)`：复用 `prepareControllerForPlayback`，然后 `mediaPlayer.play(Media.create(filePath))`（保留用于直接播放入径）。暂停/恢复/停止/跳转/音量委托 `mediaPlayer`，部分经 `controller` 同步状态。维护 `PlayerStateMachine`、`Timeline`、`RenderManager`；向播放 UI 广播 `player-state`、`video-time-update`；`broadcastToPlaybackUIs` 供 VideoPlayerApp（如 `broadcastPlaylistUpdated`、`play` 内广播）等向播放 UI 发送消息。 | 不管理播放列表；不实现「播放入口」业务流程（由 VideoPlayerApp 编排）。 |
+| **CorePlayer** | 播放基础设施与 **MPV 桥接**。继承 `EventEmitter`，通过**事件**通知状态变化。`setVideoWindow`：保存视频窗口引用，并为 `MpvMediaPlayer` 设置 `windowId`。`ensureControllerReadyForPlayback`：在 `playMedia` 前调用；通过 **私有** `prepareControllerForPlayback` 完成 controller 创建、初始化、`setWindowId`、`setExternalController`、`syncWindowSize`、`setupResizeHandler`、`setupEventHandlers`，供 RenderManager / Timeline 使用。`play(filePath)`：复用 `prepareControllerForPlayback`，然后 `mediaPlayer.play(Media.create(filePath))`（保留用于直接播放入径）。暂停/恢复/停止/跳转/音量委托 `mediaPlayer`，部分经 `controller` 同步状态。维护 `PlayerStateMachine`、`Timeline`、`RenderManager`；**发出事件** `video-time-update`（Timeline 驱动）、`player-state`（状态机驱动），由 VideoPlayerApp 监听并转发到播放 UI。**不** 直接发送 IPC；应用层广播归 VideoPlayerApp。 | 不管理播放列表；不实现「播放入口」业务流程；不发送 IPC。 |
 | **prepareControllerForPlayback**（CorePlayer 私有） | 获取 `videoWindow` 的 windowId；创建/初始化 `LibMPVController`；`setWindowId`；`renderManager.setController`；`syncWindowSize`、`setupResizeHandler`、`setupEventHandlers`；`mediaPlayer.setExternalController(controller, windowId)`。返回 `windowId`，失败返回 `undefined`。**与 `play()` 共用**，避免重复。 | 不执行 `mediaPlayer.play`；不涉及播放列表或 IPC。 |
 | **ipcHandlers** | **IPC 协议适配与薄编排**：注册通道；收发格式、`event.reply`、转发；按通道**路由**到 VideoPlayerApp / ApplicationService / CorePlayer，可协调多步调用顺序，**不实现领域业务逻辑**。**路由**：`play-video`、`play-url`、`set-playlist`、`play-playlist-current`、`play-playlist-next`、`play-playlist-prev` → VideoPlayerApp；`control-pause`、`control-stop`、`control-seek`、`control-volume`、`get-playlist` → ApplicationService（或经 `videoPlayerApp.appService`）；`control-play` → ended/stopped 时 `playCurrentFromPlaylist`，否则 `resumePlayback`；`control-hdr`、`control-toggle-fullscreen`、`control-window-action`、`control-keypress`、`control-bar-mouse-move`、`control-bar-mouse-leave` → VideoPlayerApp 或 CorePlayer。**编排示例**：`control-volume` 同时调 `appService.setVolume` 与 `config.setVolume`（持久化）；play-video / play-url / set-playlist 后调 `videoPlayerApp.broadcastPlaylistUpdated()`（**广播归属 VideoPlayerApp**，ipcHandlers 仅触发）。依赖 `videoPlayerApp`、`corePlayer`，不依赖 `main`。 | 不实现领域业务逻辑；不创建窗口；不**实现**广播（只触发 VideoPlayerApp 的 `broadcastPlaylistUpdated`）。 |
 | **PlayMediaCommand** | 定义 `mediaUri`、`mediaName`、`options`（`volume`、`autoResume`、`addToPlaylist`）。Handler 根据 `addToPlaylist` 决定是否加入列表并设当前项；调用 `player.play(media)`；再应用音量、自动恢复。 | 不负责 controller 初始化、窗口、渲染、IPC 广播。 |
 | **MpvMediaPlayer** | 实现领域 `MediaPlayer`。**外部 controller 路径**：`setExternalController(controller, windowId)` 时使用 CorePlayer 的 controller，不自建；**自建 controller 路径**：仅在未 `setExternalController` 时 `ensureInitialized` 内创建。加载、播放、暂停、恢复、停止、跳转、音量、`getCurrentSession` 等。MPV 状态 → `PlaybackSession` 适配。 | 不管理窗口、不驱动渲染循环；渲染与 Timeline 由 CorePlayer 侧 controller 提供。 |
 | **PlayerStateMachine** | 维护 `PlayerPhase`、`isSeeking`、`isNetworkBuffering` 等；从 MPV 状态推导 phase；发出 `state` 事件驱动 Timeline、RenderManager。 | 不直接操作 MPV 或播放列表。 |
 | **RenderManager** | 使用 CorePlayer 的 `controller` 驱动 `requestRender`（即 `mpv_render_context_render`）；根据状态、resize、seek 等决定渲染节奏。 | 不解析 MPV 状态；不管理播放列表。 |
-| **Timeline** | 轮询 `getStatus`（来自 CorePlayer 的 controller）；向播放 UI 发送 `video-time-update`。 | 不操作 MPV；不管理播放列表。 |
+| **Timeline** | 轮询 `getStatus`（来自 CorePlayer 的 controller）；通过回调 `send` 触发 CorePlayer 发出 `video-time-update` 事件。 | 不操作 MPV；不管理播放列表；不直接发送 IPC。 |
 
 **播放入口流程（当前约定）**：
 
@@ -136,7 +136,7 @@ IPC play-video / play-playlist-current / play-url
 
 | IPC 通道 | 路由到 | reply / broadcast 归属 |
 |----------|--------|------------------------|
-| `play-video` | VideoPlayerApp（setList/setCurrentByPath + play） | 广播 `play-video`、`player-embedded`、`player-error` → VideoPlayerApp / CorePlayer；`playlist-updated` → VideoPlayerApp.broadcastPlaylistUpdated（ipcHandlers 触发） |
+| `play-video` | VideoPlayerApp（setList/setCurrentByPath + play） | 广播 `play-video`、`player-embedded`、`player-error` → VideoPlayerApp.sendToPlaybackUIs；`playlist-updated` → VideoPlayerApp.broadcastPlaylistUpdated（ipcHandlers 触发） |
 | `play-url` | VideoPlayerApp | 同上 |
 | `set-playlist` | VideoPlayerApp | `playlist-updated` → VideoPlayerApp.broadcastPlaylistUpdated |
 | `play-playlist-current` / `next` / `prev` | VideoPlayerApp | 无 reply |
@@ -483,13 +483,6 @@ export interface CorePlayer {
    * @param listener - 要移除的回调函数
    */
   offPlayerState(listener: (state: PlayerState) => void): void
-  
-  /**
-   * 广播消息到所有播放UI
-   * @param channel - 通道名称
-   * @param payload - 消息载荷
-   */
-  broadcastToPlaybackUIs(channel: string, payload?: any): void
   
   /**
    * 发送按键到MPV
@@ -890,7 +883,7 @@ ipcMain.on('play-video', async (event, file: { name: string; path: string }) => 
   videoPlayerApp.setCurrentByPath(file.path)
   await videoPlayerApp.play({ path: file.path, name: file.name })
   if (nextList.length > 0) {
-    corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
+    videoPlayerApp.broadcastPlaylistUpdated()
   }
 })
 ```
@@ -1314,9 +1307,8 @@ case MPV_EVENT_PROPERTY_CHANGE: {
 
 ```
 MPV错误 → MPV_EVENT_END_FILE(reason=ERROR) → handleEvent() → 
-phase='error' → PlayerStateMachine → 'state'事件 → 
-CorePlayer监听器 → broadcastToPlaybackUIs('player-error') → 
-UI显示错误信息
+phase='error' → PlayerStateMachine → 'state'事件； 
+播放失败时 VideoPlayerApp.play() catch → sendToPlaybackUIs('player-error') → UI显示错误
 ```
 
 ### 9.2 MPV错误处理
@@ -1804,7 +1796,7 @@ const MPV_END_FILE_REASON_REDIRECT = 5 // 重定向
 | 问题现象 | 可能原因 | 排查步骤 |
 |----------|----------|----------|
 | UI无响应 | IPC消息未处理 | 检查`ipcHandlers.ts`中的消息处理 |
-| 状态不同步 | 消息未正确广播 | 检查`broadcastToPlaybackUIs()`调用 |
+| 状态不同步 | 消息未正确广播 | 检查 VideoPlayerApp.sendToPlaybackUIs / broadcastPlaylistUpdated；检查 CorePlayer 事件（video-time-update、player-state）是否正常发出，VideoPlayerApp 是否监听并转发 |
 | 内存泄漏 | 监听器未清理 | 检查事件监听器的添加和移除 |
 
 #### 12.3.3 HDR问题

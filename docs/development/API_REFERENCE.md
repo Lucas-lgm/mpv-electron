@@ -32,8 +32,7 @@ const state = corePlayer.getPlayerState()    // 获取当前状态
 corePlayer.onPlayerState(listener)           // 监听状态变化
 corePlayer.offPlayerState(listener)          // 移除监听器
 
-// 实用功能
-corePlayer.broadcastToPlaybackUIs('message', data)  // 广播消息
+// 实用功能（向播放 UI 广播由 VideoPlayerApp.sendToPlaybackUIs / broadcastPlaylistUpdated 负责）
 await corePlayer.sendKey('SPACE')             // 发送按键
 await corePlayer.debugVideoState()            // 调试视频状态
 await corePlayer.debugHdrStatus()             // 调试HDR状态

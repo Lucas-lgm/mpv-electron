@@ -84,6 +84,16 @@ export class VideoPlayerApp {
   private isQuitting: boolean = false
   private windowSyncTimer: NodeJS.Timeout | null = null
 
+  private readonly onEndedPlayNext = (state: { phase: string }) => {
+    if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
+  }
+  private readonly onVideoTimeUpdate = (payload: unknown) => {
+    this.sendToPlaybackUIs('video-time-update', payload)
+  }
+  private readonly onPlayerStateBroadcast = (state: unknown) => {
+    this.sendToPlaybackUIs('player-state', state)
+  }
+
   constructor(private readonly corePlayer: CorePlayer) {
     this.windowManager = new WindowManager()
     this.config = new ConfigManager()
@@ -92,9 +102,16 @@ export class VideoPlayerApp {
       this.corePlayer.getMediaPlayer(),
       this.playlist
     )
-    this.corePlayer.onPlayerState((state) => {
-      if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
-    })
+    this.corePlayer.onPlayerState(this.onEndedPlayNext)
+    this.corePlayer.on('video-time-update', this.onVideoTimeUpdate)
+    this.corePlayer.on('player-state', this.onPlayerStateBroadcast)
+  }
+
+  /** 移除对 CorePlayer 的监听，在 cleanup 前调用，避免泄漏 */
+  private releaseCorePlayerListeners(): void {
+    this.corePlayer.offPlayerState(this.onEndedPlayNext)
+    this.corePlayer.off('video-time-update', this.onVideoTimeUpdate)
+    this.corePlayer.off('player-state', this.onPlayerStateBroadcast)
   }
 
   getControlWindow(): BrowserWindow | null {
@@ -103,6 +120,16 @@ export class VideoPlayerApp {
 
   getControlView(): BrowserView | null {
     return this.controlView
+  }
+
+  /** 向播放 UI（视频窗口 + 控制栏）广播；职责归 VideoPlayerApp，不经过 CorePlayer */
+  private sendToPlaybackUIs(channel: string, payload?: unknown): void {
+    const vw = this.windowManager.getWindow('video')
+    if (vw && !vw.isDestroyed()) vw.webContents.send(channel, payload)
+    const cw = this.getControlWindow()
+    if (cw && !cw.isDestroyed()) cw.webContents.send(channel, payload)
+    const cv = this.getControlView()
+    if (cv && !cv.webContents.isDestroyed()) cv.webContents.send(channel, payload)
   }
 
   getList(): PlaylistItem[] {
@@ -170,8 +197,7 @@ export class VideoPlayerApp {
     // 初始化 controller、挂载窗口、setExternalController，供 RenderManager / Timeline 使用
     await this.corePlayer.ensureControllerReadyForPlayback()
 
-    // UI 层职责：广播消息
-    this.corePlayer.broadcastToPlaybackUIs('play-video', {
+    this.sendToPlaybackUIs('play-video', {
       name: target.name,
       path: target.path
     })
@@ -188,18 +214,16 @@ export class VideoPlayerApp {
         }
       })
 
-      // UI 层职责：播放成功后的广播
       const isEmbedded = this.corePlayer.isUsingEmbeddedMode()
-      this.corePlayer.broadcastToPlaybackUIs('player-embedded', {
+      this.sendToPlaybackUIs('player-embedded', {
         embedded: isEmbedded,
         mode: isEmbedded ? 'native' : 'ipc'
       })
     } catch (error) {
-      // UI 层职责：错误处理和广播
-      this.corePlayer.broadcastToPlaybackUIs('player-error', {
+      this.sendToPlaybackUIs('player-error', {
         message: error instanceof Error ? error.message : 'Unknown error'
       })
-      this.corePlayer.broadcastToPlaybackUIs('player-embedded', {
+      this.sendToPlaybackUIs('player-embedded', {
         embedded: false,
         mode: 'none'
       })
@@ -228,9 +252,9 @@ export class VideoPlayerApp {
     this.corePlayer.setHdrEnabled(enabled)
   }
 
-  /** 向播放 UI 广播当前播放列表（职责归 VideoPlayerApp，ipcHandlers 仅触发） */
+  /** 向播放 UI 广播当前播放列表（ipcHandlers 仅触发） */
   broadcastPlaylistUpdated(): void {
-    this.corePlayer.broadcastToPlaybackUIs('playlist-updated', this.getList())
+    this.sendToPlaybackUIs('playlist-updated', this.getList())
   }
 
   async sendKey(key: string) {
@@ -253,7 +277,7 @@ export class VideoPlayerApp {
       }
       console.log('[VideoPlayerApp] Main window closing')
       this.isQuitting = true
-      // 清理资源
+      this.releaseCorePlayerListeners()
       await this.corePlayer.cleanup().catch(() => {})
       // 退出应用
       app.quit()
@@ -735,6 +759,7 @@ export class VideoPlayerApp {
     app.on('window-all-closed', () => {
       if (!this.isQuitting) {
         this.isQuitting = true
+        this.releaseCorePlayerListeners()
         this.corePlayer.cleanup().catch(() => {})
       }
       app.quit()
@@ -745,6 +770,7 @@ export class VideoPlayerApp {
     const handleSignal = async (signal: NodeJS.Signals) => {
       console.log(`[Main] Received ${signal}, quitting app...`)
       this.isQuitting = true
+      this.releaseCorePlayerListeners()
       await this.corePlayer.cleanup().catch(() => {})
       const windows = BrowserWindow.getAllWindows()
       windows.forEach((w) => {
