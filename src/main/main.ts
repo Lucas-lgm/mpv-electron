@@ -1,6 +1,5 @@
-import { videoPlayerApp } from './videoPlayerApp'
+import { runApp, getWindowManager } from './application/bootstrap'
 
-// 开发模式下自动运行领域模型测试
 if (process.env.NODE_ENV === 'development') {
   import('./test_semantic_refactoring').then(async ({ testDomainModels }) => {
     console.log('\n🧪 ========== 自动运行领域模型测试 ==========\n')
@@ -10,6 +9,6 @@ if (process.env.NODE_ENV === 'development') {
   })
 }
 
-videoPlayerApp.init()
+runApp()
 
-export const windowManager = videoPlayerApp.windowManager
+export { getWindowManager }

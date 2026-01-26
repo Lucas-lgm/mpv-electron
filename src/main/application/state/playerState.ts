@@ -1,8 +1,8 @@
 import { EventEmitter } from 'events'
-import type { MPVStatus } from './infrastructure/mpv/libmpv'
-import { Media } from './domain/models/Media'
-import { PlaybackSession, PlaybackStatus } from './domain/models/Playback'
-import { MpvAdapter } from './infrastructure/mpv/MpvAdapter'
+import type { MPVStatus } from '../../infrastructure/mpv/libmpv'
+import { Media } from '../../domain/models/Media'
+import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
+import { MpvAdapter } from '../../infrastructure/mpv/MpvAdapter'
 import type { PlayerPhase, PlayerState } from './playerStateTypes'
 
 export type { PlayerState, PlayerPhase } from './playerStateTypes'

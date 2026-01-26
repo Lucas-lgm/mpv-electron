@@ -1,7 +1,7 @@
 // src/main/application/commands/PlayMediaCommand.ts
 
 import { Media } from '../../domain/models/Media'
-import type { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../core/MediaPlayer'
 import type { Playlist } from '../../domain/models/Playlist'
 
 /**

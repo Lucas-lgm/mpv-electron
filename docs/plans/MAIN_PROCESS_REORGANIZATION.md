@@ -200,3 +200,20 @@ src/main/
 - ✅ `renderManager.ts` → `infrastructure/rendering/renderManager.ts`
 - ✅ 更新 corePlayer、playerState、timeline、test_semantic_refactoring、MpvAdapter、MpvMediaPlayer、renderManager 的导入路径
 - ✅ 构建通过
+
+### 阶段 2：应用层状态与时间轴（已完成）
+
+- ✅ `playerState.ts` → `application/state/playerState.ts`
+- ✅ `playerStateTypes.ts` → `application/state/playerStateTypes.ts`
+- ✅ `timeline.ts` → `application/timeline/timeline.ts`
+- ✅ 更新 corePlayer、renderManager、MpvAdapter、test_semantic_refactoring 及上述迁移文件内部导入路径
+- ✅ 构建通过
+
+### 阶段 3：应用层核心（已完成）
+
+- ✅ `windowManager.ts` → `application/windows/windowManager.ts`（更新 preload/renderer 路径）
+- ✅ `corePlayer.ts` → `application/core/corePlayer.ts`（更新所有导入路径）
+- ✅ `ipcHandlers.ts` → `application/presentation/ipcHandlers.ts`（更新导入路径）
+- ✅ `videoPlayerApp.ts` → `application/videoPlayerApp.ts`（更新导入路径与 __dirname 路径）
+- ✅ 更新 `main.ts` 导入路径
+- ✅ 构建通过

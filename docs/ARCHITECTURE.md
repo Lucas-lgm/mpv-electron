@@ -96,8 +96,56 @@ graph TB
 | **UI层** | Vue组件 | 用户界面、用户交互、IPC通信 | `src/renderer/` |
 | **业务逻辑层** | VideoPlayerApp, ApplicationService, CorePlayer, PlayerStateMachine, RenderManager | 应用协调、命令/查询、播放控制、状态管理、渲染调度、窗口管理 | `src/main/` |
 | **领域层** | Media, PlaybackSession, Playlist；MpvAdapter, MpvMediaPlayer | 领域模型、MPV→领域适配、播放器实现 | `src/main/domain/`, `src/main/infrastructure/mpv/` |
+| **MediaPlayer 接口** | 播放契约（与 CorePlayer 同属应用核心） | 定义在 `application/core/MediaPlayer.ts`，MpvMediaPlayer 实现 | `src/main/application/core/` |
 | **原生绑定层** | MPVBinding, binding.cc, mpv_render_gl.mm | 跨语言桥接、平台特定渲染、HDR配置 | `native/` |
 | **MPV核心层** | libmpv库 | 视频解码、音频处理、渲染管道、HDR色调映射 | 外部依赖 |
+
+### 2.2.1 主进程组件职责（详细）
+
+以下职责已确认，作为实现与重构的约束。**禁止**在未更新本文档的前提下调整职责归属。
+
+| 组件 | 职责 | 不负责 |
+|------|------|--------|
+| **VideoPlayerApp** | 应用入口；窗口管理（主窗口/视频窗口/控制栏的创建、显示、隐藏、同步）；播放列表的 **UI 层** facade（`getList` / `setList` / `setCurrentByPath` / `getCurrent` / `next` / `prev`）；**播放入口** `play(target)`：创建视频窗口 → `setVideoWindow` → `ensureControllerReadyForPlayback` → 广播 `play-video` → `appService.playMedia` → 广播 `player-embedded` / `player-error`；`playCurrentFromPlaylist` / `playNext` / `playPrev`；**ended 时自动播放下一首**（监听 `corePlayer` state，`phase === 'ended'` 时 `playNextFromPlaylist`）；**列表变更广播** `broadcastPlaylistUpdated()`（`corePlayer.broadcastToPlaybackUIs('playlist-updated', getList())`，供 ipcHandlers 在 play-video / play-url / set-playlist 后触发）；HDR 开关 `setHdrEnabled`；配置（音量持久化）；`sendKey` 转调 `corePlayer`；暴露 `getControlWindow` / `getControlView` 供 IPC 使用。 | 不直接操作 MPV；不实现暂停/恢复/停止/跳转/音量（委托 `appService`）。 |
+| **ApplicationService** | 命令/查询协调。**命令**：`playMedia`、`pausePlayback`、`resumePlayback`、`seek`、`setVolume`、`stopPlayback`。**查询**：`getPlaylist`、`getPlaybackStatus`。委托 `MediaPlayer` + `Playlist` 执行，不关心窗口、渲染、IPC 广播。**依赖**：不依赖 `CorePlayer` 类型；`MediaPlayer` 与 `Playlist` 由 **VideoPlayerApp** 注入（当前从 `corePlayer.getMediaPlayer()` 与 `videoPlayerApp.playlist` 传入）。 | 不管理窗口；不负责 `ensureControllerReadyForPlayback` 或渲染；不持久化配置。 |
+| **CorePlayer** | 播放基础设施与 **MPV 桥接**。`setVideoWindow`：保存视频窗口引用，并为 `MpvMediaPlayer` 设置 `windowId`。`ensureControllerReadyForPlayback`：在 `playMedia` 前调用；通过 **私有** `prepareControllerForPlayback` 完成 controller 创建、初始化、`setWindowId`、`setExternalController`、`syncWindowSize`、`setupResizeHandler`、`setupEventHandlers`，供 RenderManager / Timeline 使用。`play(filePath)`：复用 `prepareControllerForPlayback`，然后 `mediaPlayer.play(Media.create(filePath))`（保留用于直接播放入径）。暂停/恢复/停止/跳转/音量委托 `mediaPlayer`，部分经 `controller` 同步状态。维护 `PlayerStateMachine`、`Timeline`、`RenderManager`；向播放 UI 广播 `player-state`、`video-time-update`；`broadcastToPlaybackUIs` 供 VideoPlayerApp（如 `broadcastPlaylistUpdated`、`play` 内广播）等向播放 UI 发送消息。 | 不管理播放列表；不实现「播放入口」业务流程（由 VideoPlayerApp 编排）。 |
+| **prepareControllerForPlayback**（CorePlayer 私有） | 获取 `videoWindow` 的 windowId；创建/初始化 `LibMPVController`；`setWindowId`；`renderManager.setController`；`syncWindowSize`、`setupResizeHandler`、`setupEventHandlers`；`mediaPlayer.setExternalController(controller, windowId)`。返回 `windowId`，失败返回 `undefined`。**与 `play()` 共用**，避免重复。 | 不执行 `mediaPlayer.play`；不涉及播放列表或 IPC。 |
+| **ipcHandlers** | **IPC 协议适配与薄编排**：注册通道；收发格式、`event.reply`、转发；按通道**路由**到 VideoPlayerApp / ApplicationService / CorePlayer，可协调多步调用顺序，**不实现领域业务逻辑**。**路由**：`play-video`、`play-url`、`set-playlist`、`play-playlist-current`、`play-playlist-next`、`play-playlist-prev` → VideoPlayerApp；`control-pause`、`control-stop`、`control-seek`、`control-volume`、`get-playlist` → ApplicationService（或经 `videoPlayerApp.appService`）；`control-play` → ended/stopped 时 `playCurrentFromPlaylist`，否则 `resumePlayback`；`control-hdr`、`control-toggle-fullscreen`、`control-window-action`、`control-keypress`、`control-bar-mouse-move`、`control-bar-mouse-leave` → VideoPlayerApp 或 CorePlayer。**编排示例**：`control-volume` 同时调 `appService.setVolume` 与 `config.setVolume`（持久化）；play-video / play-url / set-playlist 后调 `videoPlayerApp.broadcastPlaylistUpdated()`（**广播归属 VideoPlayerApp**，ipcHandlers 仅触发）。依赖 `videoPlayerApp`、`corePlayer`，不依赖 `main`。 | 不实现领域业务逻辑；不创建窗口；不**实现**广播（只触发 VideoPlayerApp 的 `broadcastPlaylistUpdated`）。 |
+| **PlayMediaCommand** | 定义 `mediaUri`、`mediaName`、`options`（`volume`、`autoResume`、`addToPlaylist`）。Handler 根据 `addToPlaylist` 决定是否加入列表并设当前项；调用 `player.play(media)`；再应用音量、自动恢复。 | 不负责 controller 初始化、窗口、渲染、IPC 广播。 |
+| **MpvMediaPlayer** | 实现领域 `MediaPlayer`。**外部 controller 路径**：`setExternalController(controller, windowId)` 时使用 CorePlayer 的 controller，不自建；**自建 controller 路径**：仅在未 `setExternalController` 时 `ensureInitialized` 内创建。加载、播放、暂停、恢复、停止、跳转、音量、`getCurrentSession` 等。MPV 状态 → `PlaybackSession` 适配。 | 不管理窗口、不驱动渲染循环；渲染与 Timeline 由 CorePlayer 侧 controller 提供。 |
+| **PlayerStateMachine** | 维护 `PlayerPhase`、`isSeeking`、`isNetworkBuffering` 等；从 MPV 状态推导 phase；发出 `state` 事件驱动 Timeline、RenderManager。 | 不直接操作 MPV 或播放列表。 |
+| **RenderManager** | 使用 CorePlayer 的 `controller` 驱动 `requestRender`（即 `mpv_render_context_render`）；根据状态、resize、seek 等决定渲染节奏。 | 不解析 MPV 状态；不管理播放列表。 |
+| **Timeline** | 轮询 `getStatus`（来自 CorePlayer 的 controller）；向播放 UI 发送 `video-time-update`。 | 不操作 MPV；不管理播放列表。 |
+
+**播放入口流程（当前约定）**：
+
+```
+IPC play-video / play-playlist-current / play-url
+  → VideoPlayerApp.play(target)
+  → setVideoWindow(videoWindow)
+  → ensureControllerReadyForPlayback()   // 即 prepareControllerForPlayback + 校验
+  → broadcast play-video
+  → appService.playMedia({ ... })       // PlayMediaCommand，可选 addToPlaylist: false)
+  → MpvMediaPlayer.play(media)          // 使用 setExternalController 的 controller
+  → broadcast player-embedded / player-error
+```
+
+**原则**：窗口与广播归 **VideoPlayerApp**；播放命令与领域操作归 **ApplicationService**；controller 初始化、渲染、状态、进度归 **CorePlayer**。ipcHandlers 仅做 **协议适配与薄编排**，不实现领域逻辑；列表变更广播由 VideoPlayerApp 实现，ipcHandlers 触发。
+
+#### IPC 通道 → 路由与 reply/broadcast 归属
+
+| IPC 通道 | 路由到 | reply / broadcast 归属 |
+|----------|--------|------------------------|
+| `play-video` | VideoPlayerApp（setList/setCurrentByPath + play） | 广播 `play-video`、`player-embedded`、`player-error` → VideoPlayerApp / CorePlayer；`playlist-updated` → VideoPlayerApp.broadcastPlaylistUpdated（ipcHandlers 触发） |
+| `play-url` | VideoPlayerApp | 同上 |
+| `set-playlist` | VideoPlayerApp | `playlist-updated` → VideoPlayerApp.broadcastPlaylistUpdated |
+| `play-playlist-current` / `next` / `prev` | VideoPlayerApp | 无 reply |
+| `get-playlist` | ApplicationService（经 appService） | **reply** `playlist-updated` ← ipcHandlers（协议层格式转换） |
+| `control-pause` / `control-stop` / `control-seek` / `control-volume` | ApplicationService | 无；`control-volume` 时 ipcHandlers 另调 `config.setVolume` |
+| `control-play` | VideoPlayerApp（ended/stopped 时 playCurrent）或 ApplicationService（resume） | 无 |
+| `control-hdr` / `control-toggle-fullscreen` / `control-window-action` / `control-keypress` | VideoPlayerApp 或 CorePlayer | 无 |
+| `control-bar-mouse-move` / `control-bar-mouse-leave` | VideoPlayerApp（getControlView/Window）→ 转发 control 窗口 | 无 |
+| `video-time-update` / `video-ended` | 主进程转发到 video 窗口 | 转发归属 ipcHandlers |
 
 ### 2.3 层间通信机制
 
@@ -351,7 +399,7 @@ await controller.debugHdrStatus()
 
 ### 3.3 CorePlayer 核心播放器接口
 
-`CorePlayer` 接口是应用程序的主要入口点，定义在 `corePlayer.ts:9-29`。
+`CorePlayer` 接口是应用程序的主要入口点，定义在 `application/core/corePlayer.ts:12-35`。
 
 ```typescript
 export interface CorePlayer {
@@ -587,7 +635,7 @@ private shouldRender(state: PlayerState): boolean {
 
 ### 3.5 PlayerStateMachine 状态机接口
 
-`PlayerStateMachine` 类管理播放器状态，继承自 `EventEmitter`，定义在 `playerState.ts:20-111`。
+`PlayerStateMachine` 类管理播放器状态，继承自 `EventEmitter`，定义在 `application/state/playerState.ts`。
 
 ```typescript
 export class PlayerStateMachine extends EventEmitter {
@@ -656,7 +704,7 @@ export interface MPVStatus {
 
 ### 4.2 PlayerState 接口
 
-`PlayerState` 接口表示应用程序的播放器状态，定义在 `playerState.ts:6-18`。
+`PlayerState` 接口表示应用程序的播放器状态，定义在 `application/state/playerStateTypes.ts`。
 
 ```typescript
 export interface PlayerState {
@@ -676,7 +724,7 @@ export interface PlayerState {
 
 ### 4.3 PlayerPhase 枚举
 
-`PlayerPhase` 类型定义播放器的所有可能状态，定义在 `playerState.ts:4`。
+`PlayerPhase` 类型定义播放器的所有可能状态，定义在 `application/state/playerStateTypes.ts`。
 
 ```typescript
 export type PlayerPhase = 
@@ -703,7 +751,7 @@ export type PlayerPhase =
 
 ### 4.4 PlaylistItem 接口
 
-`PlaylistItem` 接口表示播放列表项，定义在 `videoPlayerApp.ts`。
+`PlaylistItem` 接口表示播放列表项，定义在 `application/videoPlayerApp.ts`。
 
 ```typescript
 export interface PlaylistItem {
@@ -768,38 +816,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 | 消息通道 | 参数类型 | 描述 | 处理函数位置 |
 |----------|----------|------|--------------|
-| `select-video-file` | 无 | 选择视频文件 | `ipcHandlers.ts:13` |
-| `play-video` | `{name: string, path: string}` | 播放视频 | `ipcHandlers.ts:38` |
-| `get-playlist` | 无 | 获取播放列表 | `ipcHandlers.ts:52` |
-| `control-pause` | 无 | 暂停播放 | `ipcHandlers.ts:58` |
-| `control-play` | 无 | 继续播放 | `ipcHandlers.ts:63` |
-| `play-url` | `string` | 播放URL | `ipcHandlers.ts:68` |
-| `control-stop` | 无 | 停止播放 | `ipcHandlers.ts:76` |
-| `control-seek` | `number` | 跳转到时间 | `ipcHandlers.ts:81` |
-| `control-volume` | `number` | 设置音量 | `ipcHandlers.ts:86` |
-| `control-hdr` | `boolean` | 设置HDR | `ipcHandlers.ts:90` |
-| `control-toggle-fullscreen` | 无 | 切换全屏 | `ipcHandlers.ts:95` |
-| `control-window-action` | `'close' \| 'minimize' \| 'maximize'` | 窗口操作 | `ipcHandlers.ts:114` |
-| `set-playlist` | `PlaylistItem[]` | 设置播放列表 | `ipcHandlers.ts:150` |
-| `play-playlist-current` | 无 | 播放当前项 | `ipcHandlers.ts:155` |
-| `play-playlist-next` | 无 | 播放下一项 | `ipcHandlers.ts:159` |
-| `play-playlist-prev` | 无 | 播放上一项 | `ipcHandlers.ts:163` |
-| `control-keypress` | `string` | 发送按键 | `ipcHandlers.ts:167` |
-| `debug-hdr-status` | 无 | 调试HDR状态 | `ipcHandlers.ts:171` |
+| `select-video-file` | 无 | 选择视频文件 | `application/presentation/ipcHandlers.ts:11` |
+| `play-video` | `{name: string, path: string}` | 播放视频 | `application/presentation/ipcHandlers.ts:36` |
+| `get-playlist` | 无 | 获取播放列表 | `application/presentation/ipcHandlers.ts:46` |
+| `control-pause` | 无 | 暂停播放 | `application/presentation/ipcHandlers.ts:56` |
+| `control-play` | 无 | 继续播放 | `application/presentation/ipcHandlers.ts:61` |
+| `play-url` | `string` | 播放URL | `application/presentation/ipcHandlers.ts:71` |
+| `control-stop` | 无 | 停止播放 | `application/presentation/ipcHandlers.ts:79` |
+| `control-seek` | `number` | 跳转到时间 | `application/presentation/ipcHandlers.ts:84` |
+| `control-volume` | `number` | 设置音量 | `application/presentation/ipcHandlers.ts:89` |
+| `control-hdr` | `boolean` | 设置HDR | `application/presentation/ipcHandlers.ts:94` |
+| `control-toggle-fullscreen` | 无 | 切换全屏 | `application/presentation/ipcHandlers.ts:99` |
+| `control-window-action` | `'close' \| 'minimize' \| 'maximize'` | 窗口操作 | `application/presentation/ipcHandlers.ts:118` |
+| `set-playlist` | `PlaylistItem[]` | 设置播放列表 | `application/presentation/ipcHandlers.ts:154` |
+| `play-playlist-current` | 无 | 播放当前项 | `application/presentation/ipcHandlers.ts:159` |
+| `play-playlist-next` | 无 | 播放下一项 | `application/presentation/ipcHandlers.ts:163` |
+| `play-playlist-prev` | 无 | 播放上一项 | `application/presentation/ipcHandlers.ts:167` |
+| `control-keypress` | `string` | 发送按键 | `application/presentation/ipcHandlers.ts:171` |
+| `debug-hdr-status` | 无 | 调试HDR状态 | `application/presentation/ipcHandlers.ts:175` |
 
 #### 主进程 → 渲染进程消息
 
 | 消息通道 | 参数类型 | 描述 | 发送位置 |
 |----------|----------|------|----------|
-| `video-file-selected` | `{name: string, path: string}` | 文件已选择 | `ipcHandlers.ts:29` |
-| `playlist-updated` | `PlaylistItem[]` | 播放列表更新 | `corePlayer.ts:48` |
-| `player-state` | `PlayerState` | 播放器状态 | `corePlayer.ts:279` |
-| `player-embedded` | `{embedded: boolean, mode: string}` | 嵌入模式状态 | `videoPlayerApp.ts:80` |
-| `player-error` | `{message: string}` | 播放错误 | `videoPlayerApp.ts:86` |
-| `video-time-update` | `{currentTime: number, duration: number}` | 时间更新 | `timeline.ts` |
-| `video-ended` | 无 | 视频结束 | `ipcHandlers.ts:185` |
-| `control-bar-show` | 无 | 显示控制栏 | `ipcHandlers.ts:202` |
-| `control-bar-schedule-hide` | 无 | 计划隐藏控制栏 | `ipcHandlers.ts:224` |
+| `video-file-selected` | `{name: string, path: string}` | 文件已选择 | `application/presentation/ipcHandlers.ts:25` |
+| `playlist-updated` | `PlaylistItem[]` | 播放列表更新 | `application/core/corePlayer.ts` |
+| `player-state` | `PlayerState` | 播放器状态 | `application/core/corePlayer.ts:332` |
+| `player-embedded` | `{embedded: boolean, mode: string}` | 嵌入模式状态 | `application/videoPlayerApp.ts:194` |
+| `player-error` | `{message: string}` | 播放错误 | `application/videoPlayerApp.ts:200` |
+| `video-time-update` | `{currentTime: number, duration: number}` | 时间更新 | `application/timeline/timeline.ts` |
+| `video-ended` | 无 | 视频结束 | `application/presentation/ipcHandlers.ts:189` |
+| `control-bar-show` | 无 | 显示控制栏 | `application/presentation/ipcHandlers.ts:197` |
+| `control-bar-schedule-hide` | 无 | 计划隐藏控制栏 | `application/presentation/ipcHandlers.ts:210` |
 
 ### 5.4 IPC通信示例
 
@@ -1591,19 +1639,27 @@ if (process.platform === 'linux') {
 ```
 src/
 ├── main/                    # 主进程业务逻辑层
-│   ├── corePlayer.ts       # 核心播放器控制器
-│   ├── playerState.ts      # 状态机实现
-│   ├── videoPlayerApp.ts   # 应用入口和窗口管理
-│   ├── ipcHandlers.ts      # IPC 处理（仅依赖 videoPlayerApp / corePlayer）
-│   ├── timeline.ts         # 时间轴
-│   ├── windowManager.ts    # 窗口管理
-│   ├── application/        # 应用服务与 CQRS
+│   ├── main.ts             # 入口文件
+│   ├── application/        # 应用层
 │   │   ├── ApplicationService.ts
+│   │   ├── videoPlayerApp.ts  # 应用入口和窗口管理
 │   │   ├── commands/       # 播放控制等命令
-│   │   └── queries/        # 播放列表、状态等查询
+│   │   ├── queries/        # 播放列表、状态等查询
+│   │   ├── bootstrap.ts    # whenReady 后创建 CorePlayer/VideoPlayerApp，编排 IPC
+│   │   ├── core/           # 核心播放器
+│   │   │   ├── MediaPlayer.ts  # 播放契约（与 CorePlayer 同目录）
+│   │   │   └── corePlayer.ts
+│   │   ├── state/          # 状态机与类型
+│   │   │   ├── playerState.ts
+│   │   │   └── playerStateTypes.ts
+│   │   ├── timeline/       # 时间轴
+│   │   │   └── timeline.ts
+│   │   ├── windows/        # 窗口管理
+│   │   │   └── windowManager.ts
+│   │   └── presentation/  # IPC 处理
+│   │       └── ipcHandlers.ts
 │   ├── domain/             # 领域模型
-│   │   ├── models/         # Media, Playback, Playlist
-│   │   └── services/       # MediaPlayer 接口
+│   │   └── models/         # Media, Playback, Playlist
 │   └── infrastructure/
 │       ├── mpv/            # libmpv, MpvAdapter, MpvMediaPlayer
 │       ├── platform/       # nativeHelper（窗口句柄）
@@ -1624,7 +1680,7 @@ native/                     # 原生绑定层
 └── binding.gyp            # 构建配置
 ```
 
-**主进程优化要点**：`ipcHandlers` 仅依赖 `videoPlayerApp`、`corePlayer`，不再依赖 `main`，避免循环依赖。播放触发统一通过 `videoPlayerApp.play()`（原 `playbackController` 已内联）。`VideoPlayerApp` 提供 `getControlWindow()`、`getControlView()` 供 IPC 使用，无需 `as any`。`corePlayer` 仅导出单例，不再导出冗余自由函数。播放控制（pause/stop/seek/volume）由 IPC 直接调 `videoPlayerApp.appService`；`control-play` 在 `ended`/`stopped` 时播当前列表项，否则 `resumePlayback`。`VideoPlayerApp` 已删除 pause/resume/stop/seek/setVolume 包装方法。**阶段 2 完成**：`videoPlayerApp.play()` 统一通过 `appService.playMedia()`，窗口创建和广播保留在 `VideoPlayerApp`（UI 层），播放逻辑（play、setVolume、resume）统一在 `ApplicationService` 中处理。
+**主进程优化要点**：**启动编排**：`main` 调用 `runApp()`；`bootstrap.runApp()` 在 `app.whenReady()` 后创建 `createCorePlayer()`、`VideoPlayerApp(core)`，再 `setupIpcHandlers(app, core)`、`createMainWindow`、`registerAppListeners`。CorePlayer 不再在 import 时实例化，避免 MPV/渲染过早初始化。**MediaPlayer** 接口与 **CorePlayer** 同置于 `application/core/`。`ipcHandlers` 通过参数接收 `videoPlayerApp`、`corePlayer`，不依赖 `main`。播放控制、`control-play`、`playMedia` 等逻辑同上。
 
 ### 11.4 测试策略
 
@@ -1716,13 +1772,15 @@ const MPV_END_FILE_REASON_REDIRECT = 5 // 重定向
 | 文件路径 | 功能描述 | 行数 |
 |----------|----------|------|
 | `src/main/main.ts` | 主进程入口，初始化 videoPlayerApp | - |
-| `src/main/videoPlayerApp.ts` | 应用入口、窗口与播放列表协调，`getControlWindow`/`getControlView` | ~773 |
-| `src/main/corePlayer.ts` | 播放控制、渲染与状态桥接，导出 `corePlayer` 单例 | ~452 |
-| `src/main/ipcHandlers.ts` | IPC 处理，仅依赖 `videoPlayerApp`、`corePlayer`，无 main 循环依赖 | ~239 |
-| `src/main/playerState.ts` | PlayerStateMachine，PlaybackSession → PlayerState | ~136 |
-| `src/main/playerStateTypes.ts` | PlayerPhase、PlayerState 类型 | - |
-| `src/main/timeline.ts` | 时间轴管理 | - |
-| `src/main/windowManager.ts` | 窗口管理 | - |
+| `src/main/application/bootstrap.ts` | `runApp()`：whenReady 后创建 CorePlayer、VideoPlayerApp，编排 IPC | - |
+| `src/main/application/videoPlayerApp.ts` | 应用入口、窗口与播放列表协调，`getControlWindow`/`getControlView` | ~780 |
+| `src/main/application/core/MediaPlayer.ts` | 播放契约接口（与 CorePlayer 同目录） | - |
+| `src/main/application/core/corePlayer.ts` | 播放控制、渲染与状态桥接；`createCorePlayer()` 工厂 | ~507 |
+| `src/main/application/presentation/ipcHandlers.ts` | IPC 处理，仅依赖 `videoPlayerApp`、`corePlayer`，无 main 循环依赖 | ~235 |
+| `src/main/application/state/playerState.ts` | PlayerStateMachine，PlaybackSession → PlayerState | ~136 |
+| `src/main/application/state/playerStateTypes.ts` | PlayerPhase、PlayerState 类型 | - |
+| `src/main/application/timeline/timeline.ts` | 时间轴管理 | - |
+| `src/main/application/windows/windowManager.ts` | 窗口管理 | - |
 | `src/main/application/` | ApplicationService、commands、queries | - |
 | `src/main/domain/` | Media、Playback、Playlist、MediaPlayer | - |
 | `src/main/infrastructure/mpv/` | libmpv、MpvAdapter、MpvMediaPlayer | - |
@@ -1798,6 +1856,7 @@ if (elapsed > 100) { // 超过100ms警告
 
 | 变更类型 | 需要更新的章节 | 优先级 |
 |---------|--------------|--------|
+| 职责归属调整 | 第2.2.1节（主进程组件职责）、播放入口流程 | 高 |
 | 新增接口/方法 | 第3章（核心接口）、相关使用示例 | 高 |
 | 修改接口签名 | 第3章（核心接口）、相关使用示例 | 高 |
 | 新增数据结构 | 第4章（数据结构定义） | 高 |
@@ -1837,6 +1896,7 @@ if (elapsed > 100) { // 超过100ms警告
 
 #### 架构变更检查
 - [ ] 架构图、分层图是否已更新？（有变更则必须更新，不待提醒）
+- [ ] **主进程组件职责（2.2.1）** 是否与实现一致？职责调整须同步更新表格与播放入口流程。
 - [ ] 层间通信机制是否有变化？
 - [ ] 状态机是否有变化？
 
@@ -1865,7 +1925,7 @@ if (elapsed > 100) { // 超过100ms警告
 - **次版本号**：新增功能、接口变更
 - **修订号**：文档修正、格式调整
 
-当前版本：**1.4**
+当前版本：**1.9**
 
 ### 13.6 更新历史
 
@@ -1876,11 +1936,16 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-25 | 1.2 | VideoPlayerApp 与 ApplicationService 去重：删除 pause/resume/stop/seek/setVolume 包装；control-play 在 ended/stopped 时播当前项；更新 11.3、VIDEOPLAYERAPP_REFACTORING 执行记录 | - |
 | 2026-01-25 | 1.3 | 统一播放入口：videoPlayerApp.play() 通过 appService.playMedia()；扩展 PlayMediaCommand 支持音量/自动恢复选项；播放逻辑统一在 ApplicationService 中处理 | - |
 | 2026-01-25 | 1.4 | PlayMediaCommand 增加 addToPlaylist 选项，避免重复添加列表；基础设施层目录重组：libmpv→infrastructure/mpv，nativeHelper→platform，renderManager→rendering；更新 11.3、12.2、MAIN_PROCESS_REORGANIZATION | - |
+| 2026-01-26 | 1.5 | 新增 2.2.1 主进程组件职责（详细）：VideoPlayerApp、ApplicationService、CorePlayer、prepareControllerForPlayback、ipcHandlers、PlayMediaCommand、MpvMediaPlayer、PlayerStateMachine、RenderManager、Timeline 职责确认；播放入口流程约定；原则说明 | - |
+| 2026-01-26 | 1.6 | 职责划分收紧：playlist-updated 广播收口到 VideoPlayerApp.broadcastPlaylistUpdated，ipcHandlers 仅触发；补充 ended 自动下一首、ApplicationService 依赖注入、control-volume 编排、IPC 协议适配与薄编排；新增「IPC 通道 → 路由与 reply/broadcast 归属」表 | - |
+| 2026-01-26 | 1.7 | 主进程目录重组阶段 2：playerState/playerStateTypes → application/state/，timeline → application/timeline/；更新 3.5、4.2、4.3、11.3、12.2、MAIN_PROCESS_REORGANIZATION 执行记录 | - |
+| 2026-01-26 | 1.8 | 主进程目录重组阶段 3：windowManager → application/windows/，corePlayer → application/core/，ipcHandlers → application/presentation/，videoPlayerApp → application/；更新所有导入路径与 __dirname 路径；更新 3.3、5.3、11.3、12.2、MAIN_PROCESS_REORGANIZATION | - |
+| 2026-01-26 | 1.9 | MediaPlayer 接口移至 `application/core/` 与 CorePlayer 同目录；CorePlayer 改为 `createCorePlayer()` 工厂，在 `app.whenReady` 后由 `bootstrap.runApp()` 创建；新增 `bootstrap`、`VideoPlayerApp(core)`、`setupIpcHandlers(app,core)`；main 导出 `getWindowManager`；更新 11.3、12.2 | - |
 
 ---
 
-**文档版本**: 1.4  
-**最后更新**: 2026年1月25日  
+**文档版本**: 1.9  
+**最后更新**: 2026年1月26日  
 **维护者**: 架构文档维护小组  
 **更新策略**: 代码变更时**同一轮工作内**同步更新，实时维护、不依赖用户提醒，详见第13章  
 

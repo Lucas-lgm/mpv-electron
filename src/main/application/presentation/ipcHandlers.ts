@@ -1,12 +1,10 @@
 import { ipcMain, dialog } from 'electron'
-import { videoPlayerApp, PlaylistItem } from './videoPlayerApp'
-import { corePlayer } from './corePlayer'
+import type { VideoPlayerApp, PlaylistItem } from '../videoPlayerApp'
+import type { CorePlayer } from '../core/corePlayer'
 
-// 显式记录通过控制栏按钮进入的“播放器全屏模式”
-// 这样不依赖 Electron 在透明/子窗口场景下的 isFullScreen() 实现细节
 let isFullscreen = false
 
-export function setupIpcHandlers() {
+export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: CorePlayer) {
   // 处理文件选择
   ipcMain.on('select-video-file', async (event) => {
     const result = await dialog.showOpenDialog({
@@ -21,7 +19,6 @@ export function setupIpcHandlers() {
       const filePath = result.filePaths[0]
       const fileName = filePath.split(/[/\\]/).pop() || '未知文件'
       
-      // 发送到主窗口
       const mainWindow = videoPlayerApp.windowManager.getWindow('main')
       if (mainWindow) {
         mainWindow.webContents.send('video-file-selected', {
@@ -35,16 +32,12 @@ export function setupIpcHandlers() {
   // 处理播放视频
   ipcMain.on('play-video', async (event, file: { name: string; path: string }) => {
     const currentList = videoPlayerApp.getList()
-    let nextList = currentList
     if (!currentList.some(item => item.path === file.path)) {
-      nextList = [...currentList, { name: file.name, path: file.path }]
-      videoPlayerApp.setList(nextList)
+      videoPlayerApp.setList([...currentList, { name: file.name, path: file.path }])
     }
     videoPlayerApp.setCurrentByPath(file.path)
     await videoPlayerApp.play({ path: file.path, name: file.name })
-    if (nextList.length > 0) {
-      corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
-    }
+    videoPlayerApp.broadcastPlaylistUpdated()
   })
 
   ipcMain.on('get-playlist', (event) => {
@@ -77,7 +70,7 @@ export function setupIpcHandlers() {
     videoPlayerApp.setList([item])
     videoPlayerApp.setCurrentByPath(item.path)
     await videoPlayerApp.play(item)
-    corePlayer.broadcastToPlaybackUIs('playlist-updated', [item])
+    videoPlayerApp.broadcastPlaylistUpdated()
   })
 
   ipcMain.on('control-stop', async () => {
@@ -157,7 +150,7 @@ export function setupIpcHandlers() {
 
   ipcMain.on('set-playlist', async (_event, items: PlaylistItem[]) => {
     videoPlayerApp.setList(items)
-    corePlayer.broadcastToPlaybackUIs('playlist-updated', items)
+    videoPlayerApp.broadcastPlaylistUpdated()
   })
 
   ipcMain.on('play-playlist-current', async () => {
@@ -227,7 +220,7 @@ export function setupIpcHandlers() {
   ipcMain.on('test-semantic-refactoring', async () => {
     if (process.env.NODE_ENV === 'development') {
       try {
-        const { testDomainModels } = await import('./test_semantic_refactoring')
+        const { testDomainModels } = await import('../../test_semantic_refactoring')
         await testDomainModels()
         console.log('[Test] ✅ 语义化重构测试完成，查看控制台输出')
       } catch (error) {

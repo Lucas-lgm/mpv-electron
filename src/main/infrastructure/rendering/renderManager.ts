@@ -1,4 +1,4 @@
-import type { PlayerState } from '../../playerState'
+import type { PlayerState } from '../../application/state/playerState'
 import type { LibMPVController } from '../mpv/libmpv'
 
 /**

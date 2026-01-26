@@ -2,7 +2,7 @@
 
 import { EventEmitter } from 'events'
 import { LibMPVController, isLibMPVAvailable, type MPVStatus } from './libmpv'
-import { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../../application/core/MediaPlayer'
 import { Media } from '../../domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 import { MpvAdapter } from './MpvAdapter'

@@ -1,6 +1,6 @@
 // src/main/application/ApplicationService.ts
 
-import type { MediaPlayer } from '../domain/services/MediaPlayer'
+import type { MediaPlayer } from './core/MediaPlayer'
 import type { Playlist } from '../domain/models/Playlist'
 import { PlayMediaCommand, PlayMediaCommandHandler } from './commands/PlayMediaCommand'
 import { PausePlaybackCommand, PausePlaybackCommandHandler } from './commands/PausePlaybackCommand'

@@ -1,6 +1,6 @@
 // src/main/application/commands/StopPlaybackCommand.ts
 
-import type { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../core/MediaPlayer'
 
 /**
  * 停止播放命令

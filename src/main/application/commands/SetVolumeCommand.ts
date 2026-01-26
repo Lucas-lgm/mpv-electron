@@ -1,6 +1,6 @@
 // src/main/application/commands/SetVolumeCommand.ts
 
-import type { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../core/MediaPlayer'
 
 /**
  * 设置音量命令

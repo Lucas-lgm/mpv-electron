@@ -1,12 +1,11 @@
 import { app, BrowserWindow, BrowserView, screen } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { WindowManager } from './windowManager'
-import { corePlayer } from './corePlayer'
-import { setupIpcHandlers } from './ipcHandlers'
-import { ApplicationService } from './application/ApplicationService'
-import { Playlist } from './domain/models/Playlist'
-import { Media } from './domain/models/Media'
+import { WindowManager } from './windows/windowManager'
+import type { CorePlayer } from './core/corePlayer'
+import { ApplicationService } from './ApplicationService'
+import { Playlist } from '../domain/models/Playlist'
+import { Media } from '../domain/models/Media'
 
 export interface PlaylistItem {
   path: string
@@ -85,15 +84,15 @@ export class VideoPlayerApp {
   private isQuitting: boolean = false
   private windowSyncTimer: NodeJS.Timeout | null = null
 
-  constructor() {
+  constructor(private readonly corePlayer: CorePlayer) {
     this.windowManager = new WindowManager()
     this.config = new ConfigManager()
     this.playlist = new Playlist()
     this.appService = new ApplicationService(
-      corePlayer.getMediaPlayer(),
+      this.corePlayer.getMediaPlayer(),
       this.playlist
     )
-    corePlayer.onPlayerState((state) => {
+    this.corePlayer.onPlayerState((state) => {
       if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
     })
   }
@@ -165,10 +164,14 @@ export class VideoPlayerApp {
       videoWindow.focus()
     }
 
-    corePlayer.setVideoWindow(videoWindow)
+    // 设置视频窗口（同时设置 MpvMediaPlayer 的 windowId）
+    await this.corePlayer.setVideoWindow(videoWindow)
+
+    // 初始化 controller、挂载窗口、setExternalController，供 RenderManager / Timeline 使用
+    await this.corePlayer.ensureControllerReadyForPlayback()
 
     // UI 层职责：广播消息
-    corePlayer.broadcastToPlaybackUIs('play-video', {
+    this.corePlayer.broadcastToPlaybackUIs('play-video', {
       name: target.name,
       path: target.path
     })
@@ -186,17 +189,17 @@ export class VideoPlayerApp {
       })
 
       // UI 层职责：播放成功后的广播
-      const isEmbedded = corePlayer.isUsingEmbeddedMode()
-      corePlayer.broadcastToPlaybackUIs('player-embedded', {
+      const isEmbedded = this.corePlayer.isUsingEmbeddedMode()
+      this.corePlayer.broadcastToPlaybackUIs('player-embedded', {
         embedded: isEmbedded,
         mode: isEmbedded ? 'native' : 'ipc'
       })
     } catch (error) {
       // UI 层职责：错误处理和广播
-      corePlayer.broadcastToPlaybackUIs('player-error', {
+      this.corePlayer.broadcastToPlaybackUIs('player-error', {
         message: error instanceof Error ? error.message : 'Unknown error'
       })
-      corePlayer.broadcastToPlaybackUIs('player-embedded', {
+      this.corePlayer.broadcastToPlaybackUIs('player-embedded', {
         embedded: false,
         mode: 'none'
       })
@@ -222,11 +225,16 @@ export class VideoPlayerApp {
   }
 
   async setHdrEnabled(enabled: boolean) {
-    corePlayer.setHdrEnabled(enabled)
+    this.corePlayer.setHdrEnabled(enabled)
+  }
+
+  /** 向播放 UI 广播当前播放列表（职责归 VideoPlayerApp，ipcHandlers 仅触发） */
+  broadcastPlaylistUpdated(): void {
+    this.corePlayer.broadcastToPlaybackUIs('playlist-updated', this.getList())
   }
 
   async sendKey(key: string) {
-    await corePlayer.sendKey(key)
+    await this.corePlayer.sendKey(key)
   }
 
   createMainWindow() {
@@ -246,7 +254,7 @@ export class VideoPlayerApp {
       console.log('[VideoPlayerApp] Main window closing')
       this.isQuitting = true
       // 清理资源
-      await corePlayer.cleanup().catch(() => {})
+      await this.corePlayer.cleanup().catch(() => {})
       // 退出应用
       app.quit()
       // 注意：在开发模式下，app.quit() 只会退出 Electron 应用，
@@ -353,7 +361,7 @@ export class VideoPlayerApp {
       
       // 仅在视频播放界面且不与系统快捷键冲突时发送给 MPV
       if (input.shift && (input.key === 'H' || input.key === 'h')) {
-        corePlayer.debugVideoState().catch(() => {})
+        this.corePlayer.debugVideoState().catch(() => {})
         return
       }
       // 如果控制窗口存在，优先让控制窗口处理（比如 UI 交互）
@@ -363,7 +371,7 @@ export class VideoPlayerApp {
         // 控制窗口有焦点时，不发送给 MPV（让 UI 处理）
         return
       }
-      corePlayer.sendKey(key)
+      this.corePlayer.sendKey(key)
     })
 
 
@@ -382,7 +390,7 @@ export class VideoPlayerApp {
       }
       
       event.preventDefault()
-      await corePlayer.stop()
+      await this.corePlayer.stop()
       
       // 关闭控制窗口
       if (this.controlWindow && !this.controlWindow.isDestroyed()) {
@@ -476,7 +484,7 @@ export class VideoPlayerApp {
         view.webContents.loadURL(url).catch(() => {})
         view.webContents.openDevTools({ mode: 'detach' })
       } else {
-        view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
+        view.webContents.loadFile(join(__dirname, '../../renderer/index.html'), {
           hash: 'control'
         }).catch(() => {})
       }
@@ -491,7 +499,7 @@ export class VideoPlayerApp {
 
       this.controlView = view
       this.controlWindow = null
-      corePlayer.setControlView(view)
+      this.corePlayer.setControlView(view)
 
       // 注意：不设置 setIgnoreMouseEvents，让 BrowserView 正常接收鼠标事件
       // BrowserView 覆盖整个窗口，可以正常接收所有鼠标事件
@@ -602,7 +610,7 @@ export class VideoPlayerApp {
         }
         const bounds = controlWindow.getBounds()
         videoWindow.setBounds(bounds)
-        corePlayer.setVideoWindow(videoWindow)
+        // 注意：不需要重新设置 windowId，窗口已通过 setVideoWindow 设置
       }
 
       // 初始同步一次
@@ -657,7 +665,7 @@ export class VideoPlayerApp {
 
       this.controlWindow = controlWindow
       this.controlView = null
-      corePlayer.setControlWindow(controlWindow)
+      this.corePlayer.setControlWindow(controlWindow)
 
       // 设置控制栏自动隐藏（统一处理）
       this.setupControlBarAutoHideForWebContents(controlWindow.webContents)
@@ -722,52 +730,29 @@ export class VideoPlayerApp {
     })
   }
 
-  init() {
-    app.whenReady().then(() => {
-      setupIpcHandlers()
-      this.createMainWindow()
-
-      app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-          this.createMainWindow()
-        }
-      })
-    })
-
+  /** 注册 app 生命周期与进程信号监听（由 bootstrap 在 whenReady 之后调用） */
+  registerAppListeners() {
     app.on('window-all-closed', () => {
-      console.log('window-all-closed')
       if (!this.isQuitting) {
         this.isQuitting = true
-        corePlayer.cleanup().catch(() => {})
+        this.corePlayer.cleanup().catch(() => {})
       }
-      // 所有平台都退出应用
       app.quit()
     })
-
     app.on('before-quit', () => {
       this.isQuitting = true
-      // corePlayer.cleanup().catch(() => {})
     })
-
     const handleSignal = async (signal: NodeJS.Signals) => {
       console.log(`[Main] Received ${signal}, quitting app...`)
       this.isQuitting = true
-      // 清理资源
-      await corePlayer.cleanup().catch(() => {})
-      // 关闭所有窗口
+      await this.corePlayer.cleanup().catch(() => {})
       const windows = BrowserWindow.getAllWindows()
-      windows.forEach(window => {
-        if (!window.isDestroyed()) {
-          window.destroy()
-        }
+      windows.forEach((w) => {
+        if (!w.isDestroyed()) w.destroy()
       })
-      // 强制退出
       app.exit(0)
     }
-
     process.on('SIGINT', handleSignal)
     process.on('SIGTERM', handleSignal)
   }
 }
-
-export const videoPlayerApp = new VideoPlayerApp()

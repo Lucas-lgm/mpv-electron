@@ -1,6 +1,6 @@
 // src/main/application/commands/ResumePlaybackCommand.ts
 
-import type { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../core/MediaPlayer'
 
 /**
  * 恢复播放命令

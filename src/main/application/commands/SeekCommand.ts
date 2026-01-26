@@ -1,6 +1,6 @@
 // src/main/application/commands/SeekCommand.ts
 
-import type { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../core/MediaPlayer'
 
 /**
  * 跳转命令

@@ -79,7 +79,7 @@ export async function testDomainModels(): Promise<void> {
 
   // 测试 PlayerStateMachine（session → getState）
   console.log('\n5️⃣ 测试 PlayerStateMachine')
-  const { PlayerStateMachine } = await import('./playerState')
+  const { PlayerStateMachine } = await import('./application/state/playerState')
   const sm = new PlayerStateMachine()
   sm.updateFromStatus({
     ...mpvStatus,

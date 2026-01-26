@@ -1,16 +1,18 @@
 import { BrowserWindow, BrowserView, screen } from 'electron'
-import { PlayerStateMachine, type PlayerState, type PlayerPhase } from './playerState'
-import type { MPVStatus } from './infrastructure/mpv/libmpv'
-import { LibMPVController, isLibMPVAvailable } from './infrastructure/mpv/libmpv'
-import { getNSViewPointer, getHWNDPointer } from './infrastructure/platform/nativeHelper'
-import { Timeline } from './timeline'
-import { RenderManager } from './infrastructure/rendering/renderManager'
-import { MpvMediaPlayer } from './infrastructure/mpv/MpvMediaPlayer'
-import { Media } from './domain/models/Media'
-import type { MediaPlayer } from './domain/services/MediaPlayer'
+import { PlayerStateMachine, type PlayerState, type PlayerPhase } from '../state/playerState'
+import type { MPVStatus } from '../../infrastructure/mpv/libmpv'
+import { LibMPVController, isLibMPVAvailable } from '../../infrastructure/mpv/libmpv'
+import { getNSViewPointer, getHWNDPointer } from '../../infrastructure/platform/nativeHelper'
+import { Timeline } from '../timeline/timeline'
+import { RenderManager } from '../../infrastructure/rendering/renderManager'
+import { MpvMediaPlayer } from '../../infrastructure/mpv/MpvMediaPlayer'
+import { Media } from '../../domain/models/Media'
+import type { MediaPlayer } from './MediaPlayer'
 
 export interface CorePlayer {
-  setVideoWindow(window: BrowserWindow | null): void
+  setVideoWindow(window: BrowserWindow | null): Promise<void>
+  /** 在 playMedia 前调用：初始化 controller、挂载窗口、setExternalController，供 RenderManager / Timeline 使用 */
+  ensureControllerReadyForPlayback(): Promise<void>
   setControlView(view: BrowserView | null): void
   setControlWindow(window: BrowserWindow | null): void
   play(filePath: string): Promise<void>
@@ -92,12 +94,129 @@ class CorePlayerImpl implements CorePlayer {
   }
   
 
-  setVideoWindow(window: BrowserWindow | null) {
+  async setVideoWindow(window: BrowserWindow | null): Promise<void> {
     if (this.videoWindow && !this.videoWindow.isDestroyed()) {
       this.videoWindow.removeAllListeners('resize')
     }
     this.videoWindow = window
+    
+    // 如果窗口已设置，同时为 MpvMediaPlayer 设置窗口 ID
+    if (window && !window.isDestroyed()) {
+      let windowId: number | null = null
+      
+      try {
+        if (process.platform === 'darwin') {
+          windowId = getNSViewPointer(window)
+        } else if (process.platform === 'win32') {
+          // Windows 上需要等待窗口完全准备好
+          if (!window.isVisible()) {
+            window.show()
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+          windowId = getHWNDPointer(window)
+        }
+        
+        if (windowId !== null) {
+          // 设置到 MpvMediaPlayer
+          const mediaPlayer = this.mediaPlayer as any
+          if (mediaPlayer && typeof mediaPlayer.setWindowId === 'function') {
+            mediaPlayer.setWindowId(windowId)
+          }
+        }
+      } catch (error) {
+        console.error('[CorePlayer] Error setting window ID for MpvMediaPlayer:', error)
+      }
+    }
   }
+  /**
+   * 准备 controller 用于播放（提取自 play() 的公共逻辑）
+   * @returns windowId，如果准备失败则返回 undefined
+   */
+  private async prepareControllerForPlayback(): Promise<number | undefined> {
+    if (this.isCleaningUp) return undefined
+    if (!this.videoWindow || this.videoWindow.isDestroyed()) return undefined
+
+    let windowId: number | undefined
+    try {
+      if (!this.videoWindow.isVisible()) {
+        this.videoWindow.show()
+      }
+      this.videoWindow.focus()
+      // Windows 上需要等待窗口完全准备好
+      const waitTime = process.platform === 'win32' ? 500 : 300
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+      if (this.videoWindow.isDestroyed()) {
+        console.warn('[CorePlayer] Window was destroyed while waiting')
+        return undefined
+      }
+      // 按平台获取窗口句柄
+      if (process.platform === 'darwin') {
+        const windowHandle = getNSViewPointer(this.videoWindow)
+        if (windowHandle) {
+          windowId = windowHandle
+          console.log('[CorePlayer] Got NSView pointer:', windowHandle)
+        }
+      } else if (process.platform === 'win32') {
+        // Windows 上，确保窗口完全显示后再获取 HWND
+        if (!this.videoWindow.isVisible()) {
+          this.videoWindow.show()
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        const windowHandle = getHWNDPointer(this.videoWindow)
+        if (windowHandle) {
+          windowId = windowHandle
+          console.log('[CorePlayer] Got HWND:', windowHandle)
+        } else {
+          console.error('[CorePlayer] Failed to get HWND')
+        }
+      }
+    } catch (error) {
+      console.error('[CorePlayer] Error getting window handle:', error)
+      return undefined
+    }
+
+    if (!isLibMPVAvailable() || !windowId) return undefined
+
+    this.useLibMPV = true
+    try {
+      if (!this.controller) {
+        this.controller = new LibMPVController()
+        // Windows 上需要在初始化前设置 wid
+        if (process.platform === 'win32' && windowId) {
+          this.initPromise = this.controller.initialize(windowId)
+        } else {
+          this.initPromise = this.controller.initialize()
+        }
+      }
+      if (this.initPromise) {
+        await this.initPromise
+        this.initPromise = null
+      }
+      // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
+      if (windowId) {
+        await this.controller.setWindowId(windowId)
+        if (this.renderManager) this.renderManager.setController(this.controller)
+        const currentState = this.getPlayerState()
+        if (currentState.phase === 'playing' && this.renderManager) this.renderManager.start()
+      }
+      await this.syncWindowSize()
+      this.setupResizeHandler()
+      this.setupEventHandlers()
+      this.mediaPlayer.setExternalController(this.controller!, windowId)
+      return windowId
+    } catch {
+      this.useLibMPV = false
+      return undefined
+    }
+  }
+
+  async ensureControllerReadyForPlayback(): Promise<void> {
+    const windowId = await this.prepareControllerForPlayback()
+    if (!windowId) {
+      throw new Error('Failed to prepare controller for playback')
+    }
+  }
+
   setControlView(view: BrowserView | null) {
     this.controlView = view
   }
@@ -117,81 +236,15 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   async play(filePath: string): Promise<void> {
-    if (this.isCleaningUp) {
+    const windowId = await this.prepareControllerForPlayback()
+    if (!windowId) {
       return
     }
-    let windowId: number | undefined
-    if (this.videoWindow && !this.videoWindow.isDestroyed()) {
-      try {
-        if (!this.videoWindow.isVisible()) {
-          this.videoWindow.show()
-        }
-        this.videoWindow.focus()
-        // Windows 上需要等待窗口完全准备好
-        const waitTime = process.platform === 'win32' ? 500 : 300
-        await new Promise(resolve => setTimeout(resolve, waitTime))
-        if (this.videoWindow.isDestroyed()) {
-          console.warn('[CorePlayer] Window was destroyed while waiting')
-        } else {
-          // 按平台获取窗口句柄
-          if (process.platform === 'darwin') {
-            const windowHandle = getNSViewPointer(this.videoWindow)
-            if (windowHandle) {
-              windowId = windowHandle
-              console.log('[CorePlayer] Got NSView pointer:', windowHandle)
-            }
-          } else if (process.platform === 'win32') {
-            // Windows 上，确保窗口完全显示后再获取 HWND
-            if (!this.videoWindow.isVisible()) {
-              this.videoWindow.show()
-              await new Promise(resolve => setTimeout(resolve, 100))
-            }
-            const windowHandle = getHWNDPointer(this.videoWindow)
-            if (windowHandle) {
-              windowId = windowHandle
-              console.log('[CorePlayer] Got HWND:', windowHandle)
-            } else {
-              console.error('[CorePlayer] Failed to get HWND')
-            }
-          }
-        }
-      } catch (error) {
-        console.error('[CorePlayer] Error getting window handle:', error)
-      }
-    }
-    if (isLibMPVAvailable() && windowId) {
-      this.useLibMPV = true
-      try {
-        if (!this.controller) {
-          this.controller = new LibMPVController()
-          // Windows 上需要在初始化前设置 wid
-          if (process.platform === 'win32' && windowId) {
-            this.initPromise = this.controller.initialize(windowId)
-          } else {
-            this.initPromise = this.controller.initialize()
-          }
-        }
-        if (this.initPromise) {
-          await this.initPromise
-          this.initPromise = null
-        }
-      // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
-      if (windowId) {
-        await this.controller.setWindowId(windowId)
-        if (this.renderManager) this.renderManager.setController(this.controller)
-        const currentState = this.getPlayerState()
-        if (currentState.phase === 'playing' && this.renderManager) this.renderManager.start()
-      }
-      await this.syncWindowSize()
-      this.setupResizeHandler()
-      this.setupEventHandlers()
-      this.mediaPlayer.setExternalController(this.controller!, windowId!)
+    try {
       await this.mediaPlayer.play(Media.create(filePath))
       await this.syncWindowSize()
-      return
-      } catch {
-        this.useLibMPV = false
-      }
+    } catch {
+      this.useLibMPV = false
     }
   }
 
@@ -448,4 +501,7 @@ class CorePlayerImpl implements CorePlayer {
   }
 }
 
-export const corePlayer: CorePlayer = new CorePlayerImpl()
+/** 工厂：在 app.whenReady 之后调用，避免在 import 时初始化 MPV/渲染 */
+export function createCorePlayer(): CorePlayer {
+  return new CorePlayerImpl()
+}

@@ -1,7 +1,7 @@
 // src/main/application/queries/GetPlaybackStatusQuery.ts
 
 import type { PlaybackSession } from '../../domain/models/Playback'
-import type { MediaPlayer } from '../../domain/services/MediaPlayer'
+import type { MediaPlayer } from '../core/MediaPlayer'
 
 /**
  * 获取播放状态查询

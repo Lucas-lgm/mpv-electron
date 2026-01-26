@@ -3,7 +3,7 @@
 import type { MPVStatus } from './libmpv'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 import type { Media } from '../../domain/models/Media'
-import type { PlayerPhase } from '../../playerStateTypes'
+import type { PlayerPhase } from '../../application/state/playerStateTypes'
 
 export type ToPlaybackSessionOptions = { overridePhase?: PlayerPhase }
 
