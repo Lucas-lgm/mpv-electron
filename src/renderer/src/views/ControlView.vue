@@ -62,7 +62,7 @@
       @mouseleave="onControlBarLeave"
     >
       <div class="control-bar">
-        <div class="progress-wrapper">
+        <div class="progress-container">
           <input
             type="range"
             :min="0"
@@ -73,43 +73,48 @@
             @input="onSeek"
             @mouseup="onSeekEnd"
             @touchend.prevent="onSeekEnd"
-            class="progress-bar"
+            class="progress-bar-large"
           />
+          <div class="time-display">
+            <span class="time-current">{{ formatTime(currentTime) }}</span>
+            <span class="time-total">{{ formatTime(duration) }}</span>
+          </div>
         </div>
         <div class="control-row">
           <div class="control-left">
-            <button @click="togglePlayPause" class="btn-control">
-              {{ isPlaying ? '⏸️' : '▶️' }}
+            <button @click="playPrevFromPlaylist" class="btn-control" title="上一首">⏮</button>
+            <button @click="togglePlayPause" class="btn-control play-pause" :title="isPlaying ? '暂停' : '播放'">
+              {{ isPlaying ? '⏸' : '▶' }}
             </button>
-            <button @click="playPrevFromPlaylist" class="btn-control small">⏪</button>
-            <button @click="playNextFromPlaylist" class="btn-control small">⏩</button>
-            <button @click="stop" class="btn-control small">⏹️</button>
-          </div>
-          <div class="control-center">
-            <span class="time-current">{{ formatTime(currentTime) }}</span>
-            <span class="time-separator">/</span>
-            <span class="time-total">{{ formatTime(duration) }}</span>
+            <button @click="playNextFromPlaylist" class="btn-control" title="下一首">⏭</button>
+            <button @click="stop" class="btn-control" title="停止">⏹</button>
           </div>
           <div class="control-right">
-            <button @click="togglePlaylist" class="btn-control small">📃</button>
+            <button @click="togglePlaylist" class="btn-control" title="播放列表">📋</button>
             <button
               v-if="!isWindows"
               @click="toggleHdr"
-              class="btn-control small"
+              class="btn-control"
+              :title="hdrEnabled ? '关闭HDR' : '开启HDR'"
             >
               {{ hdrEnabled ? 'HDR' : 'SDR' }}
             </button>
-            <button @click="toggleFullscreen" class="btn-control small">⛶</button>
-            <span class="volume-icon">🔊</span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              :value="volume"
-              @input="onVolumeChange"
-              class="volume-bar"
-            />
-            <span class="volume-percent">{{ volume }}%</span>
+            <button @click="toggleFullscreen" class="btn-control" title="全屏">⛶</button>
+            <div class="volume-control">
+              <button @click="toggleMute" class="btn-control" :title="volume > 0 ? '静音' : '取消静音'">
+                {{ volume > 0 ? '🔊' : '🔇' }}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                :value="volume"
+                @input="onVolumeChange"
+                class="volume-slider"
+              />
+              <span class="volume-percent">{{ volume }}%</span>
+            </div>
+            <button class="btn-control" title="设置">⚙️</button>
           </div>
         </div>
       </div>
@@ -381,6 +386,18 @@ const onVolumeChange = (event: Event) => {
   }
 }
 
+const toggleMute = () => {
+  if (volume.value > 0) {
+    // 保存当前音量，然后静音
+    if (!window.electronAPI) return
+    window.electronAPI.send('control-volume', 0)
+  } else {
+    // 恢复音量（这里可以保存之前的音量值）
+    if (!window.electronAPI) return
+    window.electronAPI.send('control-volume', 50) // 默认恢复50%
+  }
+}
+
 onMounted(() => {
   if (window.electronAPI) {
     window.electronAPI.on('video-time-update', handleVideoTimeUpdate)
@@ -436,14 +453,11 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  /* 整个 control-view 都可以接收鼠标事件，用于触发控制栏显示 */
-  /* 但背景是透明的，不会遮挡视频 */
   transition: background 0.3s ease;
 }
 
-/* 视频未准备好时（未加载完成或未开始播放），显示纯黑背景 */
 .control-view.video-not-ready {
-  background: #000;
+  background: #1e1e24;
 }
 
 .loading-overlay {
@@ -468,8 +482,9 @@ onUnmounted(() => {
 }
 
 .header {
-  padding: 0.5rem 0.75rem 0.5rem 0.75rem;
+  padding: 8px 12px;
   background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
   -webkit-app-region: drag;
   pointer-events: auto;
   display: flex;
@@ -622,7 +637,6 @@ onUnmounted(() => {
   padding: 0;
   pointer-events: auto;
   -webkit-app-region: no-drag;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
   opacity: 1;
   transition: opacity 0.3s ease;
   will-change: opacity;
@@ -644,20 +658,74 @@ onUnmounted(() => {
 
 .control-bar {
   width: 100%;
-  background: rgba(0, 0, 0, 0.4);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
   border-radius: 0;
   overflow: hidden;
 }
 
-.progress-wrapper {
-  padding: 6px 12px 0;
+.progress-container {
+  padding: 16px 20px 8px;
+  margin-bottom: 16px;
+}
+
+.progress-bar-large {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: #2a2a32;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.progress-bar-large::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #4a9eff;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(74, 158, 255, 0.5);
+}
+
+.progress-bar-large::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #4a9eff;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 2px 8px rgba(74, 158, 255, 0.5);
+}
+
+.time-display {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 2px;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+}
+
+.time-current {
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.time-total {
+  color: #888;
 }
 
 .control-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px 10px;
+  padding: 0 20px 16px;
+  gap: 12px;
 }
 
 .control-buttons {
@@ -667,23 +735,38 @@ onUnmounted(() => {
 }
 
 .btn-control {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border: none;
   background: transparent;
   color: #ffffff;
-  border-radius: 0;
+  border-radius: 6px;
   font-size: 1.2rem;
   cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .btn-control:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
+  transform: scale(1.1);
 }
 
 .btn-control:active {
   transform: scale(0.95);
+}
+
+.btn-control.play-pause {
+  width: 48px;
+  height: 48px;
+  font-size: 1.5rem;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-control.play-pause:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .progress-container {
@@ -699,29 +782,11 @@ onUnmounted(() => {
   font-size: 0.875rem;
 }
 
-.progress-bar {
-  width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  background: #3a3a3a;
-  outline: none;
-  cursor: pointer;
-}
-
-.progress-bar::-webkit-slider-thumb {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #667eea;
-  cursor: pointer;
-}
 
 .volume-control {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  color: #ccc;
+  gap: 8px;
 }
 
 .control-left {
@@ -730,29 +795,14 @@ onUnmounted(() => {
   gap: 0.5rem;
 }
 
-.control-center {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: #ccc;
-  font-size: 0.9rem;
-  min-width: 120px;
-  justify-content: center;
-}
-
 .control-right {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   color: #ccc;
-  min-width: 180px;
   justify-content: flex-end;
 }
 
-.time-current,
-.time-total {
-  font-variant-numeric: tabular-nums;
-}
 
 .volume-icon {
   font-size: 0.9rem;
@@ -760,25 +810,38 @@ onUnmounted(() => {
 
 .volume-percent {
   font-size: 0.85rem;
-  min-width: 40px;
+  min-width: 35px;
   text-align: right;
+  color: #888;
 }
 
-.volume-bar {
-  flex: 1;
+.volume-slider {
+  width: 80px;
   height: 4px;
   border-radius: 2px;
-  background: #3a3a3a;
+  background: #2a2a32;
   outline: none;
   cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-.volume-bar::-webkit-slider-thumb {
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
   appearance: none;
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #667eea;
+  background: #4a9eff;
   cursor: pointer;
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #4a9eff;
+  cursor: pointer;
+  border: none;
 }
 </style>

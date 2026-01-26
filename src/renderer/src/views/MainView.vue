@@ -1,105 +1,321 @@
 <template>
   <div class="main-view">
-    <header class="header">
-      <h1>视频文件列表</h1>
-      <button @click="selectVideoFile" class="btn-primary">选择视频文件</button>
-    </header>
-    <main class="content">
-      <div class="url-bar">
-        <input
-          v-model="url"
-          type="text"
-          placeholder="输入 http/https 视频地址"
-          class="url-input"
+    <header class="main-header">
+      <div class="logo">
+        <span>🎬</span>
+        <span>MPV Player</span>
+      </div>
+      <div class="header-actions">
+        <SearchBox
+          v-model="searchQuery"
+          placeholder="搜索视频、文件夹..."
+          @search="handleSearch"
         />
-        <button @click="addUrlToList" class="btn-url-play">添加 URL</button>
+        <button class="btn-icon" title="设置" @click="handleSettings">
+          ⚙️
+        </button>
       </div>
-      <div v-if="videoFiles.length === 0" class="empty-state">
-        <p>暂无视频文件</p>
-        <p>点击上方按钮选择视频文件</p>
+    </header>
+    <div class="main-content-wrapper">
+      <Sidebar
+        :active-filter="activeFilter"
+        :mount-paths="mountPathsList"
+        :selected-mount-path="selectedMountPath"
+        @filter-change="handleFilterChange"
+        @mount-path-select="handleMountPathSelect"
+        @mount-path-add="handleMountPathAdd"
+        @mount-path-remove="handleMountPathRemove"
+        @mount-path-refresh="handleMountPathRefresh"
+      />
+      <div class="content-area-wrapper">
+        <Toolbar
+          :view-mode="viewMode"
+          @add-file="handleAddFile"
+          @add-url="handleAddUrl"
+          @mount-path="handleMountPathAdd"
+          @update:view-mode="handleViewModeChange"
+        />
+        <ContentArea
+          :title="contentTitle"
+          :subtitle="contentSubtitle"
+          :videos="filteredResources"
+          :view-mode="viewMode"
+          :loading="loading"
+          @video-play="handlePlayVideo"
+          @video-context-menu="handleContextMenu"
+        />
       </div>
-      <div v-else class="video-list">
-        <div
-          v-for="(file, index) in videoFiles"
-          :key="index"
-          class="video-item"
-          @click="playVideo(file)"
-        >
-          <div class="video-icon">🎬</div>
-          <div class="video-info">
-            <div class="video-name">{{ file.name }}</div>
-            <div class="video-path">{{ file.path }}</div>
-          </div>
-        </div>
-      </div>
-    </main>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, computed, ref } from 'vue'
+import Sidebar from '../components/Sidebar.vue'
+import Toolbar from '../components/Toolbar.vue'
+import ContentArea from '../components/ContentArea.vue'
+import SearchBox from '../components/SearchBox.vue'
+import { useMediaLibrary } from '../composables/useMediaLibrary'
+import { useMountPaths } from '../composables/useMountPaths'
+import type { MediaResource } from '../types/media'
 
-interface VideoFile {
-  name: string
-  path: string
+// 使用 composables
+const mediaLibrary = useMediaLibrary()
+const mountPaths = useMountPaths()
+
+const {
+  resources,
+  activeFilter,
+  selectedMountPath,
+  viewMode,
+  searchQuery,
+  filteredResources,
+  stats,
+  addResource,
+  addResources,
+  removeResource,
+  removeResourcesByMountPath,
+  setFilter,
+  setSearchQuery,
+  setViewMode
+} = mediaLibrary
+
+const { mountPaths: mountPathsList, addMountPath, removeMountPath, refreshMountPath, initMountPaths } = mountPaths
+
+const loading = ref(false)
+
+// 内容标题和副标题
+const contentTitle = computed(() => {
+  if (activeFilter.value === 'all') return '全部资源'
+  if (activeFilter.value === 'local') return '本地文件'
+  if (activeFilter.value === 'network') return '网络资源'
+  if (activeFilter.value === 'nas') return 'NAS 存储'
+  if (selectedMountPath.value) {
+    const mountPath = mountPathsList.value.find(mp => mp.id === selectedMountPath.value)
+    return mountPath ? mountPath.path : '挂载路径'
+  }
+  return '全部资源'
+})
+
+const contentSubtitle = computed(() => {
+  const { all, local, network, nas, mounted } = stats.value
+  if (activeFilter.value === 'all') {
+    return `共 ${all} 个资源${local > 0 || network > 0 || mounted > 0 ? `（${local > 0 ? `${local} 个本地文件` : ''}${local > 0 && network > 0 ? '，' : ''}${network > 0 ? `${network} 个网络资源` : ''}${(local > 0 || network > 0) && mounted > 0 ? '，' : ''}${mounted > 0 ? `${mounted} 个挂载路径` : ''}）` : ''}`
+  }
+  return `共 ${filteredResources.value.length} 个资源`
+})
+
+// 处理筛选器改变
+const handleFilterChange = (filter: string) => {
+  setFilter(filter)
 }
 
-const videoFiles = ref<VideoFile[]>([])
-const url = ref('')
+// 处理挂载路径选择
+const handleMountPathSelect = (id: string) => {
+  setFilter(id)
+}
 
-const syncPlaylist = (): void => {
+// 处理添加文件
+const handleAddFile = () => {
   if (!window.electronAPI) return
-  const items = videoFiles.value.map((file) => ({
-    name: file.name,
-    path: file.path
+  window.electronAPI.send('select-video-file')
+}
+
+// 处理添加URL
+const handleAddUrl = () => {
+  const url = prompt('请输入视频URL（http/https）:')
+  if (!url || !url.trim()) return
+  
+  const trimmedUrl = url.trim()
+  if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
+    alert('请输入有效的URL（http:// 或 https://）')
+    return
+  }
+
+  const resource: MediaResource = {
+    id: `network-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: trimmedUrl,
+    path: trimmedUrl,
+    source: 'network',
+    addedAt: new Date()
+  }
+
+  addResource(resource)
+  syncPlaylist()
+}
+
+// 处理挂载路径添加
+const handleMountPathAdd = async () => {
+  if (!window.electronAPI) return
+  
+  // 发送IPC消息，打开文件夹选择对话框
+  window.electronAPI.send('select-mount-path')
+}
+
+// 处理挂载路径移除
+const handleMountPathRemove = (id: string) => {
+  const mountPath = mountPathsList.value.find(mp => mp.id === id)
+  if (mountPath) {
+    // 移除该挂载路径的所有资源
+    removeResourcesByMountPath(mountPath.path)
+    // 移除挂载路径
+    removeMountPath(id)
+  }
+}
+
+// 处理挂载路径刷新
+const handleMountPathRefresh = async (id: string) => {
+  await refreshMountPath(id)
+  // 刷新后重新扫描资源
+  if (window.electronAPI) {
+    window.electronAPI.send('mount-path-refresh', { id })
+  }
+}
+
+// 处理播放视频
+const handlePlayVideo = (video: MediaResource) => {
+  if (!window.electronAPI) return
+  window.electronAPI.send('play-video', {
+    name: video.name,
+    path: video.path
+  })
+}
+
+// 处理右键菜单
+const handleContextMenu = (event: MouseEvent, video: MediaResource) => {
+  // TODO: 实现右键菜单
+  console.log('Context menu:', video)
+}
+
+// 处理搜索
+const handleSearch = (query: string) => {
+  setSearchQuery(query)
+}
+
+// 处理视图模式改变
+const handleViewModeChange = (mode: 'grid' | 'list') => {
+  setViewMode(mode)
+}
+
+// 处理设置
+const handleSettings = () => {
+  // TODO: 打开设置窗口
+  console.log('Settings clicked')
+}
+
+// 同步播放列表
+const syncPlaylist = () => {
+  if (!window.electronAPI) return
+  const items = resources.value.map((resource) => ({
+    name: resource.name,
+    path: resource.path
   }))
   window.electronAPI.send('set-playlist', items)
 }
 
-const selectVideoFile = () => {
-  // 通过 IPC 打开文件选择对话框
-  if (window.electronAPI) {
-    window.electronAPI.send('select-video-file')
+// 处理文件选择
+const handleVideoFileSelected = (file: { name: string; path: string }) => {
+  const resource: MediaResource = {
+    id: `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: file.name,
+    path: file.path,
+    source: 'local',
+    addedAt: new Date()
   }
-}
-
-const playVideo = (file: VideoFile) => {
-  // 发送播放视频的消息
-  // 需要发送一个普通对象，而不是响应式对象（Proxy），因为 IPC 无法序列化 Proxy
-  if (window.electronAPI) {
-    window.electronAPI.send('play-video', {
-      name: file.name,
-      path: file.path
-    })
-  }
-}
-
-const addUrlToList = () => {
-  const value = url.value.trim()
-  if (!value) return
-  if (!value.startsWith('http://') && !value.startsWith('https://')) return
-  videoFiles.value.push({
-    name: value,
-    path: value
-  })
+  addResource(resource)
   syncPlaylist()
-  url.value = ''
 }
 
-const handleVideoFileSelected = (file: VideoFile) => {
-  videoFiles.value.push(file)
+// 处理挂载路径添加成功
+const handleMountPathAdded = (data: { mountPath: any; resources: any[] }) => {
+  // 将扫描到的资源添加到媒体库
+  const newResources: MediaResource[] = data.resources.map((r: any) => ({
+    id: r.id || `mounted-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: r.name || r.path.split(/[/\\]/).pop() || '未知文件',
+    path: r.path,
+    source: 'mounted' as const,
+    mountPath: data.mountPath.path,
+    duration: r.duration,
+    size: r.size,
+    addedAt: new Date()
+  }))
+  addResources(newResources)
+  syncPlaylist()
+}
+
+// 处理挂载路径扫描完成
+const handleMountPathScanned = (data: { id: string; resources: any[] }) => {
+  // 先移除该挂载路径的旧资源
+  const mountPath = mountPathsList.value.find(mp => mp.id === data.id)
+  if (mountPath) {
+    removeResourcesByMountPath(mountPath.path)
+  }
+  
+  // 添加新扫描到的资源
+  const newResources: MediaResource[] = data.resources.map((r: any) => ({
+    id: r.id || `mounted-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name: r.name || r.path.split(/[/\\]/).pop() || '未知文件',
+    path: r.path,
+    source: 'mounted' as const,
+    mountPath: mountPath?.path,
+    duration: r.duration,
+    size: r.size,
+    addedAt: new Date()
+  }))
+  addResources(newResources)
   syncPlaylist()
 }
 
 onMounted(() => {
   if (window.electronAPI) {
+    // 初始化挂载路径
+    initMountPaths()
+    
+    // 请求挂载路径列表
+    window.electronAPI.send('get-mount-paths')
+    
+    // 监听文件选择
     window.electronAPI.on('video-file-selected', handleVideoFileSelected)
+    
+    // 监听挂载路径相关事件
+    window.electronAPI.on('mount-path-added', handleMountPathAdded)
+    window.electronAPI.on('mount-path-scanned', handleMountPathScanned)
+    window.electronAPI.on('mount-paths-updated', (data: { mountPaths: any[] }) => {
+      mountPathsList.value = data.mountPaths
+    })
+    
+    // 获取现有播放列表
+    window.electronAPI.send('get-playlist')
+    
+    // 监听播放列表更新
+    window.electronAPI.on('playlist-updated', (items: any[]) => {
+      // 将播放列表项转换为资源（如果还没有）
+      items.forEach(item => {
+        const existing = resources.value.find(r => r.path === item.path)
+        if (!existing) {
+          const source: MediaResource['source'] = item.path.startsWith('http://') || item.path.startsWith('https://')
+            ? 'network'
+            : 'local'
+          const resource: MediaResource = {
+            id: `${source}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            name: item.name,
+            path: item.path,
+            source,
+            addedAt: new Date()
+          }
+          addResource(resource)
+        }
+      })
+    })
   }
 })
 
 onUnmounted(() => {
   if (window.electronAPI) {
     window.electronAPI.removeListener('video-file-selected', handleVideoFileSelected)
+    window.electronAPI.removeListener('mount-path-added', handleMountPathAdded)
+    window.electronAPI.removeListener('mount-path-scanned', handleMountPathScanned)
+    window.electronAPI.removeListener('mount-paths-updated', () => {})
   }
 })
 </script>
@@ -109,132 +325,67 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #1a1a1a;
+  background: #1e1e24;
   color: #fff;
+  overflow: hidden;
 }
 
-.header {
+.main-header {
+  background: #25252d;
+  padding: 16px 24px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 1rem 2rem;
-  background: #2a2a2a;
-  border-bottom: 1px solid #3a3a3a;
+  justify-content: space-between;
+  border-bottom: 1px solid #2d2d35;
+  flex-shrink: 0;
 }
 
-.header h1 {
-  margin: 0;
-  font-size: 1.5rem;
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  font-size: 1.1rem;
 }
 
-.btn-primary {
-  padding: 0.5rem 1.5rem;
-  background: #667eea;
-  color: white;
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.btn-icon {
+  background: transparent;
   border: none;
+  color: #ccc;
+  cursor: pointer;
+  padding: 8px;
   border-radius: 6px;
-  cursor: pointer;
-  font-size: 1rem;
-  transition: background 0.2s;
-}
-
-.btn-primary:hover {
-  background: #5568d3;
-}
-
-.content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 2rem;
-}
-
-.url-bar {
+  transition: all 0.2s;
+  font-size: 1.1rem;
+  width: 36px;
+  height: 36px;
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
-}
-
-.url-input {
-  flex: 1;
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  border: 1px solid #3a3a3a;
-  background: #111;
-  color: #fff;
-  outline: none;
-}
-
-.url-input::placeholder {
-  color: #777;
-}
-
-.btn-url-play {
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  border: none;
-  background: #22c55e;
-  color: #fff;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.btn-url-play:hover {
-  background: #16a34a;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  color: #888;
 }
 
-.video-list {
+.btn-icon:hover {
+  background: #2a2a32;
+  color: #fff;
+}
+
+.main-content-wrapper {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.content-area-wrapper {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-}
-
-.video-item {
-  display: flex;
-  align-items: center;
-  padding: 1rem;
-  background: #2a2a2a;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-  width: 100%;
-}
-
-.video-item:hover {
-  background: #3a3a3a;
-  transform: translateY(-2px);
-}
-
-.video-icon {
-  font-size: 2rem;
-  margin-right: 1rem;
-}
-
-.video-info {
-  flex: 1;
-}
-
-.video-name {
-  font-weight: 600;
-  margin-bottom: 0.25rem;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.video-path {
-  font-size: 0.875rem;
-  color: #888;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 </style>
