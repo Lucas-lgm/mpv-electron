@@ -2,11 +2,13 @@ import { ipcMain, dialog } from 'electron'
 import type { VideoPlayerApp, PlaylistItem } from '../videoPlayerApp'
 import type { CorePlayer } from '../core/corePlayer'
 
-let isFullscreen = false
-
+/**
+ * IPC 协议适配层：只做路由、参数解析、调用 App 方法、event.reply
+ * 不包含业务逻辑、不持有状态、不直接发送业务广播
+ */
 export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: CorePlayer) {
-  // 处理文件选择
-  ipcMain.on('select-video-file', async (event) => {
+  // 文件选择（薄编排：dialog → 调用 App 方法）
+  ipcMain.on('select-video-file', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [
@@ -18,136 +20,60 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
     if (!result.canceled && result.filePaths.length > 0) {
       const filePath = result.filePaths[0]
       const fileName = filePath.split(/[/\\]/).pop() || '未知文件'
-      
-      const mainWindow = videoPlayerApp.windowManager.getWindow('main')
-      if (mainWindow) {
-        mainWindow.webContents.send('video-file-selected', {
-          name: fileName,
-          path: filePath
-        })
-      }
+      videoPlayerApp.handleFileSelected({ name: fileName, path: filePath })
     }
   })
 
-  // 处理播放视频
-  ipcMain.on('play-video', async (event, file: { name: string; path: string }) => {
-    const currentList = videoPlayerApp.getList()
-    if (!currentList.some(item => item.path === file.path)) {
-      videoPlayerApp.setList([...currentList, { name: file.name, path: file.path }])
-    }
-    videoPlayerApp.setCurrentByPath(file.path)
-    await videoPlayerApp.play({ path: file.path, name: file.name })
-    videoPlayerApp.broadcastPlaylistUpdated()
+  // 播放视频（路由到 App 的业务方法）
+  ipcMain.on('play-video', async (_event, file: { name: string; path: string }) => {
+    await videoPlayerApp.handlePlayVideo(file)
   })
 
+  // 获取播放列表（reply）
   ipcMain.on('get-playlist', (event) => {
-    const result = videoPlayerApp.appService.getPlaylist({})
-    const items = result.entries.map(e => ({
-      path: e.media.uri,
-      name: e.media.displayName
-    }))
-    event.reply('playlist-updated', items)
+    event.reply('playlist-updated', videoPlayerApp.getList())
   })
 
-  // 处理播放控制 - 暂停
+  // 播放控制（路由到 App 方法）
   ipcMain.on('control-pause', async () => {
-    await videoPlayerApp.appService.pausePlayback({})
+    await videoPlayerApp.pausePlayback()
   })
 
-  // 处理播放控制 - 播放（ended/stopped 时播放当前列表项，否则恢复播放）
   ipcMain.on('control-play', async () => {
-    const state = corePlayer.getPlayerState()
-    if (state.phase === 'ended' || state.phase === 'stopped') {
-      await videoPlayerApp.playCurrentFromPlaylist()
-    } else {
-      await videoPlayerApp.appService.resumePlayback({})
-    }
-  })
-
-  // 处理 URL 播放
-  ipcMain.on('play-url', async (_event, url: string) => {
-    const item: PlaylistItem = { path: url, name: url }
-    videoPlayerApp.setList([item])
-    videoPlayerApp.setCurrentByPath(item.path)
-    await videoPlayerApp.play(item)
-    videoPlayerApp.broadcastPlaylistUpdated()
+    await videoPlayerApp.handleControlPlay()
   })
 
   ipcMain.on('control-stop', async () => {
-    await videoPlayerApp.appService.stopPlayback({})
+    await videoPlayerApp.stopPlayback()
   })
 
-  // 处理播放控制 - 跳转
   ipcMain.on('control-seek', async (_event, time: number) => {
-    await videoPlayerApp.appService.seek({ time })
+    await videoPlayerApp.seek(time)
   })
 
-  // 处理音量控制
   ipcMain.on('control-volume', async (_event, volume: number) => {
-    await videoPlayerApp.appService.setVolume({ volume })
-    videoPlayerApp.config.setVolume(volume)
+    await videoPlayerApp.setVolume(volume)
   })
 
   ipcMain.on('control-hdr', async (_event, enabled: boolean) => {
     await videoPlayerApp.setHdrEnabled(enabled)
   })
 
-  // 全屏切换（来自控制栏按钮）
+  // URL 播放（路由到 App 的业务方法）
+  ipcMain.on('play-url', async (_event, url: string) => {
+    await videoPlayerApp.handlePlayUrl(url)
+  })
+
+  // 窗口操作（路由到 App 方法）
   ipcMain.on('control-toggle-fullscreen', () => {
-    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
-    if (!videoWindow) return
-
-    const controlWindow = videoPlayerApp.getControlWindow()
-
-    // 仅由控制栏按钮维护的“播放器全屏模式”开关
-    isFullscreen = !isFullscreen
-
-    // 切换视频窗口全屏
-    videoWindow.setFullScreen(isFullscreen)
-
-    // Windows 双窗口模式下，控制窗口也需要同步全屏状态
-    if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()) {
-      controlWindow.setFullScreen(isFullscreen)
-    }
+    videoPlayerApp.toggleFullscreen()
   })
 
-  // 窗口控制（来自控制栏左侧三个按钮）
   ipcMain.on('control-window-action', (_event, action: 'close' | 'minimize' | 'maximize') => {
-    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
-    if (!videoWindow) return
-
-    // Windows 双窗口模式下，优先使用控制窗口作为操作目标
-    const controlWindow = videoPlayerApp.getControlWindow()
-    const targetForMaximize =
-      process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()
-        ? controlWindow
-        : videoWindow
-
-    switch (action) {
-      case 'close':
-        // 关闭视频窗口，由视频窗口的关闭逻辑统一处理控制窗口
-        videoWindow.close()
-        break
-      case 'minimize':
-        // 最小化视频窗口（父窗口），控制窗口会跟随
-        if (videoWindow.isMinimizable()) {
-          videoWindow.minimize()
-        }
-        break
-      case 'maximize':
-        // mac：直接最大化视频窗口
-        // win：最大化控制窗口，由同步逻辑驱动视频窗口一起变化
-        if (targetForMaximize.isMaximizable()) {
-          if (targetForMaximize.isMaximized()) {
-            targetForMaximize.unmaximize()
-          } else {
-            targetForMaximize.maximize()
-          }
-        }
-        break
-    }
+    videoPlayerApp.windowAction(action)
   })
 
+  // 播放列表操作（路由到 App 方法）
   ipcMain.on('set-playlist', async (_event, items: PlaylistItem[]) => {
     videoPlayerApp.setList(items)
     videoPlayerApp.broadcastPlaylistUpdated()
@@ -165,6 +91,7 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
     await videoPlayerApp.playPrevFromPlaylist()
   })
 
+  // 其他控制（路由到 App 或 CorePlayer）
   ipcMain.on('control-keypress', async (_event, key: string) => {
     await videoPlayerApp.sendKey(key)
   })
@@ -174,49 +101,25 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
     await corePlayer.debugHdrStatus()
   })
 
-  // 视频时间更新 - 转发到视频窗口（控制面板已集成在视频窗口中）
-  ipcMain.on('video-time-update', (event, data: { currentTime: number; duration: number }) => {
-    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
-    if (videoWindow) {
-      videoWindow.webContents.send('video-time-update', data)
-    }
+  // 转发消息（renderer → main → video window，路由到 App 方法）
+  ipcMain.on('video-time-update', (_event, data: { currentTime: number; duration: number }) => {
+    videoPlayerApp.forwardVideoTimeUpdate(data)
   })
 
-  // 视频结束 - 转发到视频窗口
   ipcMain.on('video-ended', () => {
-    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
-    if (videoWindow) {
-      videoWindow.webContents.send('video-ended')
-    }
+    videoPlayerApp.forwardVideoEnded()
   })
 
-  // 控制栏自动隐藏 - 鼠标移动
+  // 控制栏显示/隐藏（路由到 App 方法）
   ipcMain.on('control-bar-mouse-move', () => {
-    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
-    if (!videoWindow) return
-    const controlView = videoPlayerApp.getControlView()
-    const controlWindow = videoPlayerApp.getControlWindow()
-    if (process.platform === 'darwin' && controlView && !controlView.webContents.isDestroyed()) {
-      controlView.webContents.send('control-bar-show')
-    } else if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
-      controlWindow.webContents.send('control-bar-show')
-    }
+    videoPlayerApp.showControlBar()
   })
 
-  // 控制栏自动隐藏 - 鼠标离开
   ipcMain.on('control-bar-mouse-leave', () => {
-    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
-    if (!videoWindow) return
-    const controlView = videoPlayerApp.getControlView()
-    const controlWindow = videoPlayerApp.getControlWindow()
-    if (process.platform === 'darwin' && controlView && !controlView.webContents.isDestroyed()) {
-      controlView.webContents.send('control-bar-schedule-hide')
-    } else if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
-      controlWindow.webContents.send('control-bar-schedule-hide')
-    }
+    videoPlayerApp.scheduleHideControlBar()
   })
 
-  // 测试语义化重构的领域模型（开发模式）
+  // 测试（开发模式，路由到测试模块）
   ipcMain.on('test-semantic-refactoring', async () => {
     if (process.env.NODE_ENV === 'development') {
       try {

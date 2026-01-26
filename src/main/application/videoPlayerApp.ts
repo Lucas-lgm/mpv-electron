@@ -3,7 +3,6 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { WindowManager } from './windows/windowManager'
 import type { CorePlayer } from './core/corePlayer'
-import { ApplicationService } from './ApplicationService'
 import { Playlist } from '../domain/models/Playlist'
 import { Media } from '../domain/models/Media'
 
@@ -78,7 +77,6 @@ export class VideoPlayerApp {
   readonly windowManager: WindowManager
   readonly playlist: Playlist
   readonly config: ConfigManager
-  readonly appService: ApplicationService
   private controlView: BrowserView | null = null
   private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false
@@ -98,13 +96,60 @@ export class VideoPlayerApp {
     this.windowManager = new WindowManager()
     this.config = new ConfigManager()
     this.playlist = new Playlist()
-    this.appService = new ApplicationService(
-      this.corePlayer.getMediaPlayer(),
-      this.playlist
-    )
     this.corePlayer.onPlayerState(this.onEndedPlayNext)
     this.corePlayer.on('video-time-update', this.onVideoTimeUpdate)
     this.corePlayer.on('player-state', this.onPlayerStateBroadcast)
+  }
+
+  private get mediaPlayer() {
+    return this.corePlayer.getMediaPlayer()
+  }
+
+  /** 播放媒体（原 ApplicationService.playMedia 逻辑内联） */
+  async playMedia(opts: {
+    mediaUri: string
+    mediaName?: string
+    options?: { volume?: number; autoResume?: boolean; addToPlaylist?: boolean }
+  }): Promise<void> {
+    const media = Media.create(opts.mediaUri, { title: opts.mediaName })
+    const addToPlaylist = opts.options?.addToPlaylist !== false
+    if (addToPlaylist) {
+      this.playlist.add(media)
+      this.playlist.setCurrentByUri(media.uri)
+    }
+    await this.mediaPlayer.play(media)
+    if (opts.options) {
+      if (opts.options.volume !== undefined) {
+        await this.mediaPlayer.setVolume(opts.options.volume)
+      }
+      if (opts.options.autoResume !== false) {
+        const session = this.mediaPlayer.getCurrentSession()
+        if (session && session.status !== 'playing') {
+          await this.mediaPlayer.resume()
+        }
+      }
+    }
+  }
+
+  async pausePlayback(): Promise<void> {
+    await this.mediaPlayer.pause()
+  }
+
+  async resumePlayback(): Promise<void> {
+    await this.mediaPlayer.resume()
+  }
+
+  async seek(time: number): Promise<void> {
+    await this.mediaPlayer.seek(time)
+  }
+
+  async setVolume(volume: number): Promise<void> {
+    await this.mediaPlayer.setVolume(volume)
+    this.config.setVolume(volume)
+  }
+
+  async stopPlayback(): Promise<void> {
+    await this.mediaPlayer.stop()
   }
 
   /** 移除对 CorePlayer 的监听，在 cleanup 前调用，避免泄漏 */
@@ -202,9 +247,8 @@ export class VideoPlayerApp {
       path: target.path
     })
 
-    // 业务逻辑层：通过 ApplicationService 播放
     try {
-      await this.appService.playMedia({
+      await this.playMedia({
         mediaUri: target.path,
         mediaName: target.name,
         options: {
@@ -259,6 +303,131 @@ export class VideoPlayerApp {
 
   async sendKey(key: string) {
     await this.corePlayer.sendKey(key)
+  }
+
+  // ========== IPC 层调用的业务方法（封装业务逻辑，避免 ipcHandlers 包含业务） ==========
+
+  /** 处理 play-video IPC：添加到列表（如不存在）、设为当前、播放、广播列表更新 */
+  async handlePlayVideo(file: { name: string; path: string }): Promise<void> {
+    const currentList = this.getList()
+    if (!currentList.some(item => item.path === file.path)) {
+      this.setList([...currentList, { name: file.name, path: file.path }])
+    }
+    this.setCurrentByPath(file.path)
+    await this.play({ path: file.path, name: file.name })
+    this.broadcastPlaylistUpdated()
+  }
+
+  /** 处理 play-url IPC：设置列表、播放、广播列表更新 */
+  async handlePlayUrl(url: string): Promise<void> {
+    const item: PlaylistItem = { path: url, name: url }
+    this.setList([item])
+    this.setCurrentByPath(item.path)
+    await this.play(item)
+    this.broadcastPlaylistUpdated()
+  }
+
+  /** 处理 control-play IPC：根据状态决定是播放当前项还是恢复播放 */
+  async handleControlPlay(): Promise<void> {
+    const state = this.corePlayer.getPlayerState()
+    if (state.phase === 'ended' || state.phase === 'stopped') {
+      await this.playCurrentFromPlaylist()
+    } else {
+      await this.resumePlayback()
+    }
+  }
+
+  /** 处理文件选择结果：广播到主窗口 */
+  handleFileSelected(file: { name: string; path: string }): void {
+    const mainWindow = this.windowManager.getWindow('main')
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('video-file-selected', file)
+    }
+  }
+
+  /** 切换全屏（封装窗口操作逻辑） */
+  toggleFullscreen(): void {
+    const videoWindow = this.windowManager.getWindow('video')
+    if (!videoWindow) return
+
+    const controlWindow = this.getControlWindow()
+    const isFullscreen = !videoWindow.isFullScreen()
+
+    videoWindow.setFullScreen(isFullscreen)
+
+    if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()) {
+      controlWindow.setFullScreen(isFullscreen)
+    }
+  }
+
+  /** 窗口操作（封装窗口操作逻辑） */
+  windowAction(action: 'close' | 'minimize' | 'maximize'): void {
+    const videoWindow = this.windowManager.getWindow('video')
+    if (!videoWindow) return
+
+    const controlWindow = this.getControlWindow()
+    const targetForMaximize =
+      process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()
+        ? controlWindow
+        : videoWindow
+
+    switch (action) {
+      case 'close':
+        videoWindow.close()
+        break
+      case 'minimize':
+        if (videoWindow.isMinimizable()) {
+          videoWindow.minimize()
+        }
+        break
+      case 'maximize':
+        if (targetForMaximize.isMaximizable()) {
+          if (targetForMaximize.isMaximized()) {
+            targetForMaximize.unmaximize()
+          } else {
+            targetForMaximize.maximize()
+          }
+        }
+        break
+    }
+  }
+
+  /** 控制栏显示（封装广播逻辑） */
+  showControlBar(): void {
+    const controlView = this.getControlView()
+    const controlWindow = this.getControlWindow()
+    if (process.platform === 'darwin' && controlView && !controlView.webContents.isDestroyed()) {
+      controlView.webContents.send('control-bar-show')
+    } else if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
+      controlWindow.webContents.send('control-bar-show')
+    }
+  }
+
+  /** 控制栏计划隐藏（封装广播逻辑） */
+  scheduleHideControlBar(): void {
+    const controlView = this.getControlView()
+    const controlWindow = this.getControlWindow()
+    if (process.platform === 'darwin' && controlView && !controlView.webContents.isDestroyed()) {
+      controlView.webContents.send('control-bar-schedule-hide')
+    } else if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
+      controlWindow.webContents.send('control-bar-schedule-hide')
+    }
+  }
+
+  /** 转发视频时间更新到视频窗口（用于 renderer → main → video window 的转发） */
+  forwardVideoTimeUpdate(data: { currentTime: number; duration: number }): void {
+    const videoWindow = this.windowManager.getWindow('video')
+    if (videoWindow) {
+      videoWindow.webContents.send('video-time-update', data)
+    }
+  }
+
+  /** 转发视频结束到视频窗口 */
+  forwardVideoEnded(): void {
+    const videoWindow = this.windowManager.getWindow('video')
+    if (videoWindow) {
+      videoWindow.webContents.send('video-ended')
+    }
   }
 
   createMainWindow() {
