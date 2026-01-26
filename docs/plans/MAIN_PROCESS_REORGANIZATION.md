@@ -188,3 +188,15 @@ src/main/
 1. 在架构文档中明确各文件的层级归属
 2. 通过代码注释和命名体现分层意图
 3. 保持当前清晰的目录结构
+
+---
+
+## 8. 执行记录
+
+### 阶段 1：基础设施层（已完成）
+
+- ✅ `libmpv.ts` → `infrastructure/mpv/libmpv.ts`
+- ✅ `nativeHelper.ts` → `infrastructure/platform/nativeHelper.ts`
+- ✅ `renderManager.ts` → `infrastructure/rendering/renderManager.ts`
+- ✅ 更新 corePlayer、playerState、timeline、test_semantic_refactoring、MpvAdapter、MpvMediaPlayer、renderManager 的导入路径
+- ✅ 构建通过

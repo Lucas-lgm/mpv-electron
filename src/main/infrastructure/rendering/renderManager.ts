@@ -1,5 +1,5 @@
-import type { PlayerState } from './playerState'
-import type { LibMPVController } from './libmpv'
+import type { PlayerState } from '../../playerState'
+import type { LibMPVController } from '../mpv/libmpv'
 
 /**
  * 渲染管理器（完全数据驱动）

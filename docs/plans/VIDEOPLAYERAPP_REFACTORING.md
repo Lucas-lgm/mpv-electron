@@ -253,3 +253,7 @@ ipcMain.on('play-video', async (event, file) => {
 - 窗口创建和广播消息保留在 `VideoPlayerApp`（UI 层职责）
 - 播放逻辑（play、setVolume、resume）统一在 `ApplicationService` 中处理
 - 架构统一：所有业务逻辑都走 `ApplicationService`
+
+### 后续优化（已完成）
+
+- ✅ **Playlist 重复添加**：`PlayMediaCommand` 增加 `options.addToPlaylist`。`videoPlayerApp.play()` 调用时传 `addToPlaylist: false`，列表由 IPC / `setList` / `setCurrentByPath` 管理，避免 handler 再次 `add`。

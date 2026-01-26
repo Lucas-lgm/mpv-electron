@@ -27,6 +27,11 @@ export interface PlayMediaCommand {
      * 是否自动恢复播放（默认 true）
      */
     autoResume?: boolean
+    /**
+     * 是否加入播放列表并设为当前项（默认 true）。
+     * 当调用方已管理列表（如 videoPlayerApp.play）时传 false，仅执行播放。
+     */
+    addToPlaylist?: boolean
   }
 }
 
@@ -45,9 +50,11 @@ export class PlayMediaCommandHandler {
       ...command.metadata
     })
     
-    // 添加到播放列表
-    this.playlist.add(media)
-    this.playlist.setCurrentByUri(media.uri)
+    const addToPlaylist = command.options?.addToPlaylist !== false
+    if (addToPlaylist) {
+      this.playlist.add(media)
+      this.playlist.setCurrentByUri(media.uri)
+    }
     
     // 播放
     await this.player.play(media)

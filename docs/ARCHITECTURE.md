@@ -1591,13 +1591,10 @@ if (process.platform === 'linux') {
 ```
 src/
 ├── main/                    # 主进程业务逻辑层
-│   ├── corePlayer.ts       # 核心播放器控制器 (493行)
-│   ├── renderManager.ts    # 渲染循环管理 (274行)
-│   ├── libmpv.ts           # MPV原生绑定接口 (872行)
-│   ├── playerState.ts      # 状态机实现 (111行)
-│   ├── videoPlayerApp.ts   # 应用入口和窗口管理 (796行)
+│   ├── corePlayer.ts       # 核心播放器控制器
+│   ├── playerState.ts      # 状态机实现
+│   ├── videoPlayerApp.ts   # 应用入口和窗口管理
 │   ├── ipcHandlers.ts      # IPC 处理（仅依赖 videoPlayerApp / corePlayer）
-│   ├── nativeHelper.ts     # 平台窗口句柄
 │   ├── timeline.ts         # 时间轴
 │   ├── windowManager.ts    # 窗口管理
 │   ├── application/        # 应用服务与 CQRS
@@ -1607,7 +1604,10 @@ src/
 │   ├── domain/             # 领域模型
 │   │   ├── models/         # Media, Playback, Playlist
 │   │   └── services/       # MediaPlayer 接口
-│   └── infrastructure/mpv/ # MpvAdapter, MpvMediaPlayer
+│   └── infrastructure/
+│       ├── mpv/            # libmpv, MpvAdapter, MpvMediaPlayer
+│       ├── platform/       # nativeHelper（窗口句柄）
+│       └── rendering/      # renderManager
 ├── renderer/               # UI层 (Vue组件)
 │   ├── src/
 │   │   ├── views/         # 页面组件
@@ -1716,19 +1716,18 @@ const MPV_END_FILE_REASON_REDIRECT = 5 // 重定向
 | 文件路径 | 功能描述 | 行数 |
 |----------|----------|------|
 | `src/main/main.ts` | 主进程入口，初始化 videoPlayerApp | - |
-| `src/main/videoPlayerApp.ts` | 应用入口、窗口与播放列表协调，`getControlWindow`/`getControlView` | ~795 |
+| `src/main/videoPlayerApp.ts` | 应用入口、窗口与播放列表协调，`getControlWindow`/`getControlView` | ~773 |
 | `src/main/corePlayer.ts` | 播放控制、渲染与状态桥接，导出 `corePlayer` 单例 | ~452 |
-| `src/main/ipcHandlers.ts` | IPC 处理，仅依赖 `videoPlayerApp`、`corePlayer`，无 main 循环依赖 | ~240 |
+| `src/main/ipcHandlers.ts` | IPC 处理，仅依赖 `videoPlayerApp`、`corePlayer`，无 main 循环依赖 | ~239 |
 | `src/main/playerState.ts` | PlayerStateMachine，PlaybackSession → PlayerState | ~136 |
 | `src/main/playerStateTypes.ts` | PlayerPhase、PlayerState 类型 | - |
-| `src/main/renderManager.ts` | 渲染循环管理 | ~274 |
 | `src/main/timeline.ts` | 时间轴管理 | - |
 | `src/main/windowManager.ts` | 窗口管理 | - |
-| `src/main/libmpv.ts` | MPV 原生绑定与 LibMPVController | ~872 |
-| `src/main/nativeHelper.ts` | 平台窗口句柄（NSView/HWND） | - |
 | `src/main/application/` | ApplicationService、commands、queries | - |
 | `src/main/domain/` | Media、Playback、Playlist、MediaPlayer | - |
-| `src/main/infrastructure/mpv/` | MpvAdapter、MpvMediaPlayer | - |
+| `src/main/infrastructure/mpv/` | libmpv、MpvAdapter、MpvMediaPlayer | - |
+| `src/main/infrastructure/platform/` | nativeHelper（NSView/HWND 窗口句柄） | - |
+| `src/main/infrastructure/rendering/` | renderManager（渲染循环） | - |
 | `native/binding.cc` | C++ N-API 绑定 | - |
 | `native/mpv_render_gl.mm` | macOS OpenGL 渲染 | - |
 
@@ -1866,7 +1865,7 @@ if (elapsed > 100) { // 超过100ms警告
 - **次版本号**：新增功能、接口变更
 - **修订号**：文档修正、格式调整
 
-当前版本：**1.3**
+当前版本：**1.4**
 
 ### 13.6 更新历史
 
@@ -1876,10 +1875,11 @@ if (elapsed > 100) { // 超过100ms警告
 | 2026-01-25 | 1.1 | 主进程优化：移除 playbackController、corePlayer 自由函数；ipcHandlers 去 main 依赖；VideoPlayerApp 暴露 getControlWindow/getControlView；更新 11.3/12.2 | - |
 | 2026-01-25 | 1.2 | VideoPlayerApp 与 ApplicationService 去重：删除 pause/resume/stop/seek/setVolume 包装；control-play 在 ended/stopped 时播当前项；更新 11.3、VIDEOPLAYERAPP_REFACTORING 执行记录 | - |
 | 2026-01-25 | 1.3 | 统一播放入口：videoPlayerApp.play() 通过 appService.playMedia()；扩展 PlayMediaCommand 支持音量/自动恢复选项；播放逻辑统一在 ApplicationService 中处理 | - |
+| 2026-01-25 | 1.4 | PlayMediaCommand 增加 addToPlaylist 选项，避免重复添加列表；基础设施层目录重组：libmpv→infrastructure/mpv，nativeHelper→platform，renderManager→rendering；更新 11.3、12.2、MAIN_PROCESS_REORGANIZATION | - |
 
 ---
 
-**文档版本**: 1.3  
+**文档版本**: 1.4  
 **最后更新**: 2026年1月25日  
 **维护者**: 架构文档维护小组  
 **更新策略**: 代码变更时**同一轮工作内**同步更新，实时维护、不依赖用户提醒，详见第13章  

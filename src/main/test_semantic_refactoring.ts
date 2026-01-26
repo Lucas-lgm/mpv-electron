@@ -12,7 +12,7 @@ import { Media } from './domain/models/Media'
 import { Playlist } from './domain/models/Playlist'
 import { PlaybackSession, PlaybackStatus } from './domain/models/Playback'
 import { MpvAdapter } from './infrastructure/mpv/MpvAdapter'
-import type { MPVStatus } from './libmpv'
+import type { MPVStatus } from './infrastructure/mpv/libmpv'
 
 export async function testDomainModels(): Promise<void> {
   console.log('\n🧪 ========== 领域模型测试 ==========\n')

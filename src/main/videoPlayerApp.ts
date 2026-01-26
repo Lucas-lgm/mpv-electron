@@ -180,7 +180,8 @@ export class VideoPlayerApp {
         mediaName: target.name,
         options: {
           volume: this.config.getVolume(),
-          autoResume: true
+          autoResume: true,
+          addToPlaylist: false
         }
       })
 
