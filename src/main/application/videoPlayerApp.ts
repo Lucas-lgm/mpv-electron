@@ -152,6 +152,18 @@ export class VideoPlayerApp {
     await this.mediaPlayer.stop()
   }
 
+  /**
+   * 检查当前是否有视频在播放
+   * @returns true 如果有视频在播放、加载中、暂停
+   */
+  private hasActiveVideo(): boolean {
+    const state = this.corePlayer.getPlayerState()
+    const phase = state.phase
+    return phase === 'loading' || 
+           phase === 'playing' || 
+           phase === 'paused'
+  }
+
   /** 移除对 CorePlayer 的监听，在 cleanup 前调用，避免泄漏 */
   private releaseCorePlayerListeners(): void {
     this.corePlayer.offPlayerState(this.onEndedPlayNext)
@@ -212,6 +224,18 @@ export class VideoPlayerApp {
   }
 
   async play(target: PlaylistItem) {
+    // 如果当前有视频在播放，先停止
+    if (this.hasActiveVideo()) {
+      try {
+        await this.stopPlayback()
+        // 等待一小段时间，确保停止操作完成
+        await new Promise(resolve => setTimeout(resolve, 100))
+      } catch (error) {
+        // 停止失败不影响新视频播放，记录错误即可
+        console.error('[VideoPlayerApp] Failed to stop current video:', error)
+      }
+    }
+
     // UI 层职责：窗口管理
     const mainWindow = this.windowManager.getWindow('main')
     if (mainWindow && mainWindow.isVisible()) {
