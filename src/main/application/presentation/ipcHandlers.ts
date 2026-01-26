@@ -282,6 +282,48 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
     }
   })
 
+  // NAS 网络发现
+  ipcMain.on('nas-discover-servers', async (event) => {
+    try {
+      const result = await nasService.discoverNetworkServers()
+      event.reply('nas-discover-servers-result', result)
+    } catch (error) {
+      console.error('网络发现失败:', error)
+      event.reply('nas-discover-servers-result', {
+        servers: [],
+        error: error instanceof Error ? error.message : '网络发现失败'
+      })
+    }
+  })
+
+  // NAS 列出服务器共享
+  ipcMain.on('nas-list-shares', async (event, data: { host: string; username?: string; password?: string }) => {
+    try {
+      const result = await nasService.listServerShares(data.host, data.username, data.password)
+      event.reply('nas-list-shares-result', result)
+    } catch (error) {
+      console.error('列出共享失败:', error)
+      event.reply('nas-list-shares-result', {
+        shares: [],
+        error: error instanceof Error ? error.message : '列出共享失败'
+      })
+    }
+  })
+
+  // NAS 打开网络浏览
+  ipcMain.on('nas-open-network-browser', async (event) => {
+    try {
+      const result = await nasService.openNetworkBrowser()
+      event.reply('nas-open-network-browser-result', result)
+    } catch (error) {
+      console.error('打开网络浏览失败:', error)
+      event.reply('nas-open-network-browser-result', {
+        success: false,
+        error: error instanceof Error ? error.message : '打开网络浏览失败'
+      })
+    }
+  })
+
   // 测试（开发模式，路由到测试模块）
   ipcMain.on('test-semantic-refactoring', async () => {
     if (process.env.NODE_ENV === 'development') {

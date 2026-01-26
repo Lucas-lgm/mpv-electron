@@ -5,7 +5,11 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { readdir, stat, open } from 'fs/promises'
 import { join, extname } from 'path'
 import { app, BrowserWindow, safeStorage, shell } from 'electron'
+import { exec } from 'child_process'
+import { promisify } from 'util'
 import { scanDirectory, type ScannedResource } from './mountPathService'
+
+const execAsync = promisify(exec)
 
 export interface NasConfig {
   protocol: 'smb'
@@ -428,6 +432,218 @@ export class NasService {
   }
 
   /**
+   * 发现网络上的 SMB 服务器
+   * 使用 macOS 的 dns-sd 或 smbclient 来发现网络上的服务器
+   */
+  async discoverNetworkServers(): Promise<{ servers: NetworkServer[]; error?: string }> {
+    try {
+      // 方法 1: 使用 smbclient 发现（如果可用）
+      try {
+        const { stdout } = await execAsync('which smbclient', { timeout: 5000 })
+        if (stdout.trim()) {
+          // smbclient 可用，使用它来发现服务器
+          // 注意：smbclient -L 需要认证，这里我们只尝试列出
+          // 实际上，macOS 的网络发现主要通过 Finder 的"网络"功能
+          // 我们可以通过打开 smb:// 来让系统显示可用的服务器
+          return {
+            servers: [],
+            error: '请使用 Finder 的"网络"功能查看可用服务器，或手动输入服务器地址'
+          }
+        }
+      } catch {
+        // smbclient 不可用，继续使用其他方法
+      }
+
+      // 方法 2: 使用 macOS 的网络浏览功能
+      // 在 macOS 上，可以通过打开 smb:// 让系统显示网络上的服务器
+      // 但无法直接获取列表，需要用户交互
+      
+      return {
+        servers: [],
+        error: 'macOS 上的网络发现需要通过 Finder 的"网络"功能。请手动输入服务器地址，或使用"浏览网络"按钮'
+      }
+    } catch (error) {
+      return {
+        servers: [],
+        error: error instanceof Error ? error.message : '网络发现失败'
+      }
+    }
+  }
+
+  /**
+   * 列出服务器上的可用共享
+   * 使用 smbclient 或通过系统 API 获取
+   */
+  async listServerShares(host: string, username?: string, password?: string): Promise<{ shares: NetworkShare[]; error?: string }> {
+    try {
+      // 检查是否有 smbclient
+      let smbclientPath = ''
+      try {
+        const { stdout } = await execAsync('which smbclient', { timeout: 5000 })
+        smbclientPath = stdout.trim()
+      } catch {
+        // smbclient 不可用
+      }
+
+      if (!smbclientPath) {
+        // 如果没有 smbclient，尝试使用 macOS 的系统方法
+        // 可以通过打开 smb://host 让用户查看，但无法直接获取列表
+        // 或者尝试使用 mount_smbfs 的方式（但这需要先知道共享名称）
+        
+        // 提示用户安装 smbclient 或使用 Finder
+        return {
+          shares: [],
+          error: '需要安装 smbclient 工具才能自动列出共享。安装方法：brew install samba。或者可以在 Finder 中连接到 smb://' + host + ' 查看可用共享'
+        }
+      }
+
+      // 使用 smbclient 列出共享
+      // 转义特殊字符，防止命令注入
+      const safeHost = host.replace(/[;&|`$()]/g, '')
+      const safeUsername = username ? username.replace(/[;&|`$()]/g, '') : undefined
+      const safePassword = password ? password.replace(/[;&|`$()]/g, '') : undefined
+      
+      let command = `smbclient -L "${safeHost}" -N`
+      if (safeUsername) {
+        command = `smbclient -L "${safeHost}" -U "${safeUsername}"`
+        if (safePassword) {
+          command += `%${safePassword}`
+        }
+      }
+
+      try {
+        const { stdout, stderr } = await execAsync(command, {
+          timeout: 10000,
+          maxBuffer: 1024 * 1024 // 1MB
+        })
+
+        // 解析 smbclient 输出
+        const shares: NetworkShare[] = []
+        const lines = stdout.split('\n')
+        let inShareList = false
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          
+          // 跳过空行和标题
+          if (!trimmed || trimmed.startsWith('Sharename') || trimmed.startsWith('----')) {
+            if (trimmed.startsWith('Sharename')) {
+              inShareList = true
+            }
+            continue
+          }
+
+          // 如果遇到其他部分，停止解析
+          if (inShareList && trimmed.includes('---')) {
+            break
+          }
+
+          if (inShareList) {
+            // 解析共享信息
+            // 格式通常是: Sharename      Type      Comment
+            const parts = trimmed.split(/\s{2,}/)
+            if (parts.length >= 2) {
+              const shareName = parts[0].trim()
+              const shareType = parts[1].trim()
+              
+              // 跳过系统共享（通常以 $ 结尾）
+              if (!shareName.endsWith('$') && shareName !== 'IPC$') {
+                shares.push({
+                  name: shareName,
+                  type: shareType,
+                  comment: parts[2]?.trim()
+                })
+              }
+            }
+          }
+        }
+
+        return { shares }
+      } catch (execError: any) {
+        // smbclient 可能返回错误，但可能仍然有输出
+        if (execError.stdout) {
+          // 尝试解析输出
+          const shares: NetworkShare[] = []
+          const lines = execError.stdout.split('\n')
+          let inShareList = false
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (trimmed.startsWith('Sharename')) {
+              inShareList = true
+              continue
+            }
+            if (inShareList && trimmed.includes('---')) {
+              break
+            }
+            if (inShareList) {
+              const parts = trimmed.split(/\s{2,}/)
+              if (parts.length >= 2) {
+                const shareName = parts[0].trim()
+                const shareType = parts[1].trim()
+                if (!shareName.endsWith('$') && shareName !== 'IPC$') {
+                  shares.push({
+                    name: shareName,
+                    type: shareType,
+                    comment: parts[2]?.trim()
+                  })
+                }
+              }
+            }
+          }
+
+          if (shares.length > 0) {
+            return { shares }
+          }
+        }
+
+        // 检查是否是认证错误
+        const errorMsg = execError.stderr || execError.message || ''
+        if (errorMsg.includes('NT_STATUS_LOGON_FAILURE') || errorMsg.includes('NT_STATUS_ACCESS_DENIED')) {
+          return {
+            shares: [],
+            error: '认证失败，请检查用户名和密码。如果服务器允许匿名访问，请留空用户名和密码字段'
+          }
+        }
+        
+        if (errorMsg.includes('NT_STATUS_HOST_UNREACHABLE') || errorMsg.includes('Connection refused')) {
+          return {
+            shares: [],
+            error: '无法连接到服务器，请检查服务器地址和网络连接'
+          }
+        }
+
+        return {
+          shares: [],
+          error: errorMsg || '无法列出共享，请检查服务器地址和认证信息'
+        }
+      }
+    } catch (error) {
+      return {
+        shares: [],
+        error: error instanceof Error ? error.message : '列出共享失败'
+      }
+    }
+  }
+
+  /**
+   * 打开网络浏览（让用户选择服务器和共享）
+   * 在 macOS 上，打开 smb:// 让系统显示网络上的服务器
+   */
+  async openNetworkBrowser(): Promise<{ success: boolean; error?: string }> {
+    try {
+      // 打开 smb:// 让 macOS 显示网络上的服务器
+      await shell.openExternal('smb://')
+      return { success: true }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : '打开网络浏览失败'
+      }
+    }
+  }
+
+  /**
    * 打开/挂载 SMB 共享
    * 在 macOS 上，使用 shell.openExternal 打开 smb:// URL，系统会自动处理挂载
    */
@@ -589,6 +805,24 @@ function isVideoFile(fileName: string): boolean {
   ]
   const ext = extname(fileName).toLowerCase().slice(1)
   return VIDEO_EXTENSIONS.includes(ext)
+}
+
+/**
+ * 网络服务器信息
+ */
+export interface NetworkServer {
+  name: string
+  address: string
+  type: 'smb' | 'unknown'
+}
+
+/**
+ * 网络共享信息
+ */
+export interface NetworkShare {
+  name: string
+  type: string
+  comment?: string
 }
 
 // 单例
