@@ -13,4 +13,3 @@ if (process.env.NODE_ENV === 'development') {
 videoPlayerApp.init()
 
 export const windowManager = videoPlayerApp.windowManager
-export const createVideoWindow = () => videoPlayerApp.createVideoWindow()

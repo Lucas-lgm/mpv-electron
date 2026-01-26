@@ -833,14 +833,14 @@ window.electronAPI.on('playlist-updated', (playlist) => {
 ```typescript
 // ipcHandlers.ts 示例
 ipcMain.on('play-video', async (event, file: { name: string; path: string }) => {
-  const currentList = videoPlayerApp.playlist.getList()
+  const currentList = videoPlayerApp.getList()
   let nextList = currentList
   if (!currentList.some(item => item.path === file.path)) {
     nextList = [...currentList, { name: file.name, path: file.path }]
-    videoPlayerApp.playlist.setList(nextList)
+    videoPlayerApp.setList(nextList)
   }
-  videoPlayerApp.playlist.setCurrentByPath(file.path)
-  await handlePlayMedia(file)
+  videoPlayerApp.setCurrentByPath(file.path)
+  await videoPlayerApp.play({ path: file.path, name: file.name })
   if (nextList.length > 0) {
     corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
   }
@@ -1596,11 +1596,18 @@ src/
 │   ├── libmpv.ts           # MPV原生绑定接口 (872行)
 │   ├── playerState.ts      # 状态机实现 (111行)
 │   ├── videoPlayerApp.ts   # 应用入口和窗口管理 (796行)
-│   ├── ipcHandlers.ts      # IPC通信处理 (234行)
-│   ├── nativeHelper.ts     # 平台窗口句柄获取
-│   ├── timeline.ts         # 时间轴管理
-│   ├── playbackController.ts # 播放控制
-│   └── windowManager.ts    # 窗口管理
+│   ├── ipcHandlers.ts      # IPC 处理（仅依赖 videoPlayerApp / corePlayer）
+│   ├── nativeHelper.ts     # 平台窗口句柄
+│   ├── timeline.ts         # 时间轴
+│   ├── windowManager.ts    # 窗口管理
+│   ├── application/        # 应用服务与 CQRS
+│   │   ├── ApplicationService.ts
+│   │   ├── commands/       # 播放控制等命令
+│   │   └── queries/        # 播放列表、状态等查询
+│   ├── domain/             # 领域模型
+│   │   ├── models/         # Media, Playback, Playlist
+│   │   └── services/       # MediaPlayer 接口
+│   └── infrastructure/mpv/ # MpvAdapter, MpvMediaPlayer
 ├── renderer/               # UI层 (Vue组件)
 │   ├── src/
 │   │   ├── views/         # 页面组件
@@ -1616,6 +1623,8 @@ native/                     # 原生绑定层
 ├── mpv_render_gl.mm        # macOS OpenGL渲染
 └── binding.gyp            # 构建配置
 ```
+
+**主进程优化要点**：`ipcHandlers` 仅依赖 `videoPlayerApp`、`corePlayer`，不再依赖 `main`，避免循环依赖。播放触发统一通过 `videoPlayerApp.play()`（原 `playbackController` 已内联）。`VideoPlayerApp` 提供 `getControlWindow()`、`getControlView()` 供 IPC 使用，无需 `as any`。`corePlayer` 仅导出单例，不再导出冗余自由函数。播放控制（pause/stop/seek/volume）由 IPC 直接调 `videoPlayerApp.appService`；`control-play` 在 `ended`/`stopped` 时播当前列表项，否则 `resumePlayback`。`VideoPlayerApp` 已删除 pause/resume/stop/seek/setVolume 包装方法。
 
 ### 11.4 测试策略
 
@@ -1706,17 +1715,22 @@ const MPV_END_FILE_REASON_REDIRECT = 5 // 重定向
 
 | 文件路径 | 功能描述 | 行数 |
 |----------|----------|------|
-| `src/main/corePlayer.ts` | 核心播放器控制器 | 493 |
-| `src/main/renderManager.ts` | 渲染循环管理 | 274 |
-| `src/main/libmpv.ts` | MPV原生绑定接口 | 872 |
-| `src/main/playerState.ts` | 状态机实现 | 111 |
-| `src/main/videoPlayerApp.ts` | 应用入口和窗口管理 | 796 |
-| `src/main/ipcHandlers.ts` | IPC通信处理 | 234 |
-| `src/main/nativeHelper.ts` | 平台窗口句柄获取 | - |
+| `src/main/main.ts` | 主进程入口，初始化 videoPlayerApp | - |
+| `src/main/videoPlayerApp.ts` | 应用入口、窗口与播放列表协调，`getControlWindow`/`getControlView` | ~795 |
+| `src/main/corePlayer.ts` | 播放控制、渲染与状态桥接，导出 `corePlayer` 单例 | ~452 |
+| `src/main/ipcHandlers.ts` | IPC 处理，仅依赖 `videoPlayerApp`、`corePlayer`，无 main 循环依赖 | ~240 |
+| `src/main/playerState.ts` | PlayerStateMachine，PlaybackSession → PlayerState | ~136 |
+| `src/main/playerStateTypes.ts` | PlayerPhase、PlayerState 类型 | - |
+| `src/main/renderManager.ts` | 渲染循环管理 | ~274 |
 | `src/main/timeline.ts` | 时间轴管理 | - |
 | `src/main/windowManager.ts` | 窗口管理 | - |
-| `native/binding.cc` | C++ N-API绑定 | - |
-| `native/mpv_render_gl.mm` | macOS OpenGL渲染 | - |
+| `src/main/libmpv.ts` | MPV 原生绑定与 LibMPVController | ~872 |
+| `src/main/nativeHelper.ts` | 平台窗口句柄（NSView/HWND） | - |
+| `src/main/application/` | ApplicationService、commands、queries | - |
+| `src/main/domain/` | Media、Playback、Playlist、MediaPlayer | - |
+| `src/main/infrastructure/mpv/` | MpvAdapter、MpvMediaPlayer | - |
+| `native/binding.cc` | C++ N-API 绑定 | - |
+| `native/mpv_render_gl.mm` | macOS OpenGL 渲染 | - |
 
 ### 12.3 常见问题排查
 
@@ -1852,17 +1866,19 @@ if (elapsed > 100) { // 超过100ms警告
 - **次版本号**：新增功能、接口变更
 - **修订号**：文档修正、格式调整
 
-当前版本：**1.0**
+当前版本：**1.2**
 
 ### 13.6 更新历史
 
 | 日期 | 版本 | 更新内容 | 更新人 |
 |------|------|---------|--------|
 | 2026-01-25 | 1.0 | 初始版本，建立文档更新机制 | - |
+| 2026-01-25 | 1.1 | 主进程优化：移除 playbackController、corePlayer 自由函数；ipcHandlers 去 main 依赖；VideoPlayerApp 暴露 getControlWindow/getControlView；更新 11.3/12.2 | - |
+| 2026-01-25 | 1.2 | VideoPlayerApp 与 ApplicationService 去重：删除 pause/resume/stop/seek/setVolume 包装；control-play 在 ended/stopped 时播当前项；更新 11.3、VIDEOPLAYERAPP_REFACTORING 执行记录 | - |
 
 ---
 
-**文档版本**: 1.0  
+**文档版本**: 1.2  
 **最后更新**: 2026年1月25日  
 **维护者**: 架构文档维护小组  
 **更新策略**: 代码变更时**同一轮工作内**同步更新，实时维护、不依赖用户提醒，详见第13章  

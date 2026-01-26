@@ -1,8 +1,6 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
-import { windowManager } from './main'
+import { ipcMain, dialog } from 'electron'
 import { videoPlayerApp, PlaylistItem } from './videoPlayerApp'
 import { corePlayer } from './corePlayer'
-import { handlePlayMedia } from './playbackController'
 
 // 显式记录通过控制栏按钮进入的“播放器全屏模式”
 // 这样不依赖 Electron 在透明/子窗口场景下的 isFullScreen() 实现细节
@@ -24,7 +22,7 @@ export function setupIpcHandlers() {
       const fileName = filePath.split(/[/\\]/).pop() || '未知文件'
       
       // 发送到主窗口
-      const mainWindow = windowManager.getWindow('main')
+      const mainWindow = videoPlayerApp.windowManager.getWindow('main')
       if (mainWindow) {
         mainWindow.webContents.send('video-file-selected', {
           name: fileName,
@@ -43,7 +41,7 @@ export function setupIpcHandlers() {
       videoPlayerApp.setList(nextList)
     }
     videoPlayerApp.setCurrentByPath(file.path)
-    await handlePlayMedia(file)
+    await videoPlayerApp.play({ path: file.path, name: file.name })
     if (nextList.length > 0) {
       corePlayer.broadcastToPlaybackUIs('playlist-updated', nextList)
     }
@@ -63,9 +61,14 @@ export function setupIpcHandlers() {
     await videoPlayerApp.appService.pausePlayback({})
   })
 
-  // 处理播放控制 - 播放
+  // 处理播放控制 - 播放（ended/stopped 时播放当前列表项，否则恢复播放）
   ipcMain.on('control-play', async () => {
-    await videoPlayerApp.appService.resumePlayback({})
+    const state = corePlayer.getPlayerState()
+    if (state.phase === 'ended' || state.phase === 'stopped') {
+      await videoPlayerApp.playCurrentFromPlaylist()
+    } else {
+      await videoPlayerApp.appService.resumePlayback({})
+    }
   })
 
   // 处理 URL 播放
@@ -73,7 +76,7 @@ export function setupIpcHandlers() {
     const item: PlaylistItem = { path: url, name: url }
     videoPlayerApp.setList([item])
     videoPlayerApp.setCurrentByPath(item.path)
-    await handlePlayMedia(item)
+    await videoPlayerApp.play(item)
     corePlayer.broadcastToPlaybackUIs('playlist-updated', [item])
   })
 
@@ -98,10 +101,10 @@ export function setupIpcHandlers() {
 
   // 全屏切换（来自控制栏按钮）
   ipcMain.on('control-toggle-fullscreen', () => {
-    const videoWindow = windowManager.getWindow('video')
+    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
     if (!videoWindow) return
 
-    const controlWindow = (videoPlayerApp as any).controlWindow as BrowserWindow | null
+    const controlWindow = videoPlayerApp.getControlWindow()
 
     // 仅由控制栏按钮维护的“播放器全屏模式”开关
     isFullscreen = !isFullscreen
@@ -117,11 +120,11 @@ export function setupIpcHandlers() {
 
   // 窗口控制（来自控制栏左侧三个按钮）
   ipcMain.on('control-window-action', (_event, action: 'close' | 'minimize' | 'maximize') => {
-    const videoWindow = windowManager.getWindow('video')
+    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
     if (!videoWindow) return
 
     // Windows 双窗口模式下，优先使用控制窗口作为操作目标
-    const controlWindow = (videoPlayerApp as any).controlWindow as BrowserWindow | null
+    const controlWindow = videoPlayerApp.getControlWindow()
     const targetForMaximize =
       process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()
         ? controlWindow
@@ -180,7 +183,7 @@ export function setupIpcHandlers() {
 
   // 视频时间更新 - 转发到视频窗口（控制面板已集成在视频窗口中）
   ipcMain.on('video-time-update', (event, data: { currentTime: number; duration: number }) => {
-    const videoWindow = windowManager.getWindow('video')
+    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
     if (videoWindow) {
       videoWindow.webContents.send('video-time-update', data)
     }
@@ -188,51 +191,35 @@ export function setupIpcHandlers() {
 
   // 视频结束 - 转发到视频窗口
   ipcMain.on('video-ended', () => {
-    const videoWindow = windowManager.getWindow('video')
+    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
     if (videoWindow) {
       videoWindow.webContents.send('video-ended')
     }
   })
 
   // 控制栏自动隐藏 - 鼠标移动
-  ipcMain.on('control-bar-mouse-move', (event) => {
-    // 转发到 ControlView（可能是 BrowserView 或 BrowserWindow）
-    const videoWindow = windowManager.getWindow('video')
+  ipcMain.on('control-bar-mouse-move', () => {
+    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
     if (!videoWindow) return
-    
-    if (process.platform === 'darwin') {
-      // macOS: BrowserView 模式
-      const controlView = (videoPlayerApp as any).controlView
-      if (controlView && !controlView.webContents.isDestroyed()) {
-        controlView.webContents.send('control-bar-show')
-      }
-    } else if (process.platform === 'win32') {
-      // Windows: BrowserWindow 模式
-      const controlWindow = (videoPlayerApp as any).controlWindow
-      if (controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
-        controlWindow.webContents.send('control-bar-show')
-      }
+    const controlView = videoPlayerApp.getControlView()
+    const controlWindow = videoPlayerApp.getControlWindow()
+    if (process.platform === 'darwin' && controlView && !controlView.webContents.isDestroyed()) {
+      controlView.webContents.send('control-bar-show')
+    } else if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
+      controlWindow.webContents.send('control-bar-show')
     }
   })
 
   // 控制栏自动隐藏 - 鼠标离开
-  ipcMain.on('control-bar-mouse-leave', (event) => {
-    // 转发到 ControlView
-    const videoWindow = windowManager.getWindow('video')
+  ipcMain.on('control-bar-mouse-leave', () => {
+    const videoWindow = videoPlayerApp.windowManager.getWindow('video')
     if (!videoWindow) return
-    
-    if (process.platform === 'darwin') {
-      // macOS: BrowserView 模式
-      const controlView = (videoPlayerApp as any).controlView
-      if (controlView && !controlView.webContents.isDestroyed()) {
-        controlView.webContents.send('control-bar-schedule-hide')
-      }
-    } else if (process.platform === 'win32') {
-      // Windows: BrowserWindow 模式
-      const controlWindow = (videoPlayerApp as any).controlWindow
-      if (controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
-        controlWindow.webContents.send('control-bar-schedule-hide')
-      }
+    const controlView = videoPlayerApp.getControlView()
+    const controlWindow = videoPlayerApp.getControlWindow()
+    if (process.platform === 'darwin' && controlView && !controlView.webContents.isDestroyed()) {
+      controlView.webContents.send('control-bar-schedule-hide')
+    } else if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed() && controlWindow.webContents) {
+      controlWindow.webContents.send('control-bar-schedule-hide')
     }
   })
 

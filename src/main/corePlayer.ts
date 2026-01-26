@@ -449,31 +449,3 @@ class CorePlayerImpl implements CorePlayer {
 }
 
 export const corePlayer: CorePlayer = new CorePlayerImpl()
-
-export function setCorePlayerBackend(impl: CorePlayer) {
-  Object.assign(corePlayer, impl)
-}
-
-export function updateFromMPVStatus(status: MPVStatus) {
-  ;(corePlayer as CorePlayerImpl).updateFromMPVStatus(status)
-}
-
-export function setPhase(phase: PlayerPhase) {
-  ;(corePlayer as CorePlayerImpl).setPhase(phase)
-}
-
-export function getPlayerState(): PlayerState {
-  return corePlayer.getPlayerState()
-}
-
-export function onPlayerState(listener: (state: PlayerState) => void) {
-  corePlayer.onPlayerState(listener)
-}
-
-export function offPlayerState(listener: (state: PlayerState) => void) {
-  corePlayer.offPlayerState(listener)
-}
-
-export function setError(message: string) {
-  ;(corePlayer as CorePlayerImpl).setError(message)
-}

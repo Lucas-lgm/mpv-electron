@@ -98,6 +98,14 @@ export class VideoPlayerApp {
     })
   }
 
+  getControlWindow(): BrowserWindow | null {
+    return this.controlWindow
+  }
+
+  getControlView(): BrowserView | null {
+    return this.controlView
+  }
+
   getList(): PlaylistItem[] {
     return this.playlist.getAll().map((e) => ({
       path: e.media.uri,
@@ -202,32 +210,6 @@ export class VideoPlayerApp {
     const item = this.prev()
     if (!item) return
     await this.play(item)
-  }
-
-  async pause() {
-    await this.appService.pausePlayback({})
-  }
-
-  async resume() {
-    const state = corePlayer.getPlayerState()
-    if (state.phase === 'ended' || state.phase === 'stopped') {
-      await this.playCurrentFromPlaylist()
-    } else {
-      await this.appService.resumePlayback({})
-    }
-  }
-
-  async stop() {
-    await this.appService.stopPlayback({})
-  }
-
-  async seek(time: number) {
-    await this.appService.seek({ time })
-  }
-
-  async setVolume(volume: number) {
-    this.config.setVolume(volume)
-    await this.appService.setVolume({ volume })
   }
 
   async setHdrEnabled(enabled: boolean) {
