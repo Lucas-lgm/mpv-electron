@@ -46,11 +46,35 @@
         />
       </div>
     </div>
+    <!-- URL 输入对话框 -->
+    <el-dialog
+      v-model="urlDialogVisible"
+      title="添加视频URL"
+      width="500px"
+      :close-on-click-modal="false"
+    >
+      <el-form>
+        <el-form-item label="URL地址">
+          <el-input
+            v-model="urlInput"
+            placeholder="请输入视频URL（http:// 或 https://）"
+            @keyup.enter="handleUrlConfirm"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button class="url-dialog-cancel" @click="handleUrlCancel">取消</el-button>
+          <el-button type="primary" class="url-dialog-confirm" @click="handleUrlConfirm">确定</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, computed, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import Sidebar from '../components/Sidebar.vue'
 import Toolbar from '../components/Toolbar.vue'
 import ContentArea from '../components/ContentArea.vue'
@@ -84,6 +108,10 @@ const {
 const { mountPaths: mountPathsList, addMountPath, removeMountPath, refreshMountPath, initMountPaths } = mountPaths
 
 const loading = ref(false)
+
+// URL 对话框相关
+const urlDialogVisible = ref(false)
+const urlInput = ref('')
 
 // 内容标题和副标题
 const contentTitle = computed(() => {
@@ -132,12 +160,19 @@ const handleAddFile = () => {
 
 // 处理添加URL
 const handleAddUrl = () => {
-  const url = prompt('请输入视频URL（http/https）:')
-  if (!url || !url.trim()) return
+  urlInput.value = ''
+  urlDialogVisible.value = true
+}
+
+// 确认添加URL
+const handleUrlConfirm = () => {
+  const trimmedUrl = urlInput.value.trim()
+  if (!trimmedUrl) {
+    return
+  }
   
-  const trimmedUrl = url.trim()
   if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
-    alert('请输入有效的URL（http:// 或 https://）')
+    ElMessage.error('请输入有效的URL（http:// 或 https://）')
     return
   }
 
@@ -151,6 +186,14 @@ const handleAddUrl = () => {
 
   addResource(resource)
   syncPlaylist()
+  urlDialogVisible.value = false
+  urlInput.value = ''
+}
+
+// 取消添加URL
+const handleUrlCancel = () => {
+  urlDialogVisible.value = false
+  urlInput.value = ''
 }
 
 // 处理挂载路径添加
@@ -396,5 +439,128 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* URL 对话框样式 - 统一项目风格 */
+:deep(.el-dialog) {
+  background: #25252d;
+  border: 1px solid #2d2d35;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+:deep(.el-dialog__header) {
+  background: #25252d;
+  border-bottom: 1px solid #2d2d35;
+  padding: 16px 20px;
+}
+
+:deep(.el-dialog__title) {
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+:deep(.el-dialog__headerbtn) {
+  top: 16px;
+  right: 20px;
+}
+
+:deep(.el-dialog__close) {
+  color: #ccc;
+  font-size: 18px;
+}
+
+:deep(.el-dialog__close:hover) {
+  color: #ffffff;
+}
+
+:deep(.el-dialog__body) {
+  background: #25252d;
+  padding: 20px;
+  color: #ffffff;
+}
+
+:deep(.el-form-item__label) {
+  color: #cccccc;
+  font-size: 0.9rem;
+}
+
+:deep(.el-input__wrapper) {
+  background: #1e1e24;
+  border: 1px solid #2d2d35;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+:deep(.el-input__wrapper:hover) {
+  border-color: #4a9eff;
+}
+
+:deep(.el-input__wrapper.is-focus) {
+  border-color: #4a9eff;
+  box-shadow: 0 0 0 1px #4a9eff inset;
+}
+
+:deep(.el-input__inner) {
+  color: #ffffff;
+  background: transparent;
+}
+
+:deep(.el-input__inner::placeholder) {
+  color: #888888;
+}
+
+:deep(.el-dialog__footer) {
+  background: #25252d;
+  border-top: 1px solid #2d2d35;
+  padding: 12px 20px;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+:deep(.el-button) {
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+/* 取消按钮样式 - 使用更高优先级 */
+:deep(.url-dialog-cancel),
+:deep(.el-button--default),
+:deep(.el-button:not(.el-button--primary)) {
+  background: #2a2a32 !important;
+  border-color: #2d2d35 !important;
+  color: #cccccc !important;
+}
+
+:deep(.url-dialog-cancel:hover),
+:deep(.el-button--default:hover),
+:deep(.el-button:not(.el-button--primary):hover) {
+  background: #2d2d35 !important;
+  border-color: #3a3a42 !important;
+  color: #ffffff !important;
+}
+
+:deep(.el-button--primary) {
+  background: #4a9eff;
+  border-color: #4a9eff;
+  color: #ffffff;
+}
+
+:deep(.el-button--primary:hover) {
+  background: #5aaaff;
+  border-color: #5aaaff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(74, 158, 255, 0.3);
+}
+
+:deep(.el-button--primary:active) {
+  transform: translateY(0);
 }
 </style>
