@@ -1626,7 +1626,31 @@ if (process.platform === 'linux') {
 }
 ```
 
-### 11.3 代码组织结构
+### 11.3 领域与业务（应用）类的放置讲究
+
+**核心原则**：领域层只放「业务是什么」；应用层放「业务怎么被使用、编排、暴露」。
+
+| 维度 | 领域层 `domain/` | 应用层 `application/` |
+|------|------------------|------------------------|
+| **放什么** | 实体、值对象、聚合、领域事件、领域服务接口 | 用例、命令/查询、应用服务、编排、UI 入口、技术协调 |
+| **依赖** | 不依赖基础设施、框架、IPC、窗口 | 可依赖领域；可依赖基础设施（通过接口或适配） |
+| **技术细节** | 无；纯业务概念与规则 | 有；轮询、事件转发、窗口、IPC、状态机驱动 |
+| **举例** | `Media`、`Playlist`、`PlaybackSession`、`PlaylistEvents` | `ApplicationService`、`CorePlayer`、`VideoPlayerApp`、`Timeline`、`PlayerStateMachine` |
+
+**判断口诀**：
+- 能脱离「播放器、Electron、MPV」单独讲清楚的 → **领域**（如：播放列表、媒体、播放会话）
+- 负责「何时调谁、怎么通知 UI、怎么和 MPV 打交道」的 → **应用**
+
+**常见误区**：
+- 把「播放进度轮询」「渲染调度」放领域 → 依赖 MPV/窗口，属应用层。
+- 把「播放列表」「媒体」放应用 → 这些是业务概念，应放领域。
+
+**状态机能不能放领域？**  
+能，但要**拆分**：
+- **领域**：播放相位（`PlayerPhase` / `PlaybackStatus`）、状态结构（如 `PlayerState`）、「只维护会话状态」的纯状态持有者（如 `PlaybackStateHolder`）。不依赖 MPV、不 `emit`，只做 `setPhase` / `setError` / `getState`。
+- **应用**：从 MPV 拉状态、经 `MpvAdapter` 转成领域模型、更新领域状态、再 `emit('state')` 驱动 Timeline / RenderManager 的**驱动层**。当前 `PlayerStateMachine` 因内含 `updateFromStatus(MPVStatus)`、`MpvAdapter`、`EventEmitter`，整体偏应用；若拆出「纯状态」到领域，剩下来的就是应用层状态驱动。**当前未拆**；未来支持多播放器时可再考虑拆分。
+
+### 11.4 代码组织结构
 
 ```
 src/
@@ -1674,9 +1698,9 @@ native/                     # 原生绑定层
 
 **主进程优化要点**：**启动编排**：`main` 调用 `runApp()`；`bootstrap.runApp()` 在 `app.whenReady()` 后创建 `createCorePlayer()`、`VideoPlayerApp(core)`，再 `setupIpcHandlers(app, core)`、`createMainWindow`、`registerAppListeners`。CorePlayer 不再在 import 时实例化，避免 MPV/渲染过早初始化。**MediaPlayer** 接口与 **CorePlayer** 同置于 `application/core/`。`ipcHandlers` 通过参数接收 `videoPlayerApp`、`corePlayer`，不依赖 `main`。播放控制、`control-play`、`playMedia` 等逻辑同上。
 
-### 11.4 测试策略
+### 11.5 测试策略
 
-#### 11.4.1 单元测试重点
+#### 11.5.1 单元测试重点
 
 | 组件 | 测试重点 | 测试工具推荐 |
 |------|----------|--------------|
@@ -1685,14 +1709,14 @@ native/                     # 原生绑定层
 | `CorePlayer` | 播放控制流程 | Jest + Electron-mock |
 | IPC通信 | 消息传递正确性 | Jest |
 
-#### 11.4.2 集成测试
+#### 11.5.2 集成测试
 
 1. **播放流程测试**: 完整的文件加载、播放、控制流程
 2. **跨平台测试**: 不同平台的渲染和窗口行为
 3. **性能测试**: 渲染性能、内存使用、响应时间
 4. **HDR测试**: HDR内容播放和色调映射
 
-#### 11.4.3 调试工具集成
+#### 11.5.3 调试工具集成
 
 ```typescript
 // 开发环境调试工具
@@ -1703,16 +1727,16 @@ if (process.env.NODE_ENV === 'development') {
 }
 ```
 
-### 11.5 文档维护
+### 11.6 文档维护
 
-#### 11.5.1 文档更新流程
+#### 11.6.1 文档更新流程
 
 1. **代码变更**: 修改接口或添加功能
 2. **文档更新**: 同步更新架构文档
 3. **示例更新**: 更新调用示例
 4. **图表更新**: 更新架构图或流程图
 
-#### 11.5.2 版本兼容性
+#### 11.6.2 版本兼容性
 
 保持向后兼容的API设计：
 
