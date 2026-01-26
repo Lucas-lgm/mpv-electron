@@ -105,13 +105,16 @@
               <button @click="toggleMute" class="btn-control" :title="volume > 0 ? '静音' : '取消静音'">
                 {{ volume > 0 ? '🔊' : '🔇' }}
               </button>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                :value="volume"
-                @input="onVolumeChange"
-                class="volume-slider"
+              <el-slider
+                class="volume-slider-el"
+                :model-value="volume"
+                :min="0"
+                :max="100"
+                :step="1"
+                :show-tooltip="true"
+                :format-tooltip="formatVolumeTooltip"
+                @input="onVolumeInput"
+                @change="onVolumeChangeEnd"
               />
               <span class="volume-percent">{{ volume }}%</span>
             </div>
@@ -378,13 +381,22 @@ const onSeekEnd = (value: number) => {
   // handlePlayerState 会在 isSeeking 变为 true 时处理，然后在 isSeeking 变为 false 时重置 isScrubbing
 }
 
-const onVolumeChange = (event: Event) => {
-  const target = event.target as HTMLInputElement
-  volume.value = parseInt(target.value)
+// 音量滑块（Element Plus）
+const onVolumeInput = (value: number) => {
+  volume.value = Math.round(value)
+  onUserInteraction()
+}
+
+const onVolumeChangeEnd = (value: number) => {
+  volume.value = Math.round(value)
   onUserInteraction()
   if (window.electronAPI) {
     window.electronAPI.send('control-volume', volume.value)
   }
+}
+
+const formatVolumeTooltip = (value: number): string => {
+  return `${Math.round(value)}%`
 }
 
 const toggleMute = () => {
@@ -845,49 +857,37 @@ onUnmounted(() => {
   color: #ccc;
 }
 
-.volume-slider {
+.volume-slider-el {
   width: 80px;
+}
+
+.volume-slider-el :deep(.el-slider__runway) {
   height: 4px;
+  background-color: #3a3a3a;
   border-radius: 2px;
-  background: #3a3a3a;
-  outline: none;
-  cursor: pointer;
-  -webkit-appearance: none;
-  appearance: none;
+  margin: 0;
 }
 
-.volume-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
+.volume-slider-el :deep(.el-slider__bar) {
+  height: 4px;
+  background-color: #ffffff;
+  border-radius: 2px;
+}
+
+.volume-slider-el :deep(.el-slider__button-wrapper) {
   width: 12px;
   height: 12px;
-  border-radius: 50%;
-  background: #ffffff;
-  cursor: pointer;
-  box-shadow: 0 0 0 2px rgba(30, 30, 36, 0.8), 0 2px 8px rgba(255, 255, 255, 0.3);
-  transition: all 0.2s;
+  top: 0;
+  margin-top: -4px; /* 圆心对齐 4px 轨道中线 */
 }
 
-.volume-slider:hover::-webkit-slider-thumb {
-  width: 14px;
-  height: 14px;
-  box-shadow: 0 0 0 2px rgba(30, 30, 36, 0.8), 0 2px 12px rgba(255, 255, 255, 0.5);
-}
-
-.volume-slider::-moz-range-thumb {
+.volume-slider-el :deep(.el-slider__button) {
   width: 12px;
   height: 12px;
-  border-radius: 50%;
-  background: #ffffff;
-  cursor: pointer;
-  border: 2px solid rgba(30, 30, 36, 0.8);
-  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.3);
+  border: none;
+  background-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   transition: all 0.2s;
-}
-
-.volume-slider:hover::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  box-shadow: 0 2px 12px rgba(255, 255, 255, 0.5);
+  margin-top: -7px;
 }
 </style>
