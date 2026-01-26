@@ -3,6 +3,9 @@
 import type { MPVStatus } from '../../libmpv'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 import type { Media } from '../../domain/models/Media'
+import type { PlayerPhase } from '../../playerStateTypes'
+
+export type ToPlaybackSessionOptions = { overridePhase?: PlayerPhase }
 
 /**
  * MPV 状态到领域模型的适配器
@@ -10,12 +13,15 @@ import type { Media } from '../../domain/models/Media'
 export class MpvAdapter {
   /**
    * 将 MPVStatus 转换为 PlaybackSession
+   * @param options.overridePhase 若提供，则用其推导 status，否则用 mpvStatus.phase
    */
   static toPlaybackSession(
     mpvStatus: MPVStatus,
-    media: Media | null
+    media: Media | null,
+    options?: ToPlaybackSessionOptions
   ): PlaybackSession {
-    const status = this.mapPhaseToStatus(mpvStatus.phase)
+    const phase = options?.overridePhase ?? mpvStatus.phase
+    const status = this.mapPhaseToStatus(phase)
     
     return PlaybackSession.create(
       media,
@@ -38,9 +44,7 @@ export class MpvAdapter {
   /**
    * 将 MPV phase 映射到 PlaybackStatus
    */
-  private static mapPhaseToStatus(
-    phase?: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
-  ): PlaybackStatus {
+  private static mapPhaseToStatus(phase?: PlayerPhase | MPVStatus['phase']): PlaybackStatus {
     switch (phase) {
       case 'idle': return PlaybackStatus.IDLE
       case 'loading': return PlaybackStatus.LOADING

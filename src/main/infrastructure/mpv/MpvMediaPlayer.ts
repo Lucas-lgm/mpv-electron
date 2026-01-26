@@ -19,55 +19,45 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
   private currentSession: PlaybackSession | null = null
   private windowId: number | null = null
   private isInitialized: boolean = false
+  private externalController: boolean = false
   private sessionChangeListeners: Set<(session: PlaybackSession) => void> = new Set()
 
   constructor() {
     super()
-    
     if (!isLibMPVAvailable()) {
       console.warn('[MpvMediaPlayer] libmpv is not available')
     }
   }
 
-  /**
-   * 设置窗口 ID（必须在 play() 之前调用）
-   */
   setWindowId(windowId: number): void {
     this.windowId = windowId
   }
 
   /**
-   * 确保 MPV 控制器已初始化
+   * 使用外部已初始化的 Controller（供 CorePlayer 等集成，阶段 5）
+   * 调用方负责 create/init/setWindowId；本类不再 create/destroy controller。
    */
+  setExternalController(controller: LibMPVController, windowId: number): void {
+    this.controller = controller
+    this.windowId = windowId
+    this.externalController = true
+    this.setupEventHandlers()
+    this.isInitialized = true
+  }
+
   private async ensureInitialized(): Promise<void> {
-    if (this.isInitialized && this.controller) {
-      return
-    }
-
-    if (!isLibMPVAvailable()) {
-      throw new Error('libmpv is not available')
-    }
-
-    if (!this.windowId) {
-      throw new Error('Window ID must be set before playing media. Call setWindowId() first.')
-    }
+    if (this.isInitialized && this.controller) return
+    if (!isLibMPVAvailable()) throw new Error('libmpv is not available')
+    if (!this.windowId) throw new Error('Window ID must be set before playing media. Call setWindowId() first.')
 
     this.controller = new LibMPVController()
-    
-    // 初始化 MPV 实例
-    // Windows 上需要在初始化前设置 wid
     if (process.platform === 'win32') {
       await this.controller.initialize(this.windowId)
     } else {
       await this.controller.initialize()
     }
-
-    // 设置窗口 ID（创建渲染上下文）
     await this.controller.setWindowId(this.windowId)
-
-    // 设置事件监听器
     this.setupEventHandlers()
-
     this.isInitialized = true
   }
 
@@ -235,20 +225,12 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     this.currentMedia = null
   }
 
-  /**
-   * 跳转到指定时间
-   */
   async seek(time: number): Promise<void> {
-    if (!this.controller) {
-      throw new Error('MPV controller not initialized')
-    }
-
-    if (!this.currentSession?.canSeek) {
+    if (!this.controller) throw new Error('MPV controller not initialized')
+    if (this.currentSession && !this.currentSession.canSeek) {
       throw new Error('Cannot seek in current state')
     }
-
     await this.controller.seek(time)
-    // 状态会通过事件更新
   }
 
   /**
@@ -313,15 +295,18 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     this.sessionChangeListeners.delete(listener)
   }
 
-  /**
-   * 清理资源
-   */
   async cleanup(): Promise<void> {
-    // 移除所有监听器
     this.sessionChangeListeners.clear()
     this.removeAllListeners()
-
-    // 停止播放
+    if (this.externalController) {
+      this.controller = null
+      this.currentMedia = null
+      this.currentSession = null
+      this.isInitialized = false
+      this.windowId = null
+      this.externalController = false
+      return
+    }
     if (this.controller) {
       try {
         await this.controller.stop()
@@ -330,7 +315,6 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
         console.error('[MpvMediaPlayer] Error during cleanup:', error)
       }
     }
-
     this.controller = null
     this.currentMedia = null
     this.currentSession = null

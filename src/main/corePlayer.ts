@@ -5,6 +5,9 @@ import { LibMPVController, isLibMPVAvailable } from './libmpv'
 import { getNSViewPointer, getHWNDPointer } from './nativeHelper'
 import { Timeline } from './timeline'
 import { RenderManager } from './renderManager'
+import { MpvMediaPlayer } from './infrastructure/mpv/MpvMediaPlayer'
+import { Media } from './domain/models/Media'
+import type { MediaPlayer } from './domain/services/MediaPlayer'
 
 export interface CorePlayer {
   setVideoWindow(window: BrowserWindow | null): void
@@ -26,6 +29,7 @@ export interface CorePlayer {
   debugVideoState(): Promise<void>
   debugHdrStatus(): Promise<void>
   setHdrEnabled(enabled: boolean): void
+  getMediaPlayer(): MediaPlayer
 }
 
 class CorePlayerImpl implements CorePlayer {
@@ -40,9 +44,10 @@ class CorePlayerImpl implements CorePlayer {
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
   private controlView: BrowserView | null = null
-  private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
-  private lastIsSeeking: boolean = false // 上次的 isSeeking 状态，用于检测 seek 完成
-  private renderManager: RenderManager | null = null // 渲染管理器
+  private controlWindow: BrowserWindow | null = null
+  private lastIsSeeking: boolean = false
+  private renderManager: RenderManager | null = null
+  private readonly mediaPlayer = new MpvMediaPlayer()
 
   constructor() {
     if (isLibMPVAvailable()) {
@@ -173,22 +178,17 @@ class CorePlayerImpl implements CorePlayer {
       // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
       if (windowId) {
         await this.controller.setWindowId(windowId)
-        // 更新渲染管理器的 controller
-        if (this.renderManager) {
-          this.renderManager.setController(this.controller)
-        }
-        // setWindowId 后，JavaScript 驱动模式已启用，如果正在播放则启动渲染循环
+        if (this.renderManager) this.renderManager.setController(this.controller)
         const currentState = this.getPlayerState()
-        if (currentState.phase === 'playing' && this.renderManager) {
-          this.renderManager.start()
-        }
+        if (currentState.phase === 'playing' && this.renderManager) this.renderManager.start()
       }
       await this.syncWindowSize()
-        this.setupResizeHandler()
-        this.setupEventHandlers()
-        await this.controller.loadFile(filePath)
-        await this.syncWindowSize()
-        return
+      this.setupResizeHandler()
+      this.setupEventHandlers()
+      this.mediaPlayer.setExternalController(this.controller!, windowId!)
+      await this.mediaPlayer.play(Media.create(filePath))
+      await this.syncWindowSize()
+      return
       } catch {
         this.useLibMPV = false
       }
@@ -316,23 +316,17 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   async pause(): Promise<void> {
-    if (this.controller) {
-      await this.controller.pause()
-    }
+    if (this.controller) await this.mediaPlayer.pause()
   }
 
   async resume(): Promise<void> {
-    if (this.controller) {
-      await this.controller.play()
-    }
+    if (this.controller) await this.mediaPlayer.resume()
   }
 
   async seek(time: number): Promise<void> {
-    if (!this.controller) {
-      return
-    }
+    if (!this.controller) return
     this.timeline?.markSeek(time)
-    await this.controller.seek(time)
+    await this.mediaPlayer.seek(time)
     const status = this.controller.getStatus()
     if (status) {
       this.updateFromMPVStatus(status as MPVStatus)
@@ -343,18 +337,14 @@ class CorePlayerImpl implements CorePlayer {
 
   async setVolume(volume: number): Promise<void> {
     if (this.controller) {
-      await this.controller.setVolume(volume)
+      await this.mediaPlayer.setVolume(volume)
       const status = this.controller.getStatus()
-      if (status) {
-        this.updateFromMPVStatus(status as MPVStatus)
-      }
+      if (status) this.updateFromMPVStatus(status as MPVStatus)
     }
   }
 
   async stop(): Promise<void> {
-    if (this.controller) {
-      await this.controller.stop()
-    }
+    if (this.controller) await this.mediaPlayer.stop()
   }
 
   getStatus() {
@@ -362,26 +352,21 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   async cleanup(): Promise<void> {
-    if (this.isCleaningUp) {
-      return
-    }
+    if (this.isCleaningUp) return
     this.isCleaningUp = true
     try {
-      // 停止渲染循环
       this.renderManager?.cleanup()
-      
       if (this.pendingResizeTimer) {
         clearTimeout(this.pendingResizeTimer)
         this.pendingResizeTimer = null
       }
       this.timeline?.dispose()
-      if (this.controller) {
-        if (this.controller instanceof LibMPVController) {
-          await this.controller.stop()
-          await this.controller.destroy()
-        }
-        this.controller = null
+      await this.mediaPlayer.cleanup()
+      if (this.controller instanceof LibMPVController) {
+        await this.controller.stop()
+        await this.controller.destroy()
       }
+      this.controller = null
       this.controlView = null
     } finally {
       this.isCleaningUp = false
@@ -455,9 +440,11 @@ class CorePlayerImpl implements CorePlayer {
   }
 
   async debugHdrStatus(): Promise<void> {
-    if (this.controller) {
-      await this.controller.debugHdrStatus()
-    }
+    if (this.controller) await this.controller.debugHdrStatus()
+  }
+
+  getMediaPlayer(): MediaPlayer {
+    return this.mediaPlayer
   }
 }
 

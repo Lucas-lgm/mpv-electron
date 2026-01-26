@@ -782,6 +782,7 @@ export class MpvAdapter {
 
 #### 步骤 7.1: 移除旧代码
 - [ ] 确认所有功能已迁移
+- [ ] **移除阶段 5–6 引入的过渡性适配层**（如 PlayerState↔PlaybackSession、PlaylistManager↔Playlist 等），表现层改为直接使用领域模型/DTO
 - [ ] 移除未使用的旧代码
 - [ ] 更新导入路径
 

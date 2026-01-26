@@ -236,7 +236,7 @@ export function setupIpcHandlers() {
     if (process.env.NODE_ENV === 'development') {
       try {
         const { testDomainModels } = await import('./test_semantic_refactoring')
-        testDomainModels()
+        await testDomainModels()
         console.log('[Test] ✅ 语义化重构测试完成，查看控制台输出')
       } catch (error) {
         console.error('[Test] ❌ 测试失败:', error)

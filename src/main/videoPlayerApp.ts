@@ -4,58 +4,10 @@ import { join } from 'path'
 import { WindowManager } from './windowManager'
 import { corePlayer } from './corePlayer'
 import { setupIpcHandlers } from './ipcHandlers'
+import { PlaylistAdapter, type PlaylistItem } from './adapters/PlaylistAdapter'
+import { ApplicationService } from './application/ApplicationService'
 
-export interface PlaylistItem {
-  path: string
-  name: string
-}
-
-class PlaylistManager {
-  private list: PlaylistItem[] = []
-  private index: number = -1
-
-  setList(items: PlaylistItem[]) {
-    this.list = items
-    this.index = items.length > 0 ? 0 : -1
-  }
-
-  getList(): PlaylistItem[] {
-    return this.list.slice()
-  }
-
-  setCurrentByPath(path: string) {
-    const idx = this.list.findIndex((item) => item.path === path)
-    if (idx >= 0) {
-      this.index = idx
-    }
-  }
-
-  getCurrent(): PlaylistItem | null {
-    if (this.index < 0 || this.index >= this.list.length) {
-      return null
-    }
-    return this.list[this.index]
-  }
-
-  next(): PlaylistItem | null {
-    if (this.list.length === 0 || this.index < 0) {
-      return null
-    }
-    if (this.index >= this.list.length - 1) {
-      return null
-    }
-    this.index += 1
-    return this.getCurrent()
-  }
-
-  prev(): PlaylistItem | null {
-    if (this.list.length === 0 || this.index <= 0) {
-      return null
-    }
-    this.index -= 1
-    return this.getCurrent()
-  }
-}
+export type { PlaylistItem }
 
 class ConfigManager {
   private volume: number = 100
@@ -121,21 +73,24 @@ class ConfigManager {
 
 export class VideoPlayerApp {
   readonly windowManager: WindowManager
-  readonly playlist: PlaylistManager
+  readonly playlist: PlaylistAdapter
   readonly config: ConfigManager
+  private readonly appService: ApplicationService
   private controlView: BrowserView | null = null
-  private controlWindow: BrowserWindow | null = null // 双窗口模式：控制窗口
+  private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false
-  private windowSyncTimer: NodeJS.Timeout | null = null // 窗口同步定时器
+  private windowSyncTimer: NodeJS.Timeout | null = null
 
   constructor() {
     this.windowManager = new WindowManager()
-    this.playlist = new PlaylistManager()
+    this.playlist = new PlaylistAdapter()
     this.config = new ConfigManager()
+    this.appService = new ApplicationService(
+      corePlayer.getMediaPlayer(),
+      this.playlist.getPlaylist()
+    )
     corePlayer.onPlayerState((state) => {
-      if (state.phase === 'ended') {
-        this.playNextFromPlaylist().catch(() => {})
-      }
+      if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
     })
   }
 
@@ -218,7 +173,7 @@ export class VideoPlayerApp {
   }
 
   async pause() {
-    await corePlayer.pause()
+    await this.appService.pausePlayback({})
   }
 
   async resume() {
@@ -226,21 +181,21 @@ export class VideoPlayerApp {
     if (state.phase === 'ended' || state.phase === 'stopped') {
       await this.playCurrentFromPlaylist()
     } else {
-      await corePlayer.resume()
+      await this.appService.resumePlayback({})
     }
   }
 
   async stop() {
-    await corePlayer.stop()
+    await this.appService.stopPlayback({})
   }
 
   async seek(time: number) {
-    await corePlayer.seek(time)
+    await this.appService.seek({ time })
   }
 
   async setVolume(volume: number) {
     this.config.setVolume(volume)
-    await corePlayer.setVolume(volume)
+    await this.appService.setVolume({ volume })
   }
 
   async setHdrEnabled(enabled: boolean) {
