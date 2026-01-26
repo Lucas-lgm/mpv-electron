@@ -477,20 +477,75 @@ export class NasService {
   async listServerShares(host: string, username?: string, password?: string): Promise<{ shares: NetworkShare[]; error?: string }> {
     try {
       // 检查是否有 smbclient
+      // 在 macOS 上，Electron 应用的 PATH 可能不包含 Homebrew 路径
+      // 所以我们需要尝试多个可能的路径，或者直接尝试执行命令
       let smbclientPath = ''
-      try {
-        const { stdout } = await execAsync('which smbclient', { timeout: 5000 })
-        smbclientPath = stdout.trim()
-      } catch {
-        // smbclient 不可用
+      
+      // 方法1: 优先尝试常见的 Homebrew 路径（Electron 的 PATH 可能不完整）
+      const possiblePaths = [
+        '/opt/homebrew/bin/smbclient',  // Apple Silicon Mac
+        '/usr/local/bin/smbclient',      // Intel Mac
+        '/opt/homebrew/opt/samba/bin/smbclient',  // 某些 Homebrew 安装路径
+      ]
+      
+      for (const path of possiblePaths) {
+        try {
+          // 使用绝对路径执行，避免 PATH 问题
+          const { stdout } = await execAsync(`"${path}" --version 2>&1`, { timeout: 5000 })
+          if (stdout.trim() && !stdout.includes('command not found') && !stdout.includes('No such file')) {
+            smbclientPath = path
+            break
+          }
+        } catch (error: any) {
+          // 检查错误信息，如果是文件不存在，继续尝试下一个
+          const errorMsg = error.message || error.stderr || ''
+          if (!errorMsg.includes('ENOENT') && !errorMsg.includes('No such file')) {
+            // 其他错误可能表示命令存在但执行失败，也尝试使用
+            try {
+              const { stdout } = await execAsync(`"${path}" --version 2>&1`, { timeout: 5000 })
+              if (stdout.trim()) {
+                smbclientPath = path
+                break
+              }
+            } catch {
+              // 继续尝试下一个路径
+            }
+          }
+        }
+      }
+      
+      // 方法2: 尝试直接使用 smbclient 命令（如果 PATH 中有）
+      if (!smbclientPath) {
+        try {
+          const { stdout } = await execAsync('smbclient --version 2>&1', { timeout: 5000 })
+          if (stdout.trim() && !stdout.includes('command not found')) {
+            smbclientPath = 'smbclient' // 使用命令名，让系统查找
+          }
+        } catch {
+          // 继续尝试其他方法
+        }
+      }
+      
+      // 方法3: 尝试使用 which（如果 PATH 配置正确）
+      if (!smbclientPath) {
+        try {
+          // 设置 PATH 环境变量，包含常见的 Homebrew 路径
+          const env = {
+            ...process.env,
+            PATH: `${process.env.PATH || ''}:/opt/homebrew/bin:/usr/local/bin`
+          }
+          const { stdout } = await execAsync('which smbclient', { timeout: 5000, env })
+          const path = stdout.trim()
+          if (path && path.length > 0) {
+            smbclientPath = path
+          }
+        } catch {
+          // which 也找不到
+        }
       }
 
       if (!smbclientPath) {
-        // 如果没有 smbclient，尝试使用 macOS 的系统方法
-        // 可以通过打开 smb://host 让用户查看，但无法直接获取列表
-        // 或者尝试使用 mount_smbfs 的方式（但这需要先知道共享名称）
-        
-        // 提示用户安装 smbclient 或使用 Finder
+        // 如果没有 smbclient，提示用户安装或使用 Finder
         return {
           shares: [],
           error: '需要安装 smbclient 工具才能自动列出共享。安装方法：brew install samba。或者可以在 Finder 中连接到 smb://' + host + ' 查看可用共享'
@@ -503,19 +558,39 @@ export class NasService {
       const safeUsername = username ? username.replace(/[;&|`$()]/g, '') : undefined
       const safePassword = password ? password.replace(/[;&|`$()]/g, '') : undefined
       
-      let command = `smbclient -L "${safeHost}" -N`
+      // 构建命令，使用检测到的 smbclient 路径
+      // 注意：某些版本的 smbclient 不支持 --no-config，所以不使用该参数
+      // 配置文件警告不会影响功能，会在 stderr 中过滤掉
+      const smbclientCmd = smbclientPath === 'smbclient' ? 'smbclient' : `"${smbclientPath}"`
+      let command = `${smbclientCmd} -L "${safeHost}" -N`
       if (safeUsername) {
-        command = `smbclient -L "${safeHost}" -U "${safeUsername}"`
+        command = `${smbclientCmd} -L "${safeHost}" -U "${safeUsername}"`
         if (safePassword) {
           command += `%${safePassword}`
         }
       }
 
       try {
+        // 设置环境变量，确保能找到 smbclient（如果使用相对路径）
+        const env = {
+          ...process.env,
+          PATH: `${process.env.PATH || ''}:/opt/homebrew/bin:/usr/local/bin`
+        }
+        
         const { stdout, stderr } = await execAsync(command, {
           timeout: 10000,
-          maxBuffer: 1024 * 1024 // 1MB
+          maxBuffer: 1024 * 1024, // 1MB
+          env
         })
+
+        // 过滤掉配置文件相关的警告信息
+        // 这些警告不影响功能，但会在 stderr 中显示
+        const filteredStderr = stderr
+          ? stderr
+              .split('\n')
+              .filter(line => !line.includes('Can\'t load') && !line.includes('smb.conf') && !line.includes('testparm'))
+              .join('\n')
+          : ''
 
         // 解析 smbclient 输出
         const shares: NetworkShare[] = []
@@ -525,33 +600,49 @@ export class NasService {
         for (const line of lines) {
           const trimmed = line.trim()
           
-          // 跳过空行和标题
-          if (!trimmed || trimmed.startsWith('Sharename') || trimmed.startsWith('----')) {
+          // 跳过空行、配置文件警告和其他无关信息
+          if (!trimmed || 
+              trimmed.includes('Can\'t load') || 
+              trimmed.includes('smb.conf') || 
+              trimmed.includes('testparm') ||
+              trimmed.includes('SMB1 disabled') ||
+              trimmed.includes('no workgroup')) {
+            continue
+          }
+          
+          // 检测共享列表开始
+          if (trimmed.startsWith('Sharename') || trimmed.startsWith('---------')) {
             if (trimmed.startsWith('Sharename')) {
               inShareList = true
             }
             continue
           }
 
-          // 如果遇到其他部分，停止解析
-          if (inShareList && trimmed.includes('---')) {
+          // 如果遇到分隔线，继续（不是结束）
+          if (inShareList && trimmed.match(/^-+$/)) {
+            continue
+          }
+
+          // 如果遇到其他部分（如 "SMB1 disabled"），停止解析
+          if (inShareList && trimmed.includes('SMB')) {
             break
           }
 
           if (inShareList) {
             // 解析共享信息
             // 格式通常是: Sharename      Type      Comment
+            // 例如: Teams           Disk      ZettLab shared folder
             const parts = trimmed.split(/\s{2,}/)
             if (parts.length >= 2) {
               const shareName = parts[0].trim()
               const shareType = parts[1].trim()
               
-              // 跳过系统共享（通常以 $ 结尾）
-              if (!shareName.endsWith('$') && shareName !== 'IPC$') {
+              // 跳过系统共享（通常以 $ 结尾，如 IPC$）
+              if (!shareName.endsWith('$') && shareName !== 'IPC$' && shareName.length > 0) {
                 shares.push({
                   name: shareName,
                   type: shareType,
-                  comment: parts[2]?.trim()
+                  comment: parts[2]?.trim() || ''
                 })
               }
             }
@@ -599,6 +690,16 @@ export class NasService {
 
         // 检查是否是认证错误
         const errorMsg = execError.stderr || execError.message || ''
+        const stdoutMsg = execError.stdout || ''
+        
+        // 如果错误信息提到找不到命令，说明 smbclient 路径有问题
+        if (errorMsg.includes('command not found') || errorMsg.includes('No such file') || errorMsg.includes('ENOENT')) {
+          return {
+            shares: [],
+            error: '无法找到 smbclient 工具。请确保已安装：brew install samba。如果已安装，请重启应用'
+          }
+        }
+        
         if (errorMsg.includes('NT_STATUS_LOGON_FAILURE') || errorMsg.includes('NT_STATUS_ACCESS_DENIED')) {
           return {
             shares: [],
@@ -610,6 +711,43 @@ export class NasService {
           return {
             shares: [],
             error: '无法连接到服务器，请检查服务器地址和网络连接'
+          }
+        }
+
+        // 如果 stdout 中有内容，尝试解析（即使有错误）
+        if (stdoutMsg && stdoutMsg.includes('Sharename')) {
+          // 尝试解析输出
+          const shares: NetworkShare[] = []
+          const lines = stdoutMsg.split('\n')
+          let inShareList = false
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (trimmed.startsWith('Sharename')) {
+              inShareList = true
+              continue
+            }
+            if (inShareList && trimmed.includes('---')) {
+              break
+            }
+            if (inShareList) {
+              const parts = trimmed.split(/\s{2,}/)
+              if (parts.length >= 2) {
+                const shareName = parts[0].trim()
+                const shareType = parts[1].trim()
+                if (!shareName.endsWith('$') && shareName !== 'IPC$') {
+                  shares.push({
+                    name: shareName,
+                    type: shareType,
+                    comment: parts[2]?.trim()
+                  })
+                }
+              }
+            }
+          }
+
+          if (shares.length > 0) {
+            return { shares }
           }
         }
 
