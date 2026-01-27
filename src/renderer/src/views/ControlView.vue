@@ -129,11 +129,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useControlBarAutoHide } from '../composables/useControlBarAutoHide'
+import { useAdjustableValue } from '../composables/useAdjustableValue'
 
 const isPlaying = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
-const volume = ref(100)
 const currentVideoName = ref<string>('')
 const isLoading = ref(false)
 const isSeeking = ref(false)
@@ -150,6 +150,20 @@ const playlist = ref<PlaylistItem[]>([])
 const showPlaylist = ref(false)
 const currentPath = ref<string | null>(null)
 const hdrEnabled = ref(true)
+
+// 音量采用通用可调值模式（短暂保护期）
+const volumeAdjustable = useAdjustableValue<number>({
+  initial: 100,
+  debugLabel: 'volume',
+  sendCommand: (v: number) => {
+    // eslint-disable-next-line no-console
+    console.log('[ControlView] send control-volume', v)
+    if (window.electronAPI) {
+      window.electronAPI.send('control-volume', Math.round(v))
+    }
+  }
+})
+const volume = volumeAdjustable.value
 
 
 // 判断视频是否已准备好（已加载完成，可以播放）
@@ -272,7 +286,9 @@ const handlePlayerState = (state: PlayerState) => {
   }
   
   if (typeof state.volume === 'number') {
-    volume.value = state.volume
+    // eslint-disable-next-line no-console
+    console.log('[ControlView] handlePlayerState volume from backend', state.volume)
+    volumeAdjustable.applyServerState(state.volume)
   }
   if (typeof state.path === 'string') {
     currentPath.value = state.path
@@ -392,16 +408,13 @@ const onSeekEnd = (value: number) => {
 
 // 音量滑块（Element Plus）
 const onVolumeInput = (value: number) => {
-  volume.value = Math.round(value)
   onUserInteraction()
+  volumeAdjustable.onUserInput(Math.round(value))
 }
 
 const onVolumeChangeEnd = (value: number) => {
-  volume.value = Math.round(value)
   onUserInteraction()
-  if (window.electronAPI) {
-    window.electronAPI.send('control-volume', volume.value)
-  }
+  volumeAdjustable.onUserCommit(Math.round(value))
 }
 
 const formatVolumeTooltip = (value: number): string => {
@@ -410,13 +423,11 @@ const formatVolumeTooltip = (value: number): string => {
 
 const toggleMute = () => {
   if (volume.value > 0) {
-    // 保存当前音量，然后静音
-    if (!window.electronAPI) return
-    window.electronAPI.send('control-volume', 0)
+    // 静音：直接提交 0
+    volumeAdjustable.onUserCommit(0)
   } else {
-    // 恢复音量（这里可以保存之前的音量值）
-    if (!window.electronAPI) return
-    window.electronAPI.send('control-volume', 50) // 默认恢复50%
+    // 恢复默认音量（目前简单使用 50%，如需记忆上次音量可在此扩展）
+    volumeAdjustable.onUserCommit(50)
   }
 }
 

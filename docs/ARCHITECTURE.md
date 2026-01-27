@@ -186,6 +186,60 @@ setupIpcHandlers(videoPlayerApp, corePlayer)
 | 原生绑定 ↔ MPV核心 | libmpv C API | MPV数据结构 | 异步事件 |
 | 业务逻辑内部 | EventEmitter | TypeScript对象 | 同步/异步 |
 
+#### 2.3.1 播放控制交互的「短暂保护期」模式
+
+播放控制（音量、进度等）采用「**命令通道 + 状态广播通道**」的异步模式：  
+UI 通过命令通道（如 `control-volume`）发送指令，CorePlayer / MpvMediaPlayer 更新 MPV 状态后，由 PlayerStateMachine 推导 `PlayerState`，再经 `VideoPlayerApp.sendToPlaybackUIs('player-state', state)` 广播回 UI。
+
+为避免「UI 发出新值后立刻被旧状态覆盖」的竞态，渲染进程采用**短暂保护期**策略：
+
+- **本地记录最近一次交互**：
+  - `lastLocalValue`：最近一次希望设置的目标值（例如 `volume`）
+  - `lastChangeAt`：这次交互发生的时间戳（`Date.now()`）
+- **发送命令时**（例如音量松手事件）：
+
+```ts
+const JUST_CHANGED_WINDOW = 200 // ms 级保护期，可按需要调整
+
+let lastLocalVolume = volume.value
+let lastVolumeChangeAt = 0
+
+const onVolumeChangeEnd = (value: number) => {
+  const v = Math.round(value)
+  lastLocalVolume = v
+  lastVolumeChangeAt = Date.now()
+  volume.value = v
+  window.electronAPI?.send('control-volume', v)
+}
+```
+
+- **处理 `player-state` 回写时**：
+
+```ts
+const handlePlayerState = (state: PlayerState) => {
+  // ...
+  if (typeof state.volume === 'number') {
+    const now = Date.now()
+    const inProtectWindow = now - lastVolumeChangeAt < JUST_CHANGED_WINDOW
+    const looksLikeOldValue = state.volume !== lastLocalVolume
+
+    // 保护期内且看起来是旧值 → 忽略，避免把 UI 拉回旧值
+    if (inProtectWindow && looksLikeOldValue) {
+      return
+    }
+
+    // 其余情况正常接受后端状态（后端仍是最终真相）
+    volume.value = state.volume
+  }
+}
+```
+
+设计约定：
+
+- **后端仍是最终 source of truth**：保护期只屏蔽「明显过时的旧值」，不会长期对抗状态广播。
+- **保护期只在本地刚刚发出命令的极短时间内生效**，适合音量 / 进度等幂等且高频的小控制。
+- 需要更强一致性（多端控制、远程高延迟场景）时，可以升级为「版本号 / 时间戳」方案，但本地桌面播放器默认采用上述轻量模式。
+
 ## 3. 核心接口与数据结构
 
 ### 3.1 MPVBinding 原生接口
