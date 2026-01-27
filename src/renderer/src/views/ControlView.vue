@@ -132,7 +132,19 @@ import { useControlBarAutoHide } from '../composables/useControlBarAutoHide'
 import { useAdjustableValue } from '../composables/useAdjustableValue'
 
 const isPlaying = ref(false)
-const currentTime = ref(0)
+// 进度条使用可调值模式（短暂保护期 + 正在拖动时本地优先）
+const currentTimeAdjustable = useAdjustableValue<number>({
+  initial: 0,
+  debugLabel: 'timeline',
+  // 进度条目前只在松手时真正 seek，这里不在 input 阶段发送命令
+  sendOnInput: false,
+  sendCommand: (t: number) => {
+    if (window.electronAPI) {
+      window.electronAPI.send('control-seek', t)
+    }
+  }
+})
+const currentTime = currentTimeAdjustable.value
 const duration = ref(0)
 const currentVideoName = ref<string>('')
 const isLoading = ref(false)
@@ -214,7 +226,7 @@ type PlayerState = {
 const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
   // 在拖动进度条或跳转中时，不更新 currentTime，避免跳转
   if (!isScrubbing.value && !isSeeking.value) {
-    currentTime.value = data.currentTime
+    currentTimeAdjustable.applyServerState(data.currentTime)
   }
   // 只在有有效值时更新 duration，避免播放结束时被设置为 0
   if (typeof data.duration === 'number' && data.duration > 0) {
@@ -272,7 +284,7 @@ const handlePlayerState = (state: PlayerState) => {
   // 处理播放结束状态：将 currentTime 设置为 duration
   if (state.phase === 'ended') {
     if (duration.value > 0) {
-      currentTime.value = duration.value
+      currentTimeAdjustable.applyServerState(duration.value)
     }
     isPlaying.value = false
   }
@@ -284,7 +296,7 @@ const handlePlayerState = (state: PlayerState) => {
   
   // 更新 currentTime（只在非拖动、非跳转状态下更新，且不是播放结束状态）
   if (typeof state.currentTime === 'number' && !isScrubbing.value && !isSeeking.value && state.phase !== 'ended') {
-    currentTime.value = state.currentTime
+    currentTimeAdjustable.applyServerState(state.currentTime)
   }
   
   if (typeof state.volume === 'number') {
@@ -394,16 +406,14 @@ const onSeekStart = () => {
 }
 
 const onSeek = (value: number) => {
-  currentTime.value = value
+  currentTimeAdjustable.onUserInput(value)
   onUserInteraction()
 }
 
 const onSeekEnd = (value: number) => {
-  currentTime.value = value
   onUserInteraction()
-  if (window.electronAPI) {
-    window.electronAPI.send('control-seek', value)
-  }
+  // 使用可调值模式提交最终进度（发送 seek 命令）
+  currentTimeAdjustable.onUserCommit(value)
   // 保持 isScrubbing = true，直到 isSeeking 状态更新
   // handlePlayerState 会在 isSeeking 变为 true 时处理，然后在 isSeeking 变为 false 时重置 isScrubbing
 }
