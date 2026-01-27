@@ -558,6 +558,8 @@ onUnmounted(() => {
   opacity: 1;
   transition: opacity 0.3s ease;
   will-change: opacity;
+  position: relative;
+  z-index: 20;
 }
 
 /* 控制栏隐藏时，优化性能：减少 backdrop-filter 的性能消耗 */
@@ -651,6 +653,7 @@ onUnmounted(() => {
   justify-content: center;
   background: rgba(0, 0, 0, 0.7);
   pointer-events: auto;
+  z-index: 10;
 }
 
 .error-content {
@@ -745,6 +748,7 @@ onUnmounted(() => {
   opacity: 1;
   transition: opacity 0.3s ease;
   will-change: opacity;
+  z-index: 20;
 }
 
 /* 只隐藏控制栏，不影响其他元素（如 loading-overlay、playlist-panel） */
