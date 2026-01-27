@@ -186,11 +186,29 @@ export class VideoPlayerApp {
   /** 向播放 UI（视频窗口 + 控制栏）广播；职责归 VideoPlayerApp，不经过 CorePlayer */
   private sendToPlaybackUIs(channel: string, payload?: unknown): void {
     const vw = this.windowManager.getWindow('video')
-    if (vw && !vw.isDestroyed()) vw.webContents.send(channel, payload)
+    if (vw && !vw.isDestroyed() && !vw.webContents.isDestroyed()) {
+      try {
+        vw.webContents.send(channel, payload)
+      } catch (error) {
+        // 忽略发送失败（窗口可能正在关闭）
+      }
+    }
     const cw = this.getControlWindow()
-    if (cw && !cw.isDestroyed()) cw.webContents.send(channel, payload)
+    if (cw && !cw.isDestroyed() && !cw.webContents.isDestroyed()) {
+      try {
+        cw.webContents.send(channel, payload)
+      } catch (error) {
+        // 忽略发送失败（窗口可能正在关闭）
+      }
+    }
     const cv = this.getControlView()
-    if (cv && !cv.webContents.isDestroyed()) cv.webContents.send(channel, payload)
+    if (cv && !cv.webContents.isDestroyed()) {
+      try {
+        cv.webContents.send(channel, payload)
+      } catch (error) {
+        // 忽略发送失败（视图可能正在销毁）
+      }
+    }
   }
 
   getList(): PlaylistItem[] {
@@ -393,30 +411,75 @@ export class VideoPlayerApp {
   /** 窗口操作（封装窗口操作逻辑） */
   windowAction(action: 'close' | 'minimize' | 'maximize'): void {
     const videoWindow = this.windowManager.getWindow('video')
-    if (!videoWindow) return
+    if (!videoWindow) {
+      logger.warn('windowAction: video window not found', { action })
+      return
+    }
 
     const controlWindow = this.getControlWindow()
-    const targetForMaximize =
+    
+    // Windows 上：操作控制窗口（它会同步到视频窗口）
+    // 其他平台：直接操作视频窗口
+    const targetWindow =
       process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()
         ? controlWindow
         : videoWindow
 
+    logger.debug('windowAction', {
+      action,
+      platform: process.platform,
+      hasControlWindow: !!controlWindow,
+      targetWindow: targetWindow === controlWindow ? 'controlWindow' : 'videoWindow',
+      videoWindowDestroyed: videoWindow.isDestroyed(),
+      controlWindowDestroyed: controlWindow ? controlWindow.isDestroyed() : 'N/A'
+    })
+
     switch (action) {
       case 'close':
-        videoWindow.close()
+        // Windows 上：关闭控制窗口，它会触发关闭父窗口（videoWindow）
+        // 其他平台：直接关闭视频窗口
+        if (process.platform === 'win32' && targetWindow === controlWindow && controlWindow) {
+          logger.debug('Closing control window (Windows)')
+          controlWindow.close()
+        } else {
+          logger.debug('Closing video window')
+          videoWindow.close()
+        }
         break
       case 'minimize':
-        if (videoWindow.isMinimizable()) {
-          videoWindow.minimize()
+        if (targetWindow.isMinimizable()) {
+          logger.debug('Minimizing window', { target: targetWindow === controlWindow ? 'controlWindow' : 'videoWindow' })
+          targetWindow.minimize()
+          // Windows 上，如果控制窗口最小化，视频窗口也应该最小化
+          if (process.platform === 'win32' && targetWindow === controlWindow && videoWindow.isMinimizable()) {
+            logger.debug('Also minimizing video window (Windows)')
+            videoWindow.minimize()
+          }
+        } else {
+          logger.warn('Window is not minimizable', { target: targetWindow === controlWindow ? 'controlWindow' : 'videoWindow' })
         }
         break
       case 'maximize':
-        if (targetForMaximize.isMaximizable()) {
-          if (targetForMaximize.isMaximized()) {
-            targetForMaximize.unmaximize()
+        if (targetWindow.isMaximizable()) {
+          if (targetWindow.isMaximized()) {
+            logger.debug('Unmaximizing window', { target: targetWindow === controlWindow ? 'controlWindow' : 'videoWindow' })
+            targetWindow.unmaximize()
+            // Windows 上，如果控制窗口取消最大化，视频窗口也应该取消最大化
+            if (process.platform === 'win32' && targetWindow === controlWindow && videoWindow.isMaximizable()) {
+              logger.debug('Also unmaximizing video window (Windows)')
+              videoWindow.unmaximize()
+            }
           } else {
-            targetForMaximize.maximize()
+            logger.debug('Maximizing window', { target: targetWindow === controlWindow ? 'controlWindow' : 'videoWindow' })
+            targetWindow.maximize()
+            // Windows 上，如果控制窗口最大化，视频窗口也应该最大化
+            if (process.platform === 'win32' && targetWindow === controlWindow && videoWindow.isMaximizable()) {
+              logger.debug('Also maximizing video window (Windows)')
+              videoWindow.maximize()
+            }
           }
+        } else {
+          logger.warn('Window is not maximizable', { target: targetWindow === controlWindow ? 'controlWindow' : 'videoWindow' })
         }
         break
     }
@@ -785,7 +848,7 @@ export class VideoPlayerApp {
         resizable: true,
         maximizable: true,   // 允许最大化，由同步逻辑带动视频窗口一起变化
         minimizable: true,
-        closable: false,
+        closable: true,      // 允许关闭（通过 windowAction 处理）
         skipTaskbar: true,
         webPreferences: {
           preload: join(__dirname, '../preload/preload.js'),
@@ -794,6 +857,12 @@ export class VideoPlayerApp {
           backgroundThrottling: false
         }
       })
+      
+      // 显式设置窗口控制属性（确保在 Windows 上生效）
+      controlWindow.setClosable(true)
+      controlWindow.setMinimizable(true)
+      controlWindow.setMaximizable(true)
+      controlWindow.setResizable(true)
 
       // 加载控制界面
       if (process.env.NODE_ENV === 'development') {
@@ -809,10 +878,20 @@ export class VideoPlayerApp {
       // 控制窗口加载完成后发送播放列表，并设置焦点
       controlWindow.webContents.on('did-finish-load', () => {
         const items = this.getList()
-        if (items.length > 0) {
-          controlWindow.webContents.send('playlist-updated', items)
+        if (items.length > 0 && !controlWindow.isDestroyed() && !controlWindow.webContents.isDestroyed()) {
+          try {
+            controlWindow.webContents.send('playlist-updated', items)
+          } catch (error) {
+            // 忽略发送失败
+          }
         }
         if (!controlWindow.isDestroyed()) {
+          // 再次确保窗口控制属性已设置（在窗口加载完成后）
+          controlWindow.setClosable(true)
+          controlWindow.setMinimizable(true)
+          controlWindow.setMaximizable(true)
+          controlWindow.setResizable(true)
+          
           controlWindow.focusable = true
           setTimeout(() => {
             if (!controlWindow.isDestroyed()) {
@@ -823,6 +902,16 @@ export class VideoPlayerApp {
               }
             }
           }, WINDOW_DELAYS.FOCUS_DELAY_MS)
+        }
+      })
+      
+      // 监听窗口的 ready-to-show 事件，再次确保属性设置
+      controlWindow.once('ready-to-show', () => {
+        if (!controlWindow.isDestroyed()) {
+          controlWindow.setClosable(true)
+          controlWindow.setMinimizable(true)
+          controlWindow.setMaximizable(true)
+          controlWindow.setResizable(true)
         }
       })
 
@@ -880,10 +969,26 @@ export class VideoPlayerApp {
         this.controlWindow = null
       })
 
-      // 控制窗口关闭时清理引用（使用 once 避免重复注册）
+      // 控制窗口关闭时关闭父窗口（videoWindow）并清理引用
+      // 注意：在 Electron 中，子窗口关闭时不会自动关闭父窗口，需要手动处理
       controlWindow.removeAllListeners('closed')
       controlWindow.once('closed', () => {
         this.controlWindow = null
+        // 关闭父窗口（videoWindow）
+        if (videoWindow && !videoWindow.isDestroyed()) {
+          videoWindow.close()
+        }
+      })
+      
+      // 监听控制窗口的 close 事件（在窗口实际关闭前触发）
+      // 这样可以确保在窗口关闭前清理资源
+      controlWindow.removeAllListeners('close')
+      controlWindow.on('close', (event) => {
+        // 在 Windows 上，如果控制窗口关闭，确保父窗口也关闭
+        if (process.platform === 'win32' && videoWindow && !videoWindow.isDestroyed()) {
+          // 不阻止默认行为，让窗口正常关闭
+          // 父窗口会在 closed 事件中关闭
+        }
       })
 
       this.controlWindow = controlWindow

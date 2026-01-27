@@ -217,9 +217,14 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
     IPC_CHANNELS.CONTROL_TOGGLE_FULLSCREEN
   ))
 
-  ipcMain.on(IPC_CHANNELS.CONTROL_WINDOW_ACTION, createIpcHandler<[ControlWindowActionRequest]>(
-    (_event, data: ControlWindowActionRequest) => {
-      videoPlayerApp.windowAction(data.action)
+  // 注意：renderer 发送的是字符串 action，而不是 { action: string }
+  ipcMain.on(IPC_CHANNELS.CONTROL_WINDOW_ACTION, createIpcHandler<[string]>(
+    (_event, action: string) => {
+      // 验证 action 是有效的值
+      if (action !== 'close' && action !== 'minimize' && action !== 'maximize') {
+        throw new Error(`Invalid window action: ${action} (must be 'close', 'minimize', or 'maximize')`)
+      }
+      videoPlayerApp.windowAction(action as 'close' | 'minimize' | 'maximize')
     },
     undefined,
     IPC_CHANNELS.CONTROL_WINDOW_ACTION
