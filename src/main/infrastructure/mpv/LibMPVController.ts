@@ -544,13 +544,33 @@ export class LibMPVController extends EventEmitter {
   /**
    * 设置属性
    */
+  /**
+   * 设置属性
+   * 
+   * @param name 属性名称
+   * @param value 属性值（字符串、数字或布尔值）
+   * @throws 如果实例未初始化或设置失败
+   */
   async setProperty(name: string, value: string | number | boolean): Promise<void> {
     if (this.instanceId === null) {
       throw new Error('MPV instance not initialized')
     }
 
+    // 验证值的类型和有效性
+    if (typeof value === 'number') {
+      // 确保数字是有效的（不是 NaN 或 Infinity）
+      if (isNaN(value) || !isFinite(value)) {
+        throw new Error(`Invalid number value for property ${name}: ${value}`)
+      }
+    } else if (typeof value !== 'string' && typeof value !== 'boolean') {
+      throw new Error(`Unsupported value type for property ${name}: ${typeof value}`)
+    }
+
     try {
-      this.binding.setProperty(this.instanceId, name, value)
+      const result = this.binding.setProperty(this.instanceId, name, value)
+      if (!result) {
+        throw new Error(`Failed to set property ${name}: binding returned false`)
+      }
     } catch (error) {
       throw new Error(`Failed to set property ${name}: ${error}`)
     }

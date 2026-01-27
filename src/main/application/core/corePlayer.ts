@@ -8,6 +8,21 @@ import { Timeline } from '../timeline/timeline'
 import { RenderManager } from '../../infrastructure/rendering/renderManager'
 import { Media } from '../../domain/models/Media'
 import type { MediaPlayer } from './MediaPlayer'
+import { createLogger } from '../../infrastructure/logging'
+
+const logger = createLogger('CorePlayer')
+
+/**
+ * 窗口准备延迟配置常量
+ */
+const WINDOW_PREPARE_DELAYS = {
+  /** Windows 平台窗口显示延迟（毫秒） */
+  WINDOWS_SHOW_DELAY_MS: 100,
+  /** Windows 平台窗口准备延迟（毫秒） */
+  WINDOWS_PREPARE_DELAY_MS: 500,
+  /** macOS 平台窗口准备延迟（毫秒） */
+  MACOS_PREPARE_DELAY_MS: 300
+} as const
 
 export interface CorePlayer extends EventEmitter {
   setVideoWindow(window: BrowserWindow | null): Promise<void>
@@ -117,7 +132,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
           // Windows 上需要等待窗口完全准备好
           if (!window.isVisible()) {
             window.show()
-            await new Promise(resolve => setTimeout(resolve, 100))
+            await new Promise(resolve => setTimeout(resolve, WINDOW_PREPARE_DELAYS.WINDOWS_SHOW_DELAY_MS))
           }
           windowId = getHWNDPointer(window)
         }
@@ -130,7 +145,9 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
           }
         }
       } catch (error) {
-        console.error('[CorePlayer] Error setting window ID for MpvMediaPlayer:', error)
+        logger.error('Error setting window ID for MpvMediaPlayer', {
+          error: error instanceof Error ? error.message : String(error)
+        })
       }
     }
   }
@@ -149,10 +166,12 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       }
       this.videoWindow.focus()
       // Windows 上需要等待窗口完全准备好
-      const waitTime = process.platform === 'win32' ? 500 : 300
+      const waitTime = process.platform === 'win32' 
+        ? WINDOW_PREPARE_DELAYS.WINDOWS_PREPARE_DELAY_MS 
+        : WINDOW_PREPARE_DELAYS.MACOS_PREPARE_DELAY_MS
       await new Promise(resolve => setTimeout(resolve, waitTime))
       if (this.videoWindow.isDestroyed()) {
-        console.warn('[CorePlayer] Window was destroyed while waiting')
+        logger.warn('Window was destroyed while waiting for preparation')
         return undefined
       }
       // 按平台获取窗口句柄
@@ -160,24 +179,26 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
         const windowHandle = getNSViewPointer(this.videoWindow)
         if (windowHandle) {
           windowId = windowHandle
-          console.log('[CorePlayer] Got NSView pointer:', windowHandle)
+          logger.debug('Got NSView pointer', { windowHandle })
         }
       } else if (process.platform === 'win32') {
         // Windows 上，确保窗口完全显示后再获取 HWND
         if (!this.videoWindow.isVisible()) {
           this.videoWindow.show()
-          await new Promise(resolve => setTimeout(resolve, 100))
+          await new Promise(resolve => setTimeout(resolve, WINDOW_PREPARE_DELAYS.WINDOWS_SHOW_DELAY_MS))
         }
         const windowHandle = getHWNDPointer(this.videoWindow)
         if (windowHandle) {
           windowId = windowHandle
-          console.log('[CorePlayer] Got HWND:', windowHandle)
+          logger.debug('Got HWND', { windowHandle })
         } else {
-          console.error('[CorePlayer] Failed to get HWND')
+          logger.error('Failed to get HWND')
         }
       }
     } catch (error) {
-      console.error('[CorePlayer] Error getting window handle:', error)
+      logger.error('Error getting window handle', {
+        error: error instanceof Error ? error.message : String(error)
+      })
       return undefined
     }
 
@@ -302,7 +323,11 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     if (width === this.lastPhysicalWidth && height === this.lastPhysicalHeight) {
       return
     }
-    console.log(`[CorePlayer] Window size changed: ${this.lastPhysicalWidth}x${this.lastPhysicalHeight} -> ${width}x${height} (scale: ${scaleFactor})`)
+    logger.debug('Window size changed', {
+      from: `${this.lastPhysicalWidth}x${this.lastPhysicalHeight}`,
+      to: `${width}x${height}`,
+      scaleFactor
+    })
     this.lastPhysicalWidth = width
     this.lastPhysicalHeight = height
     if (this.controller instanceof LibMPVController) {
