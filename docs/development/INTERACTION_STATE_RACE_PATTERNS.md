@@ -55,12 +55,13 @@
   - `value`：当前 UI 显示值（绑定到 slider / input）
   - `lastLocalValue`：最近一次用户希望提交给后端的目标值
   - `lastChangeAt`：最近一次「提交」发生的时间戳（毫秒）
+  - `isAdjusting`：是否处于「用户正在手动调整」阶段（拖动中）
 - **常量**
   - `JUST_CHANGED_WINDOW`：保护期窗口（如 100–300ms）
 - **接口**
-  - `onUserInput(v)`：用户正在拖动/输入（不一定立刻发送命令）
-  - `onUserCommit(v)`：用户确认本次变更（松手/回车），发送命令并记录时间
-  - `applyServerState(serverValue)`：后端状态广播回来的值，按保护期规则合并
+  - `onUserInput(v)`：用户正在拖动/输入；更新 UI，标记 `isAdjusting = true`，可选「实时发送命令」
+  - `onUserCommit(v)`：用户确认本次变更（松手/回车）；记录时间 + 发送命令，结束 `isAdjusting`
+  - `applyServerState(serverValue)`：后端状态广播回来的值；在 `isAdjusting` 期间直接忽略，其他情况按保护期规则合并
 
 伪代码示例（以 TypeScript composable 形式）：
 
@@ -69,13 +70,15 @@ interface AdjustableValueOptions<T> {
   initial: T
   justChangedWindowMs?: number
   sendCommand: (value: T) => void
+  /** 像音量这类希望拖动时实时生效的，可在 input 阶段就发命令 */
+  sendOnInput?: boolean
 }
 
 interface AdjustableValue<T> {
-  value: { value: T }          // Vue ref<T> 或类似容器
-  onUserInput: (v: T) => void  // 拖动中：仅更新 UI 和本地状态
-  onUserCommit: (v: T) => void // 松手：更新 UI + 记录时间 + 发送命令
-  applyServerState: (serverValue: T) => void // 状态广播回写入口
+  value: { value: T }                // Vue ref<T> 或类似容器
+  onUserInput: (v: T) => void        // 拖动中：更新 UI，标记 isAdjusting，可选实时发送命令
+  onUserCommit: (v: T) => void       // 松手：更新 UI + 记录时间 + 发送命令，结束 isAdjusting
+  applyServerState: (serverValue: T) => void // 状态广播回写入口（考虑 isAdjusting + 保护期）
 }
 
 function createAdjustableValue<T>(opts: AdjustableValueOptions<T>): AdjustableValue<T> {
@@ -83,9 +86,14 @@ function createAdjustableValue<T>(opts: AdjustableValueOptions<T>): AdjustableVa
   const value = { value: opts.initial }
   let lastLocalValue = opts.initial
   let lastChangeAt = 0
+  let isAdjusting = false
 
   const onUserInput = (v: T) => {
+    isAdjusting = true
     value.value = v
+    if (opts.sendOnInput) {
+      opts.sendCommand(v)
+    }
   }
 
   const onUserCommit = (v: T) => {
@@ -93,9 +101,15 @@ function createAdjustableValue<T>(opts: AdjustableValueOptions<T>): AdjustableVa
     lastChangeAt = Date.now()
     value.value = v
     opts.sendCommand(v)
+    isAdjusting = false
   }
 
   const applyServerState = (serverValue: T) => {
+    if (isAdjusting) {
+      // 用户正在手动调整时，不接受任何后端回写，避免拖动过程中被抢回
+      return
+    }
+
     const now = Date.now()
     const inProtectWindow = now - lastChangeAt < JUST_CHANGED_WINDOW
     const looksLikeOldValue = serverValue !== lastLocalValue
