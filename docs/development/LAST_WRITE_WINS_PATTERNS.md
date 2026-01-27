@@ -212,3 +212,66 @@ function scheduleSeek(time: number) {
 
 这样，在以后遇到类似「seek 不 obey 最后一次」的问题时，可以直接套用本文件中的模式，而不需要从零重新思考。  
 
+---
+
+### 6. 公共模块：`LastWriteWinsTaskRunner`
+
+为方便复用「单通道合并覆盖队列」（模式 A），在主进程侧提供了通用工具类：
+
+- **文件位置**：`src/main/application/core/LastWriteWinsTaskRunner.ts`
+- **核心接口**：
+
+```ts
+export class LastWriteWinsTaskRunner<T> {
+  constructor(
+    task: (payload: T) => Promise<void>,
+    options?: { debugLabel?: string }
+  )
+
+  /** 提交一次任务：新的 payload 会覆盖尚未开始执行的旧 payload */
+  submit(payload: T): void
+
+  /** 停止后不再接受新任务，丢弃尚未执行的 payload；已在执行中的任务会正常完成 */
+  dispose(): void
+}
+```
+
+**行为说明**：
+
+- 内部维护：
+  - `latestPayload: T | null`：最近一次提交的 payload；
+  - `isRunning: boolean`：当前是否有任务在执行；
+  - `isDisposed: boolean`：是否已停止接受新任务。
+- `submit`：
+  - 将 `latestPayload` 更新为新的 payload（覆盖旧的未执行目标）；
+  - 若当前 `!isRunning`，异步启动一次 `runNext()`。
+- `runNext`：
+  - 取出当前 `latestPayload` 并清空，标记 `isRunning = true`；
+  - 调用注入的 `task(payload)`；
+  - 完成后将 `isRunning = false`，如果期间有新的 `submit` 把 `latestPayload` 改成非空，则再次调用 `runNext()`。
+
+**适用场景示例**：
+
+- **Seek 合并**（如果未来不完全依赖 mpv 内部合并）：
+
+```ts
+const seekRunner = new LastWriteWinsTaskRunner<number>(
+  async (time) => {
+    await controller.seek(time)
+  },
+  { debugLabel: 'seek' }
+)
+
+// 所有 seek 请求统一走这里
+function requestSeek(time: number) {
+  seekRunner.submit(time)
+}
+```
+
+- 其它：
+  - 高频「写配置到磁盘」：只写入最后一次设置；
+  - 后端刷新某个缓存：多次刷新请求合并为「最新一次条件」；
+  - 任意「任务之间无强依赖，只关心最后一次意图」的异步执行场景。
+
+通过该模块，可以在代码中直接表达「最后写入获胜」的执行策略，而不需要在每个调用点重复编写 `isRunning + latestPayload` 的逻辑。  
+
