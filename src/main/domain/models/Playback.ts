@@ -60,8 +60,7 @@ export class PlaybackSession {
    */
   get canSeek(): boolean {
     return this.progress.duration > 0 && 
-           this.isActive &&
-           !this.isSeeking
+           this.isActive
   }
 
   /**
