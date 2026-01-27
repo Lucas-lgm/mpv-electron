@@ -21,8 +21,6 @@ export function useResourceFilter(
       filtered = filtered.filter(r => r.source === 'local')
     } else if (activeFilter.value === 'network') {
       filtered = filtered.filter(r => r.source === 'network')
-    } else if (activeFilter.value === 'nas') {
-      filtered = filtered.filter(r => r.source === 'nas')
     } else if (activeFilter.value && activeFilter.value !== 'all') {
       // 挂载路径筛选
       if (selectedMountPath.value) {

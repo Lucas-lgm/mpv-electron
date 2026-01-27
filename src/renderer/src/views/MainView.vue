@@ -156,7 +156,6 @@ const contentTitle = computed(() => {
   if (activeFilter.value === 'all') return '全部资源'
   if (activeFilter.value === 'local') return '本地文件'
   if (activeFilter.value === 'network') return '网络资源'
-  if (activeFilter.value === 'nas') return 'NAS 存储'
   if (selectedMountPath.value) {
     const mountPath = mountPathsList.value.find(mp => mp.id === selectedMountPath.value)
     return mountPath ? mountPath.path : '挂载路径'

@@ -22,12 +22,6 @@
         label="网络资源"
         @click="$emit('filter-change', 'network')"
       />
-      <SidebarItem
-        :active="props.activeFilter === 'nas'"
-        icon="📡"
-        label="NAS 存储"
-        @click="$emit('filter-change', 'nas')"
-      />
     </SidebarSection>
 
     <SidebarSection
