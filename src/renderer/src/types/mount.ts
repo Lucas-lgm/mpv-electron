@@ -21,7 +21,7 @@ export interface MountPath {
 /**
  * NAS 协议类型
  */
-export type NasProtocol = 'smb'
+export type NasProtocol = 'smb' | 'webdav'
 
 /**
  * NAS 配置接口
@@ -31,16 +31,18 @@ export interface NasConfig {
   protocol: NasProtocol
   /** 主机地址（IP 或域名） */
   host: string
-  /** 共享名称 */
-  share: string
+  /** 共享名称（SMB 协议必需，WebDAV 协议不需要） */
+  share?: string
   /** 用户名（可选） */
   username?: string
   /** 密码（可选，加密存储） */
   password?: string
-  /** 端口（可选，默认 445 for SMB） */
+  /** 端口（可选，默认 445 for SMB, 80/443 for WebDAV） */
   port?: number
-  /** 路径（可选，共享内的子路径） */
+  /** 路径（可选，共享内的子路径或 WebDAV 根路径） */
   path?: string
+  /** 是否使用 HTTPS（WebDAV 协议，默认 false） */
+  useHttps?: boolean
 }
 
 /**

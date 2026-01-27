@@ -7,18 +7,22 @@ import { join, extname } from 'path'
 import { app, BrowserWindow, safeStorage, shell } from 'electron'
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import * as https from 'https'
+import * as http from 'http'
+import { URL } from 'url'
 import { scanDirectory, type ScannedResource } from './mountPathService'
 
 const execAsync = promisify(exec)
 
 export interface NasConfig {
-  protocol: 'smb'
+  protocol: 'smb' | 'webdav'
   host: string
-  share: string
+  share?: string  // SMB 协议必需，WebDAV 不需要
   username?: string
   password?: string
   port?: number
   path?: string
+  useHttps?: boolean  // WebDAV 协议，是否使用 HTTPS
 }
 
 export interface NasConnection {
@@ -37,6 +41,10 @@ export interface NasConnection {
  */
 function buildSmbPath(config: NasConfig): string {
   const { host, share, username, password, port, path } = config
+  
+  if (!share) {
+    throw new Error('SMB 协议需要共享名称')
+  }
   
   // 构建基础路径：smb://host/share
   let smbPath = `smb://${host}`
@@ -68,25 +76,47 @@ function buildSmbPath(config: NasConfig): string {
 }
 
 /**
+ * 构建 WebDAV 路径
+ */
+function buildWebDavPath(config: NasConfig): string {
+  const { host, username, password, port, path, useHttps } = config
+  
+  // 确定协议和默认端口
+  const protocol = useHttps ? 'https' : 'http'
+  const defaultPort = useHttps ? 443 : 80
+  
+  // 构建基础路径：http://host 或 https://host
+  let webdavPath = `${protocol}://${host}`
+  
+  // 添加端口（如果不是默认端口）
+  if (port && port !== defaultPort) {
+    webdavPath += `:${port}`
+  }
+  
+  // 添加路径（WebDAV 根路径）
+  if (path) {
+    const normalizedPath = path.replace(/\/+$/, '') // 移除尾部斜杠
+    webdavPath += normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`
+  }
+  
+  // 如果有用户名，添加到路径中
+  if (username) {
+    // WebDAV URL 格式：http://username:password@host/path
+    const authPart = password ? `${username}:${password}` : username
+    webdavPath = webdavPath.replace(`${protocol}://${host}`, `${protocol}://${authPart}@${host}`)
+  }
+  
+  return webdavPath
+}
+
+/**
  * 测试 NAS 连接
- * 注意：在 macOS 上，SMB 路径需要先挂载才能访问
- * 这里我们尝试通过构建的路径来测试连接
  */
 async function testNasConnection(config: NasConfig): Promise<{ success: boolean; error?: string }> {
   try {
-    const smbPath = buildSmbPath(config)
-    
-    // 在 macOS 上，SMB 路径需要通过系统挂载才能访问
-    // 这里我们只验证配置的有效性，实际连接需要系统支持
-    // 如果路径格式正确，认为配置有效
-    
-    if (!config.host || !config.share) {
-      return { success: false, error: '主机地址和共享名称不能为空' }
-    }
-    
-    // 验证主机地址格式（简单验证）
+    // 验证主机地址格式
     const hostPattern = /^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$|^(\d{1,3}\.){3}\d{1,3}$/
-    if (!hostPattern.test(config.host)) {
+    if (!config.host || !hostPattern.test(config.host)) {
       return { success: false, error: '主机地址格式无效' }
     }
     
@@ -95,8 +125,85 @@ async function testNasConnection(config: NasConfig): Promise<{ success: boolean;
       return { success: false, error: '端口号必须在 1-65535 之间' }
     }
     
-    // 配置验证通过
-    return { success: true }
+    // 根据协议类型进行不同的验证和测试
+    if (config.protocol === 'smb') {
+      // SMB 协议验证
+      if (!config.share) {
+        return { success: false, error: 'SMB 协议需要共享名称' }
+      }
+      
+      // 在 macOS 上，SMB 路径需要通过系统挂载才能访问
+      // 这里我们只验证配置的有效性，实际连接需要系统支持
+      return { success: true }
+    } else if (config.protocol === 'webdav') {
+      // WebDAV 协议：尝试实际连接测试
+      try {
+        const webdavUrl = buildWebDavPath(config)
+        const url = new URL(webdavUrl)
+        
+        // 使用 Node.js http/https 模块发送 PROPFIND 请求
+        const isHttps = url.protocol === 'https:'
+        const httpModule = isHttps ? https : http
+        
+        return new Promise<{ success: boolean; error?: string }>((resolve) => {
+          const auth = config.username && config.password
+            ? Buffer.from(`${config.username}:${config.password}`).toString('base64')
+            : null
+          
+          const options = {
+            hostname: url.hostname,
+            port: url.port || (isHttps ? 443 : 80),
+            path: url.pathname || '/',
+            method: 'PROPFIND',
+            headers: {
+              'Depth': '0',
+              'Content-Type': 'application/xml',
+              ...(auth ? { 'Authorization': `Basic ${auth}` } : {})
+            },
+            timeout: 5000
+          }
+          
+          const req = httpModule.request(options, (res) => {
+            let data = ''
+            res.on('data', (chunk) => { data += chunk })
+            res.on('end', () => {
+              if (res.statusCode === 401 || res.statusCode === 403) {
+                resolve({ success: false, error: '认证失败，请检查用户名和密码' })
+              } else if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                resolve({ success: true })
+              } else if (res.statusCode === 404) {
+                resolve({ success: false, error: 'WebDAV 路径不存在' })
+              } else {
+                resolve({ success: false, error: `连接失败：HTTP ${res.statusCode}` })
+              }
+            })
+          })
+          
+          req.on('error', (error: any) => {
+            if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
+              resolve({ success: false, error: '连接超时，请检查网络和服务器地址' })
+            } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+              resolve({ success: false, error: '无法连接到服务器，请检查主机地址和端口' })
+            } else {
+              resolve({ success: false, error: error.message || '连接测试失败' })
+            }
+          })
+          
+          req.on('timeout', () => {
+            req.destroy()
+            resolve({ success: false, error: '连接超时，请检查网络和服务器地址' })
+          })
+          
+          // 发送 PROPFIND 请求体（最小化）
+          req.write('<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>')
+          req.end()
+        })
+      } catch (error: any) {
+        return { success: false, error: error.message || '连接测试失败' }
+      }
+    }
+    
+    return { success: false, error: '不支持的协议类型' }
   } catch (error) {
     return {
       success: false,
@@ -128,14 +235,31 @@ function encryptPassword(password: string): string | null {
  */
 function decryptPassword(encryptedPassword: string): string | null {
   try {
-    if (safeStorage.isEncryptionAvailable()) {
-      const buffer = Buffer.from(encryptedPassword, 'base64')
-      return safeStorage.decryptString(buffer)
+    if (!encryptedPassword) {
+      return null
     }
-    // 如果加密不可用，假设是明文
-    return encryptedPassword
+    
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        const buffer = Buffer.from(encryptedPassword, 'base64')
+        return safeStorage.decryptString(buffer)
+      } catch (decryptError) {
+        // 解密失败可能因为：
+        // 1. 系统密钥改变（系统更新、重新安装等）
+        // 2. 数据损坏
+        // 3. 加密格式不匹配
+        console.warn('密码解密失败，可能需要重新输入密码:', decryptError instanceof Error ? decryptError.message : String(decryptError))
+        return null
+      }
+    }
+    
+    // 如果加密不可用，尝试作为明文返回（向后兼容）
+    // 但通常不应该发生，因为保存时应该检查加密是否可用
+    console.warn('安全存储不可用，无法解密密码')
+    return null
   } catch (error) {
-    console.error('解密密码失败:', error)
+    // 捕获所有其他错误
+    console.warn('解密密码时发生错误:', error instanceof Error ? error.message : String(error))
     return null
   }
 }
@@ -169,29 +293,48 @@ export class NasService {
       const data = JSON.parse(raw)
       if (Array.isArray(data.connections)) {
         data.connections.forEach((conn: any) => {
-          // 解密密码
-          const config: NasConfig = {
-            ...conn.config,
-            password: conn.config.encryptedPassword
-              ? decryptPassword(conn.config.encryptedPassword)
-              : undefined
+          try {
+            // 解密密码
+            let decryptedPassword: string | undefined = undefined
+            if (conn.config.encryptedPassword) {
+              decryptedPassword = decryptPassword(conn.config.encryptedPassword) || undefined
+              // 如果解密失败，密码将为空，用户需要重新输入
+              if (!decryptedPassword && conn.config.encryptedPassword) {
+                console.warn(`NAS 连接 "${conn.name}" 的密码解密失败，需要重新输入密码`)
+              }
+            }
+            
+            const config: NasConfig = {
+              ...conn.config,
+              password: decryptedPassword
+            }
+            
+            // 如果密码解密失败，设置错误状态
+            const hasPasswordError = decryptedPassword === undefined && conn.config.encryptedPassword
+            const errorMessage = hasPasswordError 
+              ? '密码解密失败，请重新配置连接（系统密钥可能已改变）'
+              : conn.error
+            
+            const nasConnection: NasConnection = {
+              id: conn.id,
+              name: conn.name,
+              config,
+              resourceCount: conn.resourceCount || 0,
+              lastScanned: conn.lastScanned ? new Date(conn.lastScanned) : undefined,
+              autoScan: conn.autoScan !== undefined ? conn.autoScan : true,
+              status: hasPasswordError ? 'error' : (conn.status || 'disconnected'),
+              error: errorMessage
+            }
+            this.nasConnections.set(nasConnection.id, nasConnection)
+          } catch (connError) {
+            // 单个连接加载失败不影响其他连接
+            console.error(`加载 NAS 连接 "${conn.name || conn.id}" 失败:`, connError)
           }
-          
-          const nasConnection: NasConnection = {
-            id: conn.id,
-            name: conn.name,
-            config,
-            resourceCount: conn.resourceCount || 0,
-            lastScanned: conn.lastScanned ? new Date(conn.lastScanned) : undefined,
-            autoScan: conn.autoScan !== undefined ? conn.autoScan : true,
-            status: conn.status || 'disconnected',
-            error: conn.error
-          }
-          this.nasConnections.set(nasConnection.id, nasConnection)
         })
       }
     } catch (error) {
       console.error('加载 NAS 连接失败:', error)
+      // 即使加载失败，也不阻止应用启动
     }
   }
 
@@ -471,10 +614,27 @@ export class NasService {
   }
 
   /**
-   * 列出服务器上的可用共享
-   * 使用 smbclient 或通过系统 API 获取
+   * 列出服务器上的可用共享（SMB）或路径（WebDAV）
+   * @param protocol 协议类型
+   * @param host 主机地址
+   * @param username 用户名
+   * @param password 密码
+   * @param useHttps WebDAV 是否使用 HTTPS
+   * @param port 端口
    */
-  async listServerShares(host: string, username?: string, password?: string): Promise<{ shares: NetworkShare[]; error?: string }> {
+  async listServerShares(
+    protocol: 'smb' | 'webdav',
+    host: string, 
+    username?: string, 
+    password?: string,
+    useHttps?: boolean,
+    port?: number
+  ): Promise<{ shares: NetworkShare[]; error?: string }> {
+    if (protocol === 'webdav') {
+      return this.listWebDavPaths(host, username, password, useHttps, port)
+    }
+    
+    // SMB 协议的原有逻辑（保持原有实现）
     try {
       // 检查是否有 smbclient
       // 在 macOS 上，Electron 应用的 PATH 可能不包含 Homebrew 路径
@@ -812,26 +972,47 @@ export class NasService {
    * 构建 NAS 资源的播放路径
    */
   buildResourcePath(connection: NasConnection, resourcePath: string): string {
-    // 如果资源路径已经是完整路径，直接返回
-    if (resourcePath.startsWith('smb://')) {
-      return resourcePath
+    if (connection.config.protocol === 'smb') {
+      // SMB 协议
+      // 如果资源路径已经是完整路径，直接返回
+      if (resourcePath.startsWith('smb://')) {
+        return resourcePath
+      }
+      
+      // 构建完整的 SMB 路径
+      const smbPath = buildSmbPath(connection.config)
+      
+      // 如果资源路径是相对路径，拼接上去
+      if (resourcePath.startsWith('/')) {
+        return `${smbPath}${resourcePath}`
+      } else {
+        return `${smbPath}/${resourcePath}`
+      }
+    } else if (connection.config.protocol === 'webdav') {
+      // WebDAV 协议
+      // 如果资源路径已经是完整 URL，直接返回
+      if (resourcePath.startsWith('http://') || resourcePath.startsWith('https://')) {
+        return resourcePath
+      }
+      
+      // 构建完整的 WebDAV 路径
+      const baseUrl = buildWebDavPath(connection.config)
+      
+      // 如果资源路径是相对路径，拼接上去
+      if (resourcePath.startsWith('/')) {
+        return `${baseUrl}${resourcePath}`
+      } else {
+        return `${baseUrl}/${resourcePath}`
+      }
     }
     
-    // 构建完整的 SMB 路径
-    const smbPath = buildSmbPath(connection.config)
-    
-    // 如果资源路径是相对路径，拼接上去
-    if (resourcePath.startsWith('/')) {
-      return `${smbPath}${resourcePath}`
-    } else {
-      return `${smbPath}/${resourcePath}`
-    }
+    return resourcePath
   }
 
   /**
    * 读取 NAS 目录内容
    * @param connectionId NAS 连接ID
-   * @param path 相对路径。如果为 undefined 或空字符串，访问配置的路径；如果为 '/'，访问挂载点根目录
+   * @param path 相对路径。如果为 undefined 或空字符串，访问配置的路径；如果为 '/'，访问根目录
    */
   async readNasDirectory(connectionId: string, path?: string): Promise<{ items: any[]; error?: string }> {
     const connection = this.nasConnections.get(connectionId)
@@ -839,16 +1020,41 @@ export class NasService {
       throw new Error(`NAS 连接不存在: ${connectionId}`)
     }
 
+    // 根据协议类型使用不同的实现
+    if (connection.config.protocol === 'smb') {
+      return this.readSmbDirectory(connection, path)
+    } else if (connection.config.protocol === 'webdav') {
+      return this.readWebDavDirectory(connection, path)
+    }
+    
+    return { items: [], error: '不支持的协议类型' }
+  }
+
+  /**
+   * 读取 SMB 目录内容
+   */
+  private async readSmbDirectory(connection: NasConnection, path?: string): Promise<{ items: any[]; error?: string }> {
+    // 平台检查：当前仅支持 macOS
+    if (process.platform !== 'darwin') {
+      return {
+        items: [],
+        error: `SMB 文件浏览功能当前仅支持 macOS。当前平台：${process.platform}`
+      }
+    }
+
     // 在 macOS 上，SMB 共享需要先挂载
     const volumesPath = '/Volumes'
     const shareName = connection.config.share
+    if (!shareName) {
+      return { items: [], error: 'SMB 协议需要共享名称' }
+    }
     const mountedPath = join(volumesPath, shareName)
 
     // 检查挂载点是否存在
     if (!existsSync(mountedPath)) {
       return {
         items: [],
-        error: `SMB 共享未挂载。请先在 Finder 中连接到 smb://${connection.config.host}/${connection.config.share}`
+        error: `SMB 共享未挂载。请先在 Finder 中连接到 smb://${connection.config.host}/${shareName}`
       }
     }
 
@@ -929,6 +1135,367 @@ export class NasService {
         error: error instanceof Error ? error.message : '读取目录失败'
       }
     }
+  }
+
+  /**
+   * 读取 WebDAV 目录内容
+   */
+  private async readWebDavDirectory(connection: NasConnection, path?: string): Promise<{ items: any[]; error?: string }> {
+    try {
+      // 构建基础 URL
+      let baseUrl = buildWebDavPath(connection.config)
+      
+      // 构建目标路径
+      let targetPath = baseUrl
+      if (path === '/') {
+        targetPath = baseUrl
+      } else if (path) {
+        // 确保路径以 / 开头
+        const normalizedPath = path.startsWith('/') ? path : `/${path}`
+        targetPath = `${baseUrl}${normalizedPath}`
+        // 确保路径以 / 结尾（WebDAV 目录路径需要以 / 结尾）
+        if (!targetPath.endsWith('/')) {
+          targetPath += '/'
+        }
+      } else {
+        // path 为 undefined，使用配置的路径
+        if (connection.config.path) {
+          const configPath = connection.config.path.startsWith('/') 
+            ? connection.config.path 
+            : `/${connection.config.path}`
+          targetPath = `${baseUrl}${configPath}`
+          if (!targetPath.endsWith('/')) {
+            targetPath += '/'
+          }
+        } else {
+          targetPath = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
+        }
+      }
+
+      const url = new URL(targetPath)
+      const isHttps = url.protocol === 'https:'
+      const httpModule = isHttps ? https : http
+
+      return new Promise<{ items: any[]; error?: string }>((resolve) => {
+        const auth = connection.config.username && connection.config.password
+          ? Buffer.from(`${connection.config.username}:${connection.config.password}`).toString('base64')
+          : null
+
+        const options = {
+          hostname: url.hostname,
+          port: url.port || (isHttps ? 443 : 80),
+          path: url.pathname + (url.search || ''),
+          method: 'PROPFIND',
+          headers: {
+            'Depth': '1',  // 获取当前目录及其直接子项
+            'Content-Type': 'application/xml',
+            ...(auth ? { 'Authorization': `Basic ${auth}` } : {})
+          },
+          timeout: 10000
+        }
+
+        const req = httpModule.request(options, (res) => {
+          let data = ''
+          res.on('data', (chunk) => { data += chunk.toString() })
+          res.on('end', () => {
+            if (res.statusCode === 401 || res.statusCode === 403) {
+              resolve({ items: [], error: '认证失败，请检查用户名和密码' })
+            } else if (res.statusCode === 404) {
+              resolve({ items: [], error: 'WebDAV 路径不存在' })
+            } else if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              // 解析 XML 响应
+              try {
+                const items = this.parseWebDavResponse(data, targetPath)
+                resolve({ items })
+              } catch (parseError) {
+                resolve({ 
+                  items: [], 
+                  error: `解析响应失败: ${parseError instanceof Error ? parseError.message : '未知错误'}` 
+                })
+              }
+            } else {
+              resolve({ items: [], error: `请求失败：HTTP ${res.statusCode}` })
+            }
+          })
+        })
+
+        req.on('error', (error: any) => {
+          if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
+            resolve({ items: [], error: '连接超时，请检查网络和服务器地址' })
+          } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+            resolve({ items: [], error: '无法连接到服务器，请检查主机地址和端口' })
+          } else {
+            resolve({ items: [], error: error.message || '读取目录失败' })
+          }
+        })
+
+        req.on('timeout', () => {
+          req.destroy()
+          resolve({ items: [], error: '连接超时，请检查网络和服务器地址' })
+        })
+
+        // 发送 PROPFIND 请求体
+        const propfindBody = `<?xml version="1.0" encoding="utf-8"?>
+<propfind xmlns="DAV:">
+  <prop>
+    <resourcetype/>
+    <getcontentlength/>
+    <getlastmodified/>
+    <displayname/>
+  </prop>
+</propfind>`
+        req.write(propfindBody)
+        req.end()
+      })
+    } catch (error) {
+      return { items: [], error: error instanceof Error ? error.message : '读取目录失败' }
+    }
+  }
+
+  /**
+   * 解析 WebDAV PROPFIND 响应
+   */
+  private parseWebDavResponse(xmlData: string, baseUrl: string): any[] {
+    const items: any[] = []
+    
+    // 简单的 XML 解析（使用正则表达式）
+    // 匹配 <response> 块
+    const responseRegex = /<response[^>]*>([\s\S]*?)<\/response>/gi
+    let match
+
+    while ((match = responseRegex.exec(xmlData)) !== null) {
+      const responseBlock = match[1]
+      
+      // 提取 href（资源路径）
+      const hrefMatch = responseBlock.match(/<href[^>]*>([^<]+)<\/href>/i)
+      if (!hrefMatch) continue
+      
+      let href = decodeURIComponent(hrefMatch[1])
+      // 移除 baseUrl 前缀，获取相对路径
+      if (href.startsWith(baseUrl)) {
+        href = href.substring(baseUrl.length)
+      }
+      // 移除开头的 /
+      if (href.startsWith('/')) {
+        href = href.substring(1)
+      }
+      // 跳过当前目录本身
+      if (!href || href === '') continue
+
+      // 提取 resourcetype（判断是目录还是文件）
+      const isCollection = /<collection[^>]*\/>/.test(responseBlock) || /<resourcetype[^>]*>[\s\S]*<collection[^>]*>[\s\S]*<\/resourcetype>/.test(responseBlock)
+      
+      // 提取 getcontentlength（文件大小）
+      const contentLengthMatch = responseBlock.match(/<getcontentlength[^>]*>([^<]+)<\/getcontentlength>/i)
+      const size = contentLengthMatch ? parseInt(contentLengthMatch[1], 10) : undefined
+
+      // 提取 getlastmodified（修改时间）
+      const lastModifiedMatch = responseBlock.match(/<getlastmodified[^>]*>([^<]+)<\/getlastmodified>/i)
+      let modifiedAt: Date | undefined
+      if (lastModifiedMatch) {
+        try {
+          modifiedAt = new Date(lastModifiedMatch[1])
+        } catch {
+          // 忽略日期解析错误
+        }
+      }
+
+      // 提取 displayname（显示名称）
+      const displayNameMatch = responseBlock.match(/<displayname[^>]*>([^<]+)<\/displayname>/i)
+      const name = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : href.split('/').pop() || href
+
+      // 构建完整路径
+      const fullPath = baseUrl.endsWith('/') ? `${baseUrl}${href}` : `${baseUrl}/${href}`
+
+      items.push({
+        name,
+        path: fullPath,
+        type: isCollection ? 'directory' : 'file',
+        size: isCollection ? undefined : size,
+        modifiedAt,
+        isVideo: !isCollection && isVideoFile(name),
+        extension: isCollection ? undefined : extname(name).toLowerCase().slice(1)
+      })
+    }
+
+    // 排序：文件夹在前，然后按名称排序
+    items.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'directory' ? -1 : 1
+      }
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    })
+
+    return items
+  }
+
+  /**
+   * 列出 WebDAV 服务器根目录下的可用路径
+   */
+  private async listWebDavPaths(
+    host: string,
+    username?: string,
+    password?: string,
+    useHttps?: boolean,
+    port?: number
+  ): Promise<{ shares: NetworkShare[]; error?: string }> {
+    try {
+      // 构建 WebDAV 根 URL
+      const protocol = useHttps ? 'https' : 'http'
+      const defaultPort = useHttps ? 443 : 80
+      let baseUrl = `${protocol}://${host}`
+      
+      if (port && port !== defaultPort) {
+        baseUrl += `:${port}`
+      }
+      
+      // 确保 URL 以 / 结尾（WebDAV 目录路径需要以 / 结尾）
+      if (!baseUrl.endsWith('/')) {
+        baseUrl += '/'
+      }
+
+      const url = new URL(baseUrl)
+      const isHttps = url.protocol === 'https:'
+      const httpModule = isHttps ? https : http
+
+      return new Promise<{ shares: NetworkShare[]; error?: string }>((resolve) => {
+        const auth = username && password
+          ? Buffer.from(`${username}:${password}`).toString('base64')
+          : null
+
+        const options = {
+          hostname: url.hostname,
+          port: url.port || (isHttps ? 443 : 80),
+          path: url.pathname || '/',
+          method: 'PROPFIND',
+          headers: {
+            'Depth': '1',  // 获取根目录及其直接子项
+            'Content-Type': 'application/xml',
+            ...(auth ? { 'Authorization': `Basic ${auth}` } : {})
+          },
+          timeout: 10000
+        }
+
+        const req = httpModule.request(options, (res) => {
+          let data = ''
+          res.on('data', (chunk) => { data += chunk.toString() })
+          res.on('end', () => {
+            if (res.statusCode === 401 || res.statusCode === 403) {
+              resolve({ shares: [], error: '认证失败，请检查用户名和密码' })
+            } else if (res.statusCode === 404) {
+              resolve({ shares: [], error: 'WebDAV 服务器不可访问' })
+            } else if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              // 解析 XML 响应，提取路径列表
+              try {
+                const paths = this.parseWebDavPathList(data, baseUrl)
+                resolve({ shares: paths })
+              } catch (parseError) {
+                resolve({ 
+                  shares: [], 
+                  error: `解析响应失败: ${parseError instanceof Error ? parseError.message : '未知错误'}` 
+                })
+              }
+            } else {
+              resolve({ shares: [], error: `请求失败：HTTP ${res.statusCode}` })
+            }
+          })
+        })
+
+        req.on('error', (error: any) => {
+          if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
+            resolve({ shares: [], error: '连接超时，请检查网络和服务器地址' })
+          } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+            resolve({ shares: [], error: '无法连接到服务器，请检查主机地址和端口' })
+          } else {
+            resolve({ shares: [], error: error.message || '列出路径失败' })
+          }
+        })
+
+        req.on('timeout', () => {
+          req.destroy()
+          resolve({ shares: [], error: '连接超时，请检查网络和服务器地址' })
+        })
+
+        // 发送 PROPFIND 请求体
+        const propfindBody = `<?xml version="1.0" encoding="utf-8"?>
+<propfind xmlns="DAV:">
+  <prop>
+    <resourcetype/>
+    <displayname/>
+  </prop>
+</propfind>`
+        req.write(propfindBody)
+        req.end()
+      })
+    } catch (error) {
+      return { shares: [], error: error instanceof Error ? error.message : '列出路径失败' }
+    }
+  }
+
+  /**
+   * 解析 WebDAV PROPFIND 响应，提取路径列表（用于列出可用路径）
+   */
+  private parseWebDavPathList(xmlData: string, baseUrl: string): NetworkShare[] {
+    const paths: NetworkShare[] = []
+    
+    // 简单的 XML 解析（使用正则表达式）
+    // 匹配 <response> 块
+    const responseRegex = /<response[^>]*>([\s\S]*?)<\/response>/gi
+    let match
+
+    while ((match = responseRegex.exec(xmlData)) !== null) {
+      const responseBlock = match[1]
+      
+      // 提取 href（资源路径）
+      const hrefMatch = responseBlock.match(/<href[^>]*>([^<]+)<\/href>/i)
+      if (!hrefMatch) continue
+      
+      let href = decodeURIComponent(hrefMatch[1])
+      
+      // 移除 baseUrl 前缀，获取相对路径
+      if (href.startsWith(baseUrl)) {
+        href = href.substring(baseUrl.length)
+      }
+      
+      // 移除开头的 /
+      if (href.startsWith('/')) {
+        href = href.substring(1)
+      }
+      
+      // 跳过根目录本身和空路径
+      if (!href || href === '') continue
+      
+      // 只取第一级路径（不包含子路径）
+      const firstLevel = href.split('/')[0]
+      if (!firstLevel || firstLevel === '') continue
+      
+      // 检查是否已经添加过这个路径
+      if (paths.some(p => p.name === firstLevel)) continue
+
+      // 提取 resourcetype（判断是目录还是文件）
+      const isCollection = /<collection[^>]*\/>/.test(responseBlock) || 
+                          /<resourcetype[^>]*>[\s\S]*<collection[^>]*>[\s\S]*<\/resourcetype>/.test(responseBlock)
+      
+      // 提取 displayname（显示名称）
+      const displayNameMatch = responseBlock.match(/<displayname[^>]*>([^<]+)<\/displayname>/i)
+      const name = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : firstLevel
+
+      paths.push({
+        name: firstLevel,
+        type: isCollection ? '目录' : '文件',
+        comment: name !== firstLevel ? name : undefined
+      })
+    }
+
+    // 排序：目录在前，然后按名称排序
+    paths.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === '目录' ? -1 : 1
+      }
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    })
+
+    return paths
   }
 }
 

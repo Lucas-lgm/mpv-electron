@@ -26,9 +26,10 @@
           v-model="form.protocol"
           placeholder="选择协议"
           style="width: 100%"
-          disabled
+          @change="handleProtocolChange"
         >
           <el-option label="SMB/CIFS" value="smb" />
+          <el-option label="WebDAV" value="webdav" />
         </el-select>
       </el-form-item>
       
@@ -53,7 +54,11 @@
         </div>
       </el-form-item>
       
-      <el-form-item label="共享名称" prop="share">
+      <el-form-item 
+        v-if="form.protocol === 'smb'"
+        label="共享名称" 
+        prop="share"
+      >
         <div style="display: flex; gap: 8px; width: 100%;">
           <el-input
             v-model="form.share"
@@ -96,6 +101,49 @@
             <li>如果提示需要 smbclient，请安装：<code style="background: rgba(74,158,255,0.2); padding: 2px 4px; border-radius: 2px;">brew install samba</code></li>
             <li>或者可以在 Finder 中连接到 <code style="background: rgba(74,158,255,0.2); padding: 2px 4px; border-radius: 2px;">smb://{{ form.host || "服务器地址" }}</code> 查看可用共享</li>
           </ul>
+        </div>
+      </el-form-item>
+      
+      <el-form-item 
+        v-if="form.protocol === 'webdav'"
+        label="使用 HTTPS"
+      >
+        <div style="display: flex; gap: 8px; width: 100%; align-items: center;">
+          <el-switch v-model="form.useHttps" />
+          <el-button
+            v-if="form.host"
+            size="small"
+            :loading="loadingShares"
+            @click="handleListShares"
+            title="列出 WebDAV 根目录下的可用路径"
+          >
+            📋 列出路径
+          </el-button>
+        </div>
+        <div class="form-item-hint">
+          💡 提示：如果服务器支持 HTTPS，建议启用以保护数据传输
+        </div>
+        <div v-if="availableShares.length > 0" class="shares-list">
+          <div class="shares-list-title">可用路径（点击选择）：</div>
+          <div class="shares-list-items">
+            <div
+              v-for="share in availableShares"
+              :key="share.name"
+              class="share-item"
+              @click="handleSelectPath(share.name)"
+            >
+              <span class="share-icon">{{ share.type === '目录' ? '📁' : '📄' }}</span>
+              <span class="share-name">{{ share.name }}</span>
+              <span class="share-type">{{ share.type }}</span>
+              <span v-if="share.comment" class="share-comment">{{ share.comment }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="loadingShares" class="form-item-hint">
+          ⏳ 正在列出路径，请稍候...
+        </div>
+        <div v-else class="form-item-hint">
+          💡 提示：点击"列出路径"按钮查看 WebDAV 根目录下的可用路径
         </div>
       </el-form-item>
       
@@ -190,13 +238,14 @@ const availableShares = ref<Array<{ name: string; type: string; comment?: string
 
 const form = reactive({
   name: '',
-  protocol: 'smb' as const,
+  protocol: 'smb' as 'smb' | 'webdav',
   host: '',
   share: '',
   path: '',
   port: 445,
   username: '',
-  password: ''
+  password: '',
+  useHttps: false
 })
 
 const rules: FormRules = {
@@ -212,7 +261,18 @@ const rules: FormRules = {
     }
   ],
   share: [
-    { required: true, message: '请输入共享名称', trigger: 'blur' }
+    { 
+      required: true, 
+      message: '请输入共享名称', 
+      trigger: 'blur',
+      validator: (_rule, value, callback) => {
+        if (form.protocol === 'smb' && !value) {
+          callback(new Error('SMB 协议需要共享名称'))
+        } else {
+          callback()
+        }
+      }
+    }
   ],
   port: [
     { type: 'number', min: 1, max: 65535, message: '端口号必须在 1-65535 之间', trigger: 'blur' }
@@ -241,8 +301,22 @@ const resetForm = () => {
   form.port = 445
   form.username = ''
   form.password = ''
+  form.useHttps = false
   testResult.value = null
   availableShares.value = []
+  formRef.value?.clearValidate()
+}
+
+// 处理协议变更
+const handleProtocolChange = (protocol: 'smb' | 'webdav') => {
+  // 根据协议设置默认端口
+  if (protocol === 'webdav') {
+    form.port = form.useHttps ? 443 : 80
+    form.share = '' // WebDAV 不需要共享名称
+  } else {
+    form.port = 445
+  }
+  // 清除验证状态
   formRef.value?.clearValidate()
 }
 
@@ -265,11 +339,12 @@ const handleTest = async () => {
       const config: NasConfig = {
         protocol: form.protocol,
         host: form.host,
-        share: form.share,
+        share: form.protocol === 'smb' ? form.share : undefined,
         path: form.path || undefined,
         port: form.port || undefined,
         username: form.username || undefined,
-        password: form.password || undefined
+        password: form.password || undefined,
+        useHttps: form.protocol === 'webdav' ? form.useHttps : undefined
       }
       
       // 发送测试连接请求
@@ -322,11 +397,12 @@ const handleConfirm = async () => {
       const config: NasConfig = {
         protocol: form.protocol,
         host: form.host,
-        share: form.share,
+        share: form.protocol === 'smb' ? form.share : undefined,
         path: form.path || undefined,
         port: form.port || undefined,
         username: form.username || undefined,
-        password: form.password || undefined
+        password: form.password || undefined,
+        useHttps: form.protocol === 'webdav' ? form.useHttps : undefined
       }
       
       emit('confirm', {
@@ -383,7 +459,7 @@ const handleBrowseNetwork = async () => {
   }
 }
 
-// 列出共享
+// 列出共享或路径
 const handleListShares = async () => {
   if (!window.electronAPI || !form.host) {
     ElMessage.warning('请先输入主机地址')
@@ -401,14 +477,17 @@ const handleListShares = async () => {
       }
       window.electronAPI.on('nas-list-shares-result', handler)
       window.electronAPI.send('nas-list-shares', {
+        protocol: form.protocol,
         host: form.host,
         username: form.username || undefined,
-        password: form.password || undefined
+        password: form.password || undefined,
+        useHttps: form.protocol === 'webdav' ? form.useHttps : undefined,
+        port: form.port || undefined
       })
       
       setTimeout(() => {
         window.electronAPI.removeListener('nas-list-shares-result', handler)
-        resolve({ shares: [], error: '操作超时（可能需要安装 smbclient 工具）' })
+        resolve({ shares: [], error: form.protocol === 'smb' ? '操作超时（可能需要安装 smbclient 工具）' : '操作超时' })
       }, 15000)
     })
 
@@ -431,25 +510,39 @@ const handleListShares = async () => {
     availableShares.value = result.shares
 
     if (result.shares.length > 0) {
-      ElMessage.success(`找到 ${result.shares.length} 个共享，点击共享名称即可选择`)
+      if (form.protocol === 'smb') {
+        ElMessage.success(`找到 ${result.shares.length} 个共享，点击共享名称即可选择`)
+      } else {
+        ElMessage.success(`找到 ${result.shares.length} 个路径，点击路径名称即可选择`)
+      }
     } else if (!result.error) {
-      ElMessage.info('未找到可用共享，请检查服务器地址和认证信息')
-    } else if (result.error && !result.error.includes('smbclient')) {
+      if (form.protocol === 'smb') {
+        ElMessage.info('未找到可用共享，请检查服务器地址和认证信息')
+      } else {
+        ElMessage.info('未找到可用路径，请检查服务器地址和认证信息')
+      }
+    } else if (result.error && form.protocol === 'smb' && !result.error.includes('smbclient')) {
       // 如果有错误但不是 smbclient 相关的，可能是有共享但解析失败
       ElMessage.info('如果服务器上有共享，可以在 Finder 中手动查看：smb://' + form.host)
     }
   } catch (error) {
-    ElMessage.error('列出共享时发生错误')
-    console.error('列出共享失败:', error)
+    ElMessage.error('列出共享/路径时发生错误')
+    console.error('列出共享/路径失败:', error)
   } finally {
     loadingShares.value = false
   }
 }
 
-// 选择共享
+// 选择共享（SMB）
 const handleSelectShare = (shareName: string) => {
   form.share = shareName
   ElMessage.success(`已选择共享：${shareName}`)
+}
+
+// 选择路径（WebDAV）
+const handleSelectPath = (pathName: string) => {
+  form.path = '/' + pathName
+  ElMessage.success(`已选择路径：/${pathName}`)
 }
 
 // 取消

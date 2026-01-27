@@ -7,8 +7,13 @@
     <div class="sidebar-nas-info">
       <span class="sidebar-nas-name">{{ nasConnection.name }}</span>
       <span class="sidebar-nas-details">
-        {{ nasConnection.config.host }}/{{ nasConnection.config.share }}
-        <span v-if="nasConnection.status === 'error'" class="nas-error">⚠️</span>
+        <span v-if="nasConnection.config.protocol === 'webdav'">
+          {{ nasConnection.config.host }}{{ nasConnection.config.path ? nasConnection.config.path : '' }}
+        </span>
+        <span v-else>
+          {{ nasConnection.config.host }}{{ nasConnection.config.share ? '/' + nasConnection.config.share : '' }}
+        </span>
+        <span v-if="nasConnection.status === 'error'" class="nas-error" :title="nasConnection.error">⚠️</span>
         <span v-else-if="nasConnection.status === 'connected'" class="nas-connected">✓</span>
       </span>
     </div>

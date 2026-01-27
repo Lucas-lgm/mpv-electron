@@ -304,27 +304,33 @@ const handleNasFilePlay = (file: any) => {
   const nasConnection = selectedNasConnectionData.value
   
   // 构建播放路径
-  // MPV 不支持 smb:// URL，必须使用本地挂载路径
   let playPath = file.path
   
-  // 如果路径不是挂载点路径，需要转换为挂载点路径
-  // readNasDirectory 应该返回挂载点路径（/Volumes/ShareName/...）
-  if (!playPath.startsWith('/Volumes/')) {
-    // 如果路径是相对路径，需要构建完整的挂载点路径
-    const shareName = nasConnection.config.share
-    const basePath = `/Volumes/${shareName}`
-    
-    // 如果路径以 / 开头，直接拼接
-    if (playPath.startsWith('/')) {
-      playPath = `${basePath}${playPath}`
-    } else {
-      // 否则作为相对路径拼接
-      playPath = `${basePath}/${playPath}`
+  // 根据协议类型处理路径
+  if (nasConnection.config.protocol === 'smb') {
+    // SMB 协议：MPV 不支持 smb:// URL，必须使用本地挂载路径
+    // readNasDirectory 应该返回挂载点路径（/Volumes/ShareName/...）
+    if (!playPath.startsWith('/Volumes/')) {
+      // 如果路径是相对路径，需要构建完整的挂载点路径
+      const shareName = nasConnection.config.share
+      if (shareName) {
+        const basePath = `/Volumes/${shareName}`
+        // 如果路径以 / 开头，直接拼接
+        if (playPath.startsWith('/')) {
+          playPath = `${basePath}${playPath}`
+        } else {
+          // 否则作为相对路径拼接
+          playPath = `${basePath}/${playPath}`
+        }
+      }
     }
+    // 确保路径是绝对路径，MPV 需要本地文件系统路径
+    // 注意：MPV 不支持 smb:// URL，所以必须使用挂载点路径
+  } else if (nasConnection.config.protocol === 'webdav') {
+    // WebDAV 协议：MPV 支持 http/https URL，直接使用
+    // readNasDirectory 返回的路径已经是完整的 WebDAV URL
+    // 不需要额外处理
   }
-  
-  // 确保路径是绝对路径，MPV 需要本地文件系统路径
-  // 注意：MPV 不支持 smb:// URL，所以必须使用挂载点路径
   
   window.electronAPI.send('play-video', {
     name: file.name,
@@ -383,32 +389,46 @@ const handleNasRefresh = async (id: string) => {
 const handlePlayVideo = (video: MediaResource) => {
   if (!window.electronAPI) return
   
-  // MPV 不支持 smb:// URL，必须使用本地挂载路径
-  // 如果是 NAS 资源，路径应该已经是挂载点路径（/Volumes/ShareName/...）
+  // 根据协议类型处理播放路径
   let playPath = video.path
   
   if (video.source === 'nas') {
     // 查找对应的 NAS 连接
     const nasConnection = nasConnectionsList.value.find(nc => {
-      // 检查路径是否匹配该 NAS 连接的挂载点
-      return video.path.startsWith(`/Volumes/${nc.config.share}`) || 
-             video.path.startsWith(`smb://${nc.config.host}/${nc.config.share}`)
+      if (nc.config.protocol === 'smb') {
+        // SMB 协议：检查路径是否匹配该 NAS 连接的挂载点
+        return video.path.startsWith(`/Volumes/${nc.config.share}`) || 
+               video.path.startsWith(`smb://${nc.config.host}/${nc.config.share}`)
+      } else if (nc.config.protocol === 'webdav') {
+        // WebDAV 协议：检查路径是否匹配该 NAS 连接的 URL
+        const baseUrl = nc.config.useHttps 
+          ? `https://${nc.config.host}`
+          : `http://${nc.config.host}`
+        return video.path.startsWith(baseUrl)
+      }
+      return false
     })
     
     if (nasConnection) {
-      // 如果路径已经是挂载点路径，直接使用
-      if (playPath.startsWith('/Volumes/')) {
-        // 已经是正确的格式，不需要转换
-        // MPV 可以直接播放挂载点路径
-      } else if (playPath.startsWith('smb://')) {
-        // 如果是 smb:// URL，需要转换为挂载点路径
-        // 提取共享名称和相对路径
-        const shareName = nasConnection.config.share
-        const smbPrefix = `smb://${nasConnection.config.host}/${shareName}`
-        if (playPath.startsWith(smbPrefix)) {
-          const relativePath = playPath.replace(smbPrefix, '')
-          playPath = `/Volumes/${shareName}${relativePath}`
+      if (nasConnection.config.protocol === 'smb') {
+        // SMB 协议：MPV 不支持 smb:// URL，必须使用本地挂载路径
+        if (playPath.startsWith('/Volumes/')) {
+          // 已经是正确的格式，不需要转换
+          // MPV 可以直接播放挂载点路径
+        } else if (playPath.startsWith('smb://')) {
+          // 如果是 smb:// URL，需要转换为挂载点路径
+          const shareName = nasConnection.config.share
+          if (shareName) {
+            const smbPrefix = `smb://${nasConnection.config.host}/${shareName}`
+            if (playPath.startsWith(smbPrefix)) {
+              const relativePath = playPath.replace(smbPrefix, '')
+              playPath = `/Volumes/${shareName}${relativePath}`
+            }
+          }
         }
+      } else if (nasConnection.config.protocol === 'webdav') {
+        // WebDAV 协议：MPV 支持 http/https URL，直接使用
+        // 路径应该已经是完整的 WebDAV URL，不需要转换
       }
     }
   }

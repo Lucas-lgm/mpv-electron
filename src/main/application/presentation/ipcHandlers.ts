@@ -297,15 +297,22 @@ export function setupIpcHandlers(videoPlayerApp: VideoPlayerApp, corePlayer: Cor
   })
 
   // NAS 列出服务器共享
-  ipcMain.on('nas-list-shares', async (event, data: { host: string; username?: string; password?: string }) => {
+  ipcMain.on('nas-list-shares', async (event, data: { protocol: 'smb' | 'webdav'; host: string; username?: string; password?: string; useHttps?: boolean; port?: number }) => {
     try {
-      const result = await nasService.listServerShares(data.host, data.username, data.password)
+      const result = await nasService.listServerShares(
+        data.protocol,
+        data.host,
+        data.username,
+        data.password,
+        data.useHttps,
+        data.port
+      )
       event.reply('nas-list-shares-result', result)
     } catch (error) {
-      console.error('列出共享失败:', error)
+      console.error('列出共享/路径失败:', error)
       event.reply('nas-list-shares-result', {
         shares: [],
-        error: error instanceof Error ? error.message : '列出共享失败'
+        error: error instanceof Error ? error.message : '列出共享/路径失败'
       })
     }
   })
