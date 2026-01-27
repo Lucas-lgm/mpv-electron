@@ -218,7 +218,7 @@ function scheduleSeek(time: number) {
 
 为方便复用「单通道合并覆盖队列」（模式 A），在主进程侧提供了通用工具类：
 
-- **文件位置**：`src/main/application/core/LastWriteWinsTaskRunner.ts`
+- **文件位置**：`src/main/application/utils/LastWriteWinsTaskRunner.ts`
 - **核心接口**：
 
 ```ts
