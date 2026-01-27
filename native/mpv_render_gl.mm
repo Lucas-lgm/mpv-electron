@@ -118,6 +118,8 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
 static void update_hdr_mode(GLRenderContext *rc, bool forceApply = false);
 static void set_render_icc_profile(GLRenderContext *rc);
 static void init_default_sdr_config(GLRenderContext *rc);
+static uint64_t calculateMinRenderInterval(GLRenderContext *rc);
+static bool check_dolby_vision_track(mpv_handle *mpv);
 
 @interface MPVOpenGLLayer : CAOpenGLLayer
 @property(nonatomic, assign) GLRenderContext *renderCtx;
@@ -133,28 +135,26 @@ static void init_default_sdr_config(GLRenderContext *rc);
     (void)t;
     (void)ts;
     GLRenderContext *rc = self.renderCtx;
-    if (!rc || rc->isDestroying.load()) return NO;
+    if (!rc) return NO;
+    
+    // 一次性加载原子变量，减少重复访问
+    bool isDestroying = rc->isDestroying.load();
+    if (isDestroying) return NO;
     if (!rc->mpvRenderCtx) return YES;
     
     // JavaScript 驱动模式下，只有当 displayScheduled 为 true 时才允许渲染
     // displayScheduled 由 mpv_request_render 设置，表示 JavaScript 端请求了渲染
-    if (rc->jsDrivenRenderMode.load()) {
-        return rc->displayScheduled.load() && rc->needRedraw.load();
+    bool jsDrivenMode = rc->jsDrivenRenderMode.load();
+    if (jsDrivenMode) {
+        bool displayScheduled = rc->displayScheduled.load();
+        bool needRedraw = rc->needRedraw.load();
+        return displayScheduled && needRedraw;
     }
     
     // 渲染节流：检查是否距离上次渲染时间太短
-    // 根据视频帧率动态计算最小渲染间隔
     uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
     uint64_t lastRenderMs = rc->lastRenderTimeMs.load();
-    
-    // 根据视频帧率计算最小渲染间隔
-    double fps = rc->videoFps.load();
-    uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
-    if (fps > 0.1) {
-        // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
-        uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
-        minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
-    }
+    uint64_t minIntervalMs = calculateMinRenderInterval(rc);
     
     if (lastRenderMs > 0 && (nowMs - lastRenderMs) < minIntervalMs) {
         return NO; // 跳过本次渲染
@@ -172,7 +172,11 @@ static void init_default_sdr_config(GLRenderContext *rc);
     (void)ts;
 
     GLRenderContext *rc = self.renderCtx;
-    if (!rc || rc->isDestroying.load() || !ctx) return;
+    if (!rc || !ctx) return;
+    
+    // 一次性加载原子变量
+    bool isDestroying = rc->isDestroying.load();
+    if (isDestroying) return;
 
     ScopedCGLock lock(ctx);
     CGLSetCurrentContext(ctx);
@@ -188,7 +192,10 @@ static void init_default_sdr_config(GLRenderContext *rc);
         return;
     }
 
-    bool forceBlack = rc->forceBlackFrame.load() || rc->forceBlackMode.load();
+    // 一次性加载原子变量
+    bool forceBlackFrame = rc->forceBlackFrame.load();
+    bool forceBlackMode = rc->forceBlackMode.load();
+    bool forceBlack = forceBlackFrame || forceBlackMode;
     if (forceBlack) {
         rc->forceBlackFrame.store(false);
         glFlush();
@@ -196,18 +203,9 @@ static void init_default_sdr_config(GLRenderContext *rc);
     }
 
     // 渲染节流：避免过度渲染阻塞主线程
-    // 根据视频帧率动态计算最小渲染间隔
     uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
     uint64_t lastRenderMs = rc->lastRenderTimeMs.load();
-    
-    // 根据视频帧率计算最小渲染间隔
-    double fps = rc->videoFps.load();
-    uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
-    if (fps > 0.1) {
-        // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
-        uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
-        minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
-    }
+    uint64_t minIntervalMs = calculateMinRenderInterval(rc);
     
     if (lastRenderMs > 0 && (nowMs - lastRenderMs) < minIntervalMs) {
         // 渲染太频繁，跳过本次渲染，让 RunLoop 处理其他事件（如 Electron UI）
@@ -375,6 +373,75 @@ static CALayer *get_render_layer(GLRenderContext *rc) {
     return rc->view.layer;
 }
 
+/**
+ * 计算最小渲染间隔（毫秒）
+ * 根据视频帧率动态计算，避免过度渲染
+ * @param rc 渲染上下文
+ * @return 最小渲染间隔（毫秒）
+ */
+static uint64_t calculateMinRenderInterval(GLRenderContext *rc) {
+    if (!rc) return GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
+    
+    double fps = rc->videoFps.load();
+    uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
+    
+    if (fps > 0.1) {
+        // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
+        uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
+        minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
+    }
+    
+    return minIntervalMs;
+}
+
+/**
+ * 检查当前选中的视频轨道是否为 Dolby Vision
+ * @param mpv MPV 句柄
+ * @return 如果当前视频是 Dolby Vision 则返回 true，否则返回 false
+ */
+static bool check_dolby_vision_track(mpv_handle *mpv) {
+    if (!mpv) return false;
+    
+    mpv_node tracks;
+    if (mpv_get_property(mpv, "track-list", MPV_FORMAT_NODE, &tracks) < 0) {
+        return false;
+    }
+    
+    bool hasDolbyVision = false;
+    if (tracks.format == MPV_FORMAT_NODE_ARRAY) {
+        for (int i = 0; i < tracks.u.list->num; i++) {
+            mpv_node track = tracks.u.list->values[i];
+            if (track.format != MPV_FORMAT_NODE_MAP) continue;
+            
+            bool is_video = false;
+            bool is_selected = false;
+            bool has_dv = false;
+            
+            mpv_node_list *list = track.u.list;
+            for (int j = 0; j < list->num; j++) {
+                char *key = list->keys[j];
+                mpv_node value = list->values[j];
+                
+                if (strcmp(key, "type") == 0 && value.format == MPV_FORMAT_STRING) {
+                    if (strcmp(value.u.string, "video") == 0) is_video = true;
+                } else if (strcmp(key, "selected") == 0 && value.format == MPV_FORMAT_FLAG) {
+                    is_selected = value.u.flag;
+                } else if (strcmp(key, "dolby-vision-profile") == 0 && value.format == MPV_FORMAT_INT64) {
+                    if (value.u.int64 > 0) has_dv = true;
+                }
+            }
+            
+            if (is_video && is_selected && has_dv) {
+                hasDolbyVision = true;
+                break;
+            }
+        }
+    }
+    
+    mpv_free_node_contents(&tracks);
+    return hasDolbyVision;
+}
+
 static void log_hdr_config(GLRenderContext *rc) {
     if (!rc || !rc->mpvHandle) return;
     
@@ -442,47 +509,10 @@ static void log_hdr_config(GLRenderContext *rc) {
 }
 
 static const char* get_optimal_tone_mapping(mpv_handle *mpv) {
-    const char* algorithm = "bt.2390"; 
-    
-    mpv_node tracks;
-    if (mpv_get_property(mpv, "track-list", MPV_FORMAT_NODE, &tracks) < 0) {
-        return algorithm;
+    if (check_dolby_vision_track(mpv)) {
+        return "st2094-10";
     }
-    
-    if (tracks.format == MPV_FORMAT_NODE_ARRAY) {
-        for (int i = 0; i < tracks.u.list->num; i++) {
-            mpv_node track = tracks.u.list->values[i];
-            if (track.format != MPV_FORMAT_NODE_MAP) continue;
-            
-            bool is_video = false;
-            bool is_selected = false;
-            bool has_dv = false;
-            
-            mpv_node_list *list = track.u.list;
-            for (int j = 0; j < list->num; j++) {
-                char *key = list->keys[j];
-                mpv_node value = list->values[j];
-                
-                if (strcmp(key, "type") == 0 && value.format == MPV_FORMAT_STRING) {
-                    if (strcmp(value.u.string, "video") == 0) is_video = true;
-                } else if (strcmp(key, "selected") == 0 && value.format == MPV_FORMAT_FLAG) {
-                    is_selected = value.u.flag;
-                } else if (strcmp(key, "dolby-vision-profile") == 0 && value.format == MPV_FORMAT_INT64) {
-                    if (value.u.int64 > 0) has_dv = true;
-                }
-            }
-            
-            if (is_video && is_selected) {
-                if (has_dv) {
-                    algorithm = "st2094-10";
-                }
-                break;
-            }
-        }
-    }
-    
-    mpv_free_node_contents(&tracks);
-    return algorithm;
+    return "bt.2390";
 }
 
 static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
@@ -604,40 +634,7 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
         
         // 检测是否是 Dolby Vision 视频
         // Dolby Vision 需要特殊处理，因为它有动态色调映射，target-peak 过高会导致过曝
-        bool isDolbyVision = false;
-        mpv_node tracks;
-        if (mpv_get_property(rc->mpvHandle, "track-list", MPV_FORMAT_NODE, &tracks) >= 0) {
-            if (tracks.format == MPV_FORMAT_NODE_ARRAY) {
-                for (int i = 0; i < tracks.u.list->num; i++) {
-                    mpv_node track = tracks.u.list->values[i];
-                    if (track.format != MPV_FORMAT_NODE_MAP) continue;
-                    
-                    bool is_video = false;
-                    bool is_selected = false;
-                    bool has_dv = false;
-                    
-                    mpv_node_list *list = track.u.list;
-                    for (int j = 0; j < list->num; j++) {
-                        char *key = list->keys[j];
-                        mpv_node value = list->values[j];
-                        
-                        if (strcmp(key, "type") == 0 && value.format == MPV_FORMAT_STRING) {
-                            if (strcmp(value.u.string, "video") == 0) is_video = true;
-                        } else if (strcmp(key, "selected") == 0 && value.format == MPV_FORMAT_FLAG) {
-                            is_selected = value.u.flag;
-                        } else if (strcmp(key, "dolby-vision-profile") == 0 && value.format == MPV_FORMAT_INT64) {
-                            if (value.u.int64 > 0) has_dv = true;
-                        }
-                    }
-                    
-                    if (is_video && is_selected && has_dv) {
-                        isDolbyVision = true;
-                        break;
-                    }
-                }
-            }
-            mpv_free_node_contents(&tracks);
-        }
+        bool isDolbyVision = check_dolby_vision_track(rc->mpvHandle);
         
         // 根据 EDR 值和视频实际参数计算 target-peak
         // 不根据容器格式区分，因为格式本身不影响 HDR 渲染
@@ -951,7 +948,11 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
                                     CVOptionFlags *flagsOut,
                                     void *displayLinkContext) {
     GLRenderContext *rc = (GLRenderContext *)displayLinkContext;
-    if (!rc || rc->isDestroying.load()) return kCVReturnSuccess;
+    if (!rc) return kCVReturnSuccess;
+    
+    // 一次性加载原子变量
+    bool isDestroying = rc->isDestroying.load();
+    if (isDestroying) return kCVReturnSuccess;
 
     @autoreleasepool {
         // 报告交换完成（必须，用于音视频同步）
@@ -961,26 +962,19 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
         }
         
         // JavaScript 驱动模式下，不在这里触发渲染，由 JavaScript 端控制
-        if (rc->jsDrivenRenderMode.load()) {
+        bool jsDrivenMode = rc->jsDrivenRenderMode.load();
+        if (jsDrivenMode) {
             return kCVReturnSuccess;
         }
         
         // CVDisplayLink 驱动模式：检查是否需要渲染
         // 渲染节流：检查是否距离上次渲染时间太短
-        // 根据视频帧率动态计算最小渲染间隔
         uint64_t nowMs = (uint64_t)(CACurrentMediaTime() * 1000.0);
         uint64_t lastRenderMs = rc->lastRenderTimeMs.load();
+        uint64_t minIntervalMs = calculateMinRenderInterval(rc);
         
-        // 根据视频帧率计算最小渲染间隔
-        double fps = rc->videoFps.load();
-        uint64_t minIntervalMs = GLRenderContext::DEFAULT_MIN_RENDER_INTERVAL_MS;
-        if (fps > 0.1) {
-            // 根据视频帧率计算：1000ms / fps，但至少 8ms（120fps），最多 33ms（30fps）
-            uint64_t calculatedMs = (uint64_t)(1000.0 / fps);
-            minIntervalMs = std::max(8ULL, std::min(calculatedMs, 33ULL));
-        }
-        
-        bool shouldRender = rc->needRedraw.load() && 
+        bool needRedraw = rc->needRedraw.load();
+        bool shouldRender = needRedraw && 
                            (lastRenderMs == 0 || (nowMs - lastRenderMs) >= minIntervalMs);
         if (shouldRender) {
             mpv_request_render(rc->instanceId);
@@ -1366,7 +1360,11 @@ extern "C" void mpv_request_render(int64_t instanceId) {
         rc = it->second;
     }
     
-    if (!rc || rc->isDestroying.load()) return;
+    if (!rc) return;
+    
+    // 一次性加载原子变量
+    bool isDestroying = rc->isDestroying.load();
+    if (isDestroying) return;
     
     rc->needRedraw.store(true);
     bool wasScheduled = rc->displayScheduled.exchange(true);
@@ -1381,7 +1379,11 @@ extern "C" void mpv_request_render(int64_t instanceId) {
             auto it = g_renderContexts.find(instanceId);
             if (it != g_renderContexts.end()) inner = it->second;
         }
-        if (!inner || inner->isDestroying.load()) return;
+        if (!inner) return;
+        
+        // 一次性加载原子变量
+        bool innerDestroying = inner->isDestroying.load();
+        if (innerDestroying) return;
         if (inner->glLayer) {
             [inner->glLayer setNeedsDisplay];
         }
@@ -1467,7 +1469,33 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
     rc->hdrUserEnabled.store(enabled != 0);
     rc->lastHdrUpdateMs.store(0);
     // NSLog(@"[mpv_hdr] mpv_set_hdr_mode: instanceId=%lld enabled=%d", (long long)instanceId, enabled ? 1 : 0);
-    mpv_request_render(instanceId);
+    
+    // 立即应用 HDR 配置（在主线程上执行）
+    // 这样可以确保在暂停状态下切换 HDR 时，配置能立即生效
+    // 而不是等待渲染时异步更新，导致渲染效果不正确
+    // 注意：update_hdr_mode 需要访问 NSView，必须在主线程执行
+    if (isMainThread()) {
+        // 在主线程上直接同步执行，确保立即生效
+        update_hdr_mode(rc.get(), true); // forceApply=true 确保立即应用
+        // 触发渲染以显示 HDR 效果
+        mpv_request_render(instanceId);
+    } else {
+        // 不在主线程，同步切换到主线程执行
+        // 使用 dispatch_sync 确保 HDR 配置立即应用，避免异步延迟导致渲染效果不正确
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            std::shared_ptr<GLRenderContext> inner = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(g_renderMutex);
+                auto it = g_renderContexts.find(instanceId);
+                if (it != g_renderContexts.end()) inner = it->second;
+            }
+            if (inner && !inner->isDestroying.load()) {
+                update_hdr_mode(inner.get(), true); // forceApply=true 确保立即应用
+                // 触发渲染以显示 HDR 效果
+                mpv_request_render(instanceId);
+            }
+        });
+    }
 }
 
 // ------------------ HDR 调试函数 ------------------
