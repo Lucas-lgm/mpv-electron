@@ -16,7 +16,7 @@ flowchart LR
     IPC[ipcHandlers.ts]
     App[VideoPlayerApp]
     Core[CorePlayer]
-    MP[MediaPlayer<br/>(MpvMediaPlayer)]
+    MP[MediaPlayer / MpvMediaPlayer]
     LC[LibMPVController]
   end
 
@@ -24,11 +24,11 @@ flowchart LR
     MPVCore[(mpv)]
   end
 
-  UI -- IPC 消息<br/>(play / pause / seek / volume / stop) --> IPC
+  UI -- IPC 消息 (play / pause / seek / volume / stop) --> IPC
   IPC -- 调用方法 --> App
   App -- 业务调用 --> Core
   Core -- 播放控制 --> MP
-  MP -- 属性/命令<br/>setProperty / command --> LC
+  MP -- 属性/命令 setProperty / command --> LC
   LC -- C API 调用 --> MPVCore
 ```
 
@@ -58,10 +58,10 @@ flowchart LR
 
   MPVCore -- status 事件 / 属性轮询 --> LC
   LC -- MPVStatus --> SM
-  SM -- PlaybackSession 派生<br/>emit('state', PlayerState) --> Core
+  SM -- PlaybackSession 派生 & emit('state', PlayerState) --> Core
   Core -- 'player-state' 事件 --> App
-  App -- IPC 广播<br/>(sendToPlaybackUIs) --> UI
-  UI -- handlePlayerState(state) --> UIState[本地 UI 状态<br/>(loading / error / timeline)]
+  App -- IPC 广播 (sendToPlaybackUIs) --> UI
+  UI -- handlePlayerState(state) --> UIState[本地 UI 状态 (loading / error / timeline)]
 ```
 
 - **mpv core → LibMPVController**：通过事件回调 / `get_property` 周期性获取底层状态。
