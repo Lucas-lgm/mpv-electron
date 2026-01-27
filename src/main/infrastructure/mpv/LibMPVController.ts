@@ -94,6 +94,7 @@ export class LibMPVController extends EventEmitter {
   private fileLoadGeneration = 0
   private lastMpvErrorLogLine: string | null = null
   private recentMpvLogLines: string[] = []
+  private lastEmittedFps: number | null = null // 上次发出的 FPS 值，用于去重
   private currentStatus: MPVStatus = {
     position: 0,
     duration: 0,
@@ -769,6 +770,19 @@ export class LibMPVController extends EventEmitter {
           case 'estimated-vf-fps':
             // 发出 fps 变化事件，供 CorePlayer 使用
             const fps = typeof value === 'number' && value > 0 ? value : null
+            
+            // 去重：只有当 FPS 值真正改变时才发出事件（允许 0.01 fps 的误差）
+            if (this.lastEmittedFps !== null && fps !== null) {
+              if (Math.abs(this.lastEmittedFps - fps) < 0.01) {
+                // FPS 值没有实质性改变，跳过
+                break
+              }
+            } else if (this.lastEmittedFps === fps) {
+              // 两者都是 null，跳过
+              break
+            }
+            
+            this.lastEmittedFps = fps
             this.emit('fps-change', fps)
             break
         }

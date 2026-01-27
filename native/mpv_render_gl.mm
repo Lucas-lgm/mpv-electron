@@ -525,15 +525,13 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
     }
     
     
+    // 如果状态匹配且不是首次调用，直接返回，避免重复设置属性
+    // 首次调用时（forceApply=true）必须强制应用，确保 SDR 视频也能正确配置
     if (shouldEnable == rc->hdrActive && !forceApply) {
-        // Even if state matches, we force re-apply if it's enabled
-        // This handles cases where user toggles button but internal state was already true
-        // 但是首次调用时（forceApply=true）必须强制应用，确保 SDR 视频也能正确配置
-        if (!shouldEnable) {
-            if (primaries) mpv_free(primaries);
-            if (gamma) mpv_free(gamma);
-            return;
-        }
+        // 状态已匹配，无需重新设置属性
+        if (primaries) mpv_free(primaries);
+        if (gamma) mpv_free(gamma);
+        return;
     }
     
     if (shouldEnable) {

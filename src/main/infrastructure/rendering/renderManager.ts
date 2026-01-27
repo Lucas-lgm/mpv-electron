@@ -193,19 +193,34 @@ export class RenderManager {
    * 根据视频帧率更新渲染间隔
    */
   updateFps(fps: number | null): void {
-    // return;
-    console.log(`[RenderManager] 📹 Video FPS: ${fps?.toFixed(2)}`)
-    this.currentVideoFps = fps
+    // 检查 FPS 是否真的改变了（避免重复更新）
+    const normalizedFps = fps && fps > 0.1 ? fps : null
     
-    if (fps && fps > 0.1) {
+    // 使用更宽松的比较方式，允许小的浮点数误差（0.01 fps）
+    if (this.currentVideoFps !== null && normalizedFps !== null) {
+      if (Math.abs(this.currentVideoFps - normalizedFps) < 0.01) {
+        // FPS 没有实质性改变（差异小于 0.01 fps），不需要更新
+        return
+      }
+    } else if (this.currentVideoFps === normalizedFps) {
+      // 两者都是 null，不需要更新
+      return
+    }
+    
+    console.log(`[RenderManager] 📹 Video FPS: ${fps?.toFixed(2)}`)
+    this.currentVideoFps = normalizedFps
+    
+    const oldBaseInterval = this.baseRenderInterval
+    
+    if (normalizedFps) {
       // 根据视频帧率计算基础渲染间隔：1000ms / fps
       // 限制范围：最小 16ms (60fps)，最大 42ms (24fps)
-      const calculatedInterval = Math.round(1000 / fps)
+      const calculatedInterval = Math.round(1000 / normalizedFps)
       this.baseRenderInterval = Math.max(16, Math.min(calculatedInterval, 42))
       this.currentRenderInterval = this.baseRenderInterval
       this.renderRequestCount = 0 // 重置计数
       this.lastRenderRequestTime = 0 // 重置时间戳
-      console.log(`[RenderManager] 📹 Video FPS: ${fps.toFixed(2)}, Base render interval: ${this.baseRenderInterval}ms`)
+      console.log(`[RenderManager] 📹 Video FPS: ${normalizedFps.toFixed(2)}, Base render interval: ${this.baseRenderInterval}ms`)
     } else {
       // 帧率未知或无效，使用默认值
       this.baseRenderInterval = this.DEFAULT_RENDER_INTERVAL_MS
@@ -215,8 +230,9 @@ export class RenderManager {
       console.log(`[RenderManager] 📹 Video FPS: unknown, using default render interval: ${this.baseRenderInterval}ms`)
     }
     
-    // 如果渲染循环正在运行，需要重启以应用新的间隔
-    if (this.renderLoopActive) {
+    // 只有当渲染间隔真正改变且渲染循环正在运行时，才需要重启
+    // 注意：即使间隔相同，如果循环未运行，也不需要重启
+    if (this.renderLoopActive && oldBaseInterval !== this.baseRenderInterval) {
       this.stop()
       this.start()
     }
