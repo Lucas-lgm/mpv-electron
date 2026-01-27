@@ -54,14 +54,15 @@ flowchart LR
 
   subgraph Renderer
     UI[ControlView.vue]
+    UIState[UI state]
   end
 
   MPVCore -- status 事件 / 属性轮询 --> LC
   LC -- MPVStatus --> SM
-  SM -- PlaybackSession 派生 & emit('state', PlayerState) --> Core
-  Core -- 'player-state' 事件 --> App
-  App -- IPC 广播 (sendToPlaybackUIs) --> UI
-  UI -- handlePlayerState(state) --> UIState[本地 UI 状态 (loading / error / timeline)]
+  SM --> Core
+  Core --> App
+  App --> UI
+  UI --> UIState
 ```
 
 - **mpv core → LibMPVController**：通过事件回调 / `get_property` 周期性获取底层状态。
