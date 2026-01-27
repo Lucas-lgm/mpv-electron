@@ -793,6 +793,12 @@ export type PlayerPhase =
   | 'error'     // 错误状态
 ```
 
+### 3.6 播放状态数据流（扩展文档）
+
+`PlayerStateMachine`/`CorePlayer`/`VideoPlayerApp` 与渲染进程之间的「命令通道 + 状态通道」数据流较为复杂，详细说明请见独立文档：
+
+- `docs/development/PLAYER_STATE_DATAFLOW.md`
+
 **状态说明**：
 
 | 状态 | 描述 | 触发条件 |
