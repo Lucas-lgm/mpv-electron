@@ -5,6 +5,9 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { readdir, stat, open } from 'fs/promises'
 import { join } from 'path'
 import { app, BrowserWindow } from 'electron'
+import { createLogger } from '../../infrastructure/logging'
+
+const logger = createLogger('MountPathService')
 
 export interface MountPath {
   id: string
@@ -280,11 +283,17 @@ export async function scanDirectory(dirPath: string, maxDepth: number = 5, curre
         }
       } catch (error) {
         // 忽略无法访问的文件/目录
-        console.warn(`无法访问 ${fullPath}:`, error)
+        logger.debug('无法访问文件/目录', {
+          path: fullPath,
+          error: error instanceof Error ? error.message : String(error)
+        })
       }
     }
   } catch (error) {
-    console.error(`扫描目录失败 ${dirPath}:`, error)
+    logger.error('扫描目录失败', {
+      path: dirPath,
+      error: error instanceof Error ? error.message : String(error)
+    })
   }
 
   return resources
@@ -331,7 +340,9 @@ export class MountPathService {
         })
       }
     } catch (error) {
-      console.error('加载挂载路径失败:', error)
+      logger.error('加载挂载路径失败', {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
   }
 
@@ -352,7 +363,9 @@ export class MountPathService {
       }
       writeFileSync(this.configPath, JSON.stringify(data, null, 2), 'utf-8')
     } catch (error) {
-      console.error('保存挂载路径失败:', error)
+      logger.error('保存挂载路径失败', {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
   }
 

@@ -1,8 +1,10 @@
 import { BrowserWindow } from 'electron'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { createLogger } from '../../infrastructure/logging'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const logger = createLogger('WindowManager')
 
 export interface WindowConfig {
   id: string
@@ -62,7 +64,7 @@ export class WindowManager {
     // Windows 特定选项
     if (process.platform === 'win32') {
       if (config.transparent) {
-        console.warn('[WindowManager] Windows: Transparent windows cannot be resized on Windows (Electron limitation)')
+        logger.warn('Windows: Transparent windows cannot be resized on Windows (Electron limitation)')
       } else {
         windowOptions.resizable = true
         windowOptions.maximizable = true
@@ -94,7 +96,7 @@ export class WindowManager {
     window.setClosable(true)
     
     // 添加调试日志
-    console.log('[WindowManager] Window created:', {
+    logger.debug('Window created', {
       id: config.id,
       resizable: windowOptions.resizable,
       maximizable: windowOptions.maximizable,
@@ -114,7 +116,10 @@ export class WindowManager {
           window.setMaximizable(true)
           window.setMinimizable(true)
           window.setClosable(true)
-          console.log('[WindowManager] Windows: Re-set after show, resizable:', window.isResizable(), 'maximizable:', window.isMaximizable())
+          logger.debug('Windows: Re-set after show', {
+            resizable: window.isResizable(),
+            maximizable: window.isMaximizable()
+          })
         }
       })
       
@@ -125,7 +130,10 @@ export class WindowManager {
           window.setMaximizable(true)
           window.setMinimizable(true)
           window.setClosable(true)
-          console.log('[WindowManager] Windows: Re-set after ready-to-show, resizable:', window.isResizable(), 'maximizable:', window.isMaximizable())
+          logger.debug('Windows: Re-set after ready-to-show', {
+            resizable: window.isResizable(),
+            maximizable: window.isMaximizable()
+          })
         }
       })
     }

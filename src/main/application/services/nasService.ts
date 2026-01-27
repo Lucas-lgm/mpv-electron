@@ -11,8 +11,10 @@ import * as https from 'https'
 import * as http from 'http'
 import { URL } from 'url'
 import { scanDirectory, type ScannedResource } from './mountPathService'
+import { createLogger } from '../../infrastructure/logging'
 
 const execAsync = promisify(exec)
+const logger = createLogger('NasService')
 
 export interface NasConfig {
   protocol: 'smb' | 'webdav'
@@ -222,10 +224,12 @@ function encryptPassword(password: string): string | null {
       return buffer.toString('base64')
     }
     // 如果加密不可用，返回原密码（不推荐，但作为降级方案）
-    console.warn('密码加密不可用，将使用明文存储（不安全）')
+    logger.warn('密码加密不可用，将使用明文存储（不安全）')
     return password
   } catch (error) {
-    console.error('加密密码失败:', error)
+    logger.error('加密密码失败', {
+      error: error instanceof Error ? error.message : String(error)
+    })
     return null
   }
 }
@@ -248,18 +252,22 @@ function decryptPassword(encryptedPassword: string): string | null {
         // 1. 系统密钥改变（系统更新、重新安装等）
         // 2. 数据损坏
         // 3. 加密格式不匹配
-        console.warn('密码解密失败，可能需要重新输入密码:', decryptError instanceof Error ? decryptError.message : String(decryptError))
+        logger.warn('密码解密失败，可能需要重新输入密码', {
+          error: decryptError instanceof Error ? decryptError.message : String(decryptError)
+        })
         return null
       }
     }
     
     // 如果加密不可用，尝试作为明文返回（向后兼容）
     // 但通常不应该发生，因为保存时应该检查加密是否可用
-    console.warn('安全存储不可用，无法解密密码')
+    logger.warn('安全存储不可用，无法解密密码')
     return null
   } catch (error) {
     // 捕获所有其他错误
-    console.warn('解密密码时发生错误:', error instanceof Error ? error.message : String(error))
+    logger.warn('解密密码时发生错误', {
+      error: error instanceof Error ? error.message : String(error)
+    })
     return null
   }
 }
@@ -300,7 +308,9 @@ export class NasService {
               decryptedPassword = decryptPassword(conn.config.encryptedPassword) || undefined
               // 如果解密失败，密码将为空，用户需要重新输入
               if (!decryptedPassword && conn.config.encryptedPassword) {
-                console.warn(`NAS 连接 "${conn.name}" 的密码解密失败，需要重新输入密码`)
+                logger.warn('NAS 连接的密码解密失败，需要重新输入密码', {
+                  connectionName: conn.name
+                })
               }
             }
             
@@ -328,12 +338,17 @@ export class NasService {
             this.nasConnections.set(nasConnection.id, nasConnection)
           } catch (connError) {
             // 单个连接加载失败不影响其他连接
-            console.error(`加载 NAS 连接 "${conn.name || conn.id}" 失败:`, connError)
+            logger.error('加载 NAS 连接失败', {
+              connectionName: conn.name || conn.id,
+              error: connError instanceof Error ? connError.message : String(connError)
+            })
           }
         })
       }
     } catch (error) {
-      console.error('加载 NAS 连接失败:', error)
+      logger.error('加载 NAS 连接失败', {
+        error: error instanceof Error ? error.message : String(error)
+      })
       // 即使加载失败，也不阻止应用启动
     }
   }
@@ -369,7 +384,9 @@ export class NasService {
       }
       writeFileSync(this.configPath, JSON.stringify(data, null, 2), 'utf-8')
     } catch (error) {
-      console.error('保存 NAS 连接失败:', error)
+      logger.error('保存 NAS 连接失败', {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
   }
 
@@ -1116,7 +1133,10 @@ export class NasService {
           })
         } catch (error) {
           // 忽略无法访问的文件/目录
-          console.warn(`无法访问 ${fullPath}:`, error)
+          logger.debug('无法访问文件/目录', {
+            path: fullPath,
+            error: error instanceof Error ? error.message : String(error)
+          })
         }
       }
 

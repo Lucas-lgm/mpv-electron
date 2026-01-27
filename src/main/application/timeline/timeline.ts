@@ -1,6 +1,10 @@
 import { EventEmitter } from 'events'
 import type { MPVStatus } from '../../infrastructure/mpv'
 import type { PlayerPhase } from '../state/playerState'
+import { createLogger } from '../../infrastructure/logging'
+import { TIMELINE_CONFIG } from '../constants'
+
+const logger = createLogger('Timeline')
 
 type TimelinePayload = {
   currentTime: number
@@ -20,12 +24,12 @@ export class Timeline extends EventEmitter {
   private intervalMs: number
   private lastSeekTargetTime: number | null = null
   private lastSeekTime: number = 0
-  private readonly SEEK_PROTECTION_PERIOD_MS: number = 2000
+  private readonly SEEK_PROTECTION_PERIOD_MS: number = TIMELINE_CONFIG.SEEK_PROTECTION_PERIOD_MS
   private getStatusFn?: TimelineOptions['getStatus']
 
   constructor(options: TimelineOptions = {}) {
     super()
-    this.intervalMs = typeof options.interval === 'number' ? options.interval : 100
+    this.intervalMs = typeof options.interval === 'number' ? options.interval : TIMELINE_CONFIG.DEFAULT_INTERVAL_MS
     this.getStatusFn = options.getStatus
   }
 
@@ -70,7 +74,11 @@ export class Timeline extends EventEmitter {
   start() {
     if (this.interval) return
     this.interval = setInterval(() => {
-      this.tick().catch(() => {})
+      this.tick().catch((error) => {
+        logger.error('Timeline tick failed', {
+          error: error instanceof Error ? error.message : String(error)
+        })
+      })
     }, this.intervalMs)
   }
 
@@ -141,7 +149,7 @@ export class Timeline extends EventEmitter {
     this.stop()
     this.currentTime = 0
     this.duration = 0
-    this.intervalMs = 100
+    this.intervalMs = TIMELINE_CONFIG.DEFAULT_INTERVAL_MS
     this.lastSeekTargetTime = null
     this.lastSeekTime = 0
     this.getStatusFn = undefined

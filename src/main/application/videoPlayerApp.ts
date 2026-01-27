@@ -5,6 +5,10 @@ import { WindowManager } from './windows/windowManager'
 import type { CorePlayer } from './core/corePlayer'
 import { Playlist } from '../domain/models/Playlist'
 import { Media } from '../domain/models/Media'
+import { createLogger } from '../infrastructure/logging'
+import { VIDEO_PLAYER_DELAYS, WINDOW_DELAYS, UI_DELAYS } from './constants'
+
+const logger = createLogger('VideoPlayerApp')
 
 export interface PlaylistItem {
   path: string
@@ -229,10 +233,12 @@ export class VideoPlayerApp {
       try {
         await this.stopPlayback()
         // 等待一小段时间，确保停止操作完成
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await new Promise(resolve => setTimeout(resolve, VIDEO_PLAYER_DELAYS.STOP_WAIT_MS))
       } catch (error) {
         // 停止失败不影响新视频播放，记录错误即可
-        console.error('[VideoPlayerApp] Failed to stop current video:', error)
+        logger.error('Failed to stop current video', {
+          error: error instanceof Error ? error.message : String(error)
+        })
       }
     }
 
@@ -253,7 +259,7 @@ export class VideoPlayerApp {
     videoWindow.focus()
     videoWindow.moveTop()
 
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await new Promise(resolve => setTimeout(resolve, VIDEO_PLAYER_DELAYS.VIDEO_WINDOW_SHOW_WAIT_MS))
 
     if (!videoWindow.isVisible()) {
       videoWindow.show()
@@ -468,7 +474,7 @@ export class VideoPlayerApp {
       if (this.isQuitting) {
         return
       }
-      console.log('[VideoPlayerApp] Main window closing')
+      logger.debug('Main window closing')
       this.isQuitting = true
       this.releaseCorePlayerListeners()
       await this.corePlayer.cleanup().catch(() => {})
@@ -749,7 +755,7 @@ export class VideoPlayerApp {
               videoWindow.setIgnoreMouseEvents(true)
             }
           }
-        }, 100)
+        }, UI_DELAYS.CONTROL_BAR_HIDE_DELAY_MS)
         return
       }
 
@@ -816,7 +822,7 @@ export class VideoPlayerApp {
                 videoWindow.setIgnoreMouseEvents(true)
               }
             }
-          }, 200)
+          }, WINDOW_DELAYS.FOCUS_DELAY_MS)
         }
       })
 
@@ -856,7 +862,7 @@ export class VideoPlayerApp {
                 videoWindow.setIgnoreMouseEvents(true)
               }
             }
-          }, 100)
+          }, UI_DELAYS.CONTROL_BAR_HIDE_DELAY_MS)
         }
       })
       videoWindow.on('hide', () => {
@@ -901,7 +907,7 @@ export class VideoPlayerApp {
             this.windowSyncTimer = null
           }
         }
-      }, 100)
+      }, WINDOW_DELAYS.SYNC_INTERVAL_MS)
 
       return
     }
@@ -921,7 +927,7 @@ export class VideoPlayerApp {
       webContents.executeJavaScript(`
         (function() {
           let mouseMoveTimer = null;
-          const MOUSE_MOVE_DELAY = 100;
+          const MOUSE_MOVE_DELAY = ${UI_DELAYS.MOUSE_MOVE_DELAY_MS};
           
           // 监听整个窗口的鼠标移动
           document.addEventListener('mousemove', () => {
@@ -940,7 +946,7 @@ export class VideoPlayerApp {
             }
             setTimeout(() => {
               window.electronAPI.send('control-bar-mouse-leave');
-            }, 100);
+            }, ${UI_DELAYS.CONTROL_BAR_HIDE_DELAY_MS});
           });
         })();
       `).catch(() => {})
@@ -961,7 +967,7 @@ export class VideoPlayerApp {
       this.isQuitting = true
     })
     const handleSignal = async (signal: NodeJS.Signals) => {
-      console.log(`[Main] Received ${signal}, quitting app...`)
+      logger.info(`Received ${signal}, quitting app`)
       this.isQuitting = true
       this.releaseCorePlayerListeners()
       await this.corePlayer.cleanup().catch(() => {})

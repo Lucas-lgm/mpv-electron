@@ -4,6 +4,9 @@
 import { readdir, stat } from 'fs/promises'
 import { join, dirname, extname, basename } from 'path'
 import { existsSync } from 'fs'
+import { createLogger } from '../../infrastructure/logging'
+
+const logger = createLogger('FileSystemService')
 
 /**
  * 视频文件扩展名
@@ -91,7 +94,10 @@ export async function readDirectory(dirPath: string): Promise<DirectoryInfo> {
         items.push(item)
       } catch (error) {
         // 忽略无法访问的文件/目录
-        console.warn(`无法访问 ${fullPath}:`, error)
+        logger.debug('无法访问文件/目录', {
+          path: fullPath,
+          error: error instanceof Error ? error.message : String(error)
+        })
       }
     }
 
@@ -107,7 +113,10 @@ export async function readDirectory(dirPath: string): Promise<DirectoryInfo> {
     result.accessible = true
   } catch (error) {
     result.error = error instanceof Error ? error.message : '读取目录失败'
-    console.error(`读取目录失败 ${dirPath}:`, error)
+    logger.error('读取目录失败', {
+      path: dirPath,
+      error: error instanceof Error ? error.message : String(error)
+    })
   }
 
   return result

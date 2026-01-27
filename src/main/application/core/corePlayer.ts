@@ -9,6 +9,7 @@ import { RenderManager } from '../../infrastructure/rendering/renderManager'
 import { Media } from '../../domain/models/Media'
 import type { MediaPlayer } from './MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
+import { WINDOW_DELAYS } from '../constants'
 
 const logger = createLogger('CorePlayer')
 
@@ -308,7 +309,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.pendingResizeTimer = setTimeout(() => {
       this.pendingResizeTimer = null
       this.syncWindowSizeThrottled().catch(() => {})
-    }, 16)
+    }, WINDOW_DELAYS.RESIZE_THROTTLE_MS)
   }
 
   private async syncWindowSizeThrottled(): Promise<void> {
