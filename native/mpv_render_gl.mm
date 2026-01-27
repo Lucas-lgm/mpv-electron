@@ -566,41 +566,10 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
     
     if (shouldEnable) {
         // macOS 系统级 HDR (EDR) 设置流程：
-        // 1. 确保 view 启用 layer-backed rendering
-        if (![rc->view wantsLayer]) {
-            [rc->view setWantsLayer:YES];
-        }
+        // 优化：先配置 mpv 属性，再更新 layer 属性，减少闪烁
+        // 这样可以确保渲染时使用正确的配置，避免显示中间状态
         
-        // 2. 获取或创建 layer
-        CALayer *layer = get_render_layer(rc);
-        if (!layer) {
-            layer = get_render_layer(rc);
-        }
-        
-        if (layer) {
-            // 3. 启用 layer 的 EDR 支持 (macOS 14.0+)
-            if (@available(macOS 14.0, *)) {
-                layer.wantsExtendedDynamicRangeContent = YES;
-            }
-            
-            // 4. 设置正确的 HDR 色彩空间（PQ）
-            CGColorSpaceRef cs = create_hdr_pq_colorspace_for_primaries(primaries);
-            if (cs) {
-                set_layer_colorspace_if_supported(layer, cs);
-                CGColorSpaceRelease(cs);
-            }
-            
-            // 5. 确保 layer 的 contentsScale 匹配窗口的 backingScaleFactor
-            // 这对于正确的 HDR 渲染很重要
-            if (rc->view.window) {
-                CGFloat scale = rc->view.window.backingScaleFactor;
-                if (scale > 0.0) {
-                    layer.contentsScale = scale;
-                }
-            }
-        }
-        
-        // 配置 mpv HDR 选项
+        // 1. 先配置 mpv HDR 选项（在 layer 属性改变之前）
         // 注意：icc-profile-auto 必须禁用，因为 HDR 使用 PQ 传输函数，不应通过 ICC 进行色彩转换
         // macOS EDR 系统会直接处理 HDR 信号，ICC 会干扰这个过程
         int iccAuto = 0;
@@ -715,32 +684,49 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
         }
         
         rc->hdrActive = true;
-    } else {
+        
+        // 2. 使用 CATransaction 批量更新 layer 属性，减少重绘次数
+        // 这样可以避免在属性更新过程中触发多次重绘，减少闪烁
         CALayer *layer = get_render_layer(rc);
         if (layer) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES]; // 禁用动画，立即应用
+            [CATransaction setAnimationDuration:0]; // 设置动画时长为 0
+            
+            // 确保 view 启用 layer-backed rendering
+            if (![rc->view wantsLayer]) {
+                [rc->view setWantsLayer:YES];
+            }
+            
+            // 启用 layer 的 EDR 支持 (macOS 14.0+)
             if (@available(macOS 14.0, *)) {
-                layer.wantsExtendedDynamicRangeContent = NO;
-            }
-
-            CGColorSpaceRef cs = nullptr;
-            NSScreen *screen = nil;
-            if (rc->view.window) {
-                screen = rc->view.window.screen;
-            }
-            if (screen && screen.colorSpace) {
-                cs = screen.colorSpace.CGColorSpace;
-            } else {
-                cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-            }
-            if (cs) {
-                set_layer_colorspace_if_supported(layer, cs);
-                if (!(screen && screen.colorSpace && cs == screen.colorSpace.CGColorSpace)) {
-                    CGColorSpaceRelease(cs);
+                // 只在状态真的改变时才更新，避免不必要的重绘
+                if (layer.wantsExtendedDynamicRangeContent != YES) {
+                    layer.wantsExtendedDynamicRangeContent = YES;
                 }
             }
+            
+            // 设置正确的 HDR 色彩空间（PQ）
+            CGColorSpaceRef cs = create_hdr_pq_colorspace_for_primaries(primaries);
+            if (cs) {
+                set_layer_colorspace_if_supported(layer, cs);
+                CGColorSpaceRelease(cs);
+            }
+            
+            // 确保 layer 的 contentsScale 匹配窗口的 backingScaleFactor
+            // 这对于正确的 HDR 渲染很重要
+            if (rc->view.window) {
+                CGFloat scale = rc->view.window.backingScaleFactor;
+                if (scale > 0.0 && layer.contentsScale != scale) {
+                    layer.contentsScale = scale;
+                }
+            }
+            
+            [CATransaction commit];
         }
-        
-        // 恢复 SDR 模式配置
+    } else {
+        // 优化：先配置 mpv 属性，再更新 layer 属性，减少闪烁
+        // 恢复 SDR 模式配置（在 layer 属性改变之前）
         // 启用 ICC 配置文件以进行正确的显示器色彩管理
         set_render_icc_profile(rc);
         int iccAuto = 1;
@@ -772,6 +758,40 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
         mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
         
         rc->hdrActive = false;
+        
+        // 使用 CATransaction 批量更新 layer 属性，减少重绘次数
+        CALayer *layer = get_render_layer(rc);
+        if (layer) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES]; // 禁用动画，立即应用
+            [CATransaction setAnimationDuration:0]; // 设置动画时长为 0
+            
+            if (@available(macOS 14.0, *)) {
+                // 只在状态真的改变时才更新，避免不必要的重绘
+                if (layer.wantsExtendedDynamicRangeContent != NO) {
+                    layer.wantsExtendedDynamicRangeContent = NO;
+                }
+            }
+
+            CGColorSpaceRef cs = nullptr;
+            NSScreen *screen = nil;
+            if (rc->view.window) {
+                screen = rc->view.window.screen;
+            }
+            if (screen && screen.colorSpace) {
+                cs = screen.colorSpace.CGColorSpace;
+            } else {
+                cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            }
+            if (cs) {
+                set_layer_colorspace_if_supported(layer, cs);
+                if (!(screen && screen.colorSpace && cs == screen.colorSpace.CGColorSpace)) {
+                    CGColorSpaceRelease(cs);
+                }
+            }
+            
+            [CATransaction commit];
+        }
     }
     
     if (primaries) mpv_free(primaries);
