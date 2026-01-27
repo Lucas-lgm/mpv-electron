@@ -1,14 +1,44 @@
+/**
+ * Node.js 原生模块绑定层（Native Module Binding Layer）
+ * 
+ * 提供 Node.js 与 MPV 播放器之间的桥接，包括：
+ * - MPV 实例管理
+ * - 事件循环和回调
+ * - 属性访问和命令执行
+ * - 渲染上下文管理（macOS）
+ * 
+ * 架构说明：
+ * - 使用 N-API 与 Node.js 交互
+ * - 使用 ThreadSafeFunction 实现线程安全的事件回调
+ * - 通过事件循环线程处理 MPV 事件
+ */
+
+// ==================== Node.js N-API ====================
 #include <napi.h>
+
+// ==================== MPV 库 ====================
 #include <mpv/client.h>
 #include <mpv/render.h>
 #include <mpv/render_gl.h>
+
+// ==================== C++ 标准库 ====================
 #include <iostream>
 #include <thread>
 #include <mutex>
 #include <map>
 #include <string>
 
-// MPV 实例管理
+/**
+ * 播放器实例（Player Instance）
+ * 
+ * 管理播放器实例的所有资源，包括：
+ * - MPV 客户端句柄和事件循环
+ * - JavaScript 事件回调（ThreadSafeFunction）
+ * - 渲染上下文（macOS）
+ * 
+ * 注意：此结构体使用技术实现名称 MPVInstance 以保持与底层 MPV 库的对应关系。
+ * 在代码中可以使用 PlayerInstance 类型别名以获得更好的语义。
+ */
 struct MPVInstance {
     mpv_handle* ctx;
     std::thread eventThread;
@@ -30,6 +60,9 @@ struct MPVInstance {
     }
 };
 
+// 语义化类型别名：使用 PlayerInstance 获得更好的语义
+using PlayerInstance = MPVInstance;
+
 // 来自 mpv_render_gl.mm（仅 macOS）
 #ifdef __APPLE__
 extern "C" struct GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv);
@@ -44,19 +77,30 @@ extern "C" int mpv_get_js_driven_render_mode(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
 #endif
 
+/**
+ * 播放事件消息（Playback Event Message）
+ * 
+ * 封装从 MPV 传递到 JavaScript 的事件数据，包括：
+ * - 属性变更事件（PROPERTY_CHANGE）
+ * - 日志消息事件（LOG_MESSAGE）
+ * - 文件结束事件（END_FILE）
+ * 
+ * 注意：此结构体使用技术实现名称 MPVEventMessage 以保持与底层 MPV 库的对应关系。
+ * 在代码中可以使用 PlaybackEventMessage 类型别名以获得更好的语义。
+ */
 struct MPVEventMessage {
-    mpv_event_id event_id;
-    std::string property_name;   // 对于 PROPERTY_CHANGE 事件
-    mpv_format property_format;  // 数据格式
-    double double_value;         // 用于 MPV_FORMAT_DOUBLE
-    int64_t int_value;           // 用于 MPV_FORMAT_INT64
-    int flag_value;              // 用于 MPV_FORMAT_FLAG
-    std::string log_prefix;      // 对于 LOG_MESSAGE 事件
-    std::string log_level;       // 对于 LOG_MESSAGE 事件
-    std::string log_text;        // 对于 LOG_MESSAGE 事件
-    int end_file_reason;
-    int end_file_error;
-    bool has_end_file;
+    mpv_event_id event_id;        // 事件类型
+    std::string property_name;     // 对于 PROPERTY_CHANGE 事件：属性名称
+    mpv_format property_format;    // 数据格式
+    double double_value;           // 用于 MPV_FORMAT_DOUBLE
+    int64_t int_value;            // 用于 MPV_FORMAT_INT64
+    int flag_value;               // 用于 MPV_FORMAT_FLAG
+    std::string log_prefix;       // 对于 LOG_MESSAGE 事件：日志前缀
+    std::string log_level;         // 对于 LOG_MESSAGE 事件：日志级别
+    std::string log_text;          // 对于 LOG_MESSAGE 事件：日志文本
+    int end_file_reason;           // 对于 END_FILE 事件：结束原因
+    int end_file_error;            // 对于 END_FILE 事件：错误代码
+    bool has_end_file;             // 是否包含文件结束信息
     
     MPVEventMessage()
         : event_id(MPV_EVENT_NONE),
@@ -69,11 +113,22 @@ struct MPVEventMessage {
           has_end_file(false) {}
 };
 
+// 语义化类型别名：使用 PlaybackEventMessage 获得更好的语义
+using PlaybackEventMessage = MPVEventMessage;
+
+// ==================== 全局状态 ====================
 static std::map<int64_t, MPVInstance*> instances;
 static std::mutex instancesMutex;
 static int64_t nextInstanceId = 1;
 
-// 事件循环线程函数
+// ==================== 事件循环 ====================
+/**
+ * 事件循环线程函数
+ * 
+ * 在独立线程中运行，监听 MPV 事件并通过 ThreadSafeFunction 传递给 JavaScript。
+ * 
+ * @param instance 播放器实例
+ */
 void eventLoop(MPVInstance* instance) {
     while (instance->running && instance->ctx) {
         mpv_event* event = mpv_wait_event(instance->ctx, 1.0);
@@ -180,7 +235,16 @@ void eventLoop(MPVInstance* instance) {
     }
 }
 
-// 绑定视图并创建 GL + mpv_render_context（macOS）或设置 wid（Windows）
+// ==================== 公共 API 函数 ====================
+/**
+ * 绑定视图并创建渲染上下文
+ * 
+ * macOS: 创建 OpenGL 渲染上下文和渲染层
+ * Windows: 设置窗口 ID（wid）用于嵌入
+ * 
+ * @param info N-API 回调信息
+ * @return undefined
+ */
 Napi::Value AttachView(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -225,9 +289,14 @@ Napi::Value AttachView(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// RenderFrame 已废弃：渲染现在完全由 CVDisplayLink 驱动，不需要手动调用
-
-// 设置窗口尺寸（由 Electron 调用）
+/**
+ * 设置渲染视口大小
+ * 
+ * 当窗口大小改变时调用，更新渲染视口的像素大小。
+ * 
+ * @param info N-API 回调信息
+ * @return undefined
+ */
 Napi::Value SetWindowSize(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -435,8 +504,15 @@ Napi::Value DebugHdrStatus(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
-// 创建 MPV 实例（不立即初始化，允许先设置选项）
-
+/**
+ * 创建播放器实例
+ * 
+ * 创建 MPV 实例但不立即初始化，允许先设置选项。
+ * 调用者需要手动调用 initialize() 方法。
+ * 
+ * @param info N-API 回调信息
+ * @return 实例 ID（number）
+ */
 Napi::Value Create(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -460,7 +536,14 @@ Napi::Value Create(const Napi::CallbackInfo& info) {
     return Napi::Number::New(env, id);
 }
 
-// 初始化 MPV 实例
+/**
+ * 初始化播放器实例
+ * 
+ * 初始化 MPV 实例，启动事件循环，并设置属性观察。
+ * 
+ * @param info N-API 回调信息
+ * @return 成功返回 true
+ */
 Napi::Value Initialize(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -892,7 +975,16 @@ Napi::Value Destroy(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
-// 初始化模块
+// ==================== 模块初始化 ====================
+/**
+ * 初始化 Node.js 模块
+ * 
+ * 注册所有公共 API 函数到 exports 对象。
+ * 
+ * @param env N-API 环境
+ * @param exports 导出对象
+ * @return exports 对象
+ */
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "create"), Napi::Function::New(env, Create));
     exports.Set(Napi::String::New(env, "initialize"), Napi::Function::New(env, Initialize));

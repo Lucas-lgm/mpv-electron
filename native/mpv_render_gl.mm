@@ -1,3 +1,19 @@
+/**
+ * 视频渲染模块（Video Render Module）
+ * 
+ * 提供 macOS 平台上的视频渲染功能，包括：
+ * - OpenGL 渲染上下文管理
+ * - HDR/EDR 支持
+ * - 渲染循环和调度
+ * - 色彩空间管理
+ * 
+ * 架构说明：
+ * - 使用 CAOpenGLLayer 进行硬件加速渲染
+ * - 支持 CVDisplayLink 和 JavaScript 驱动两种渲染模式
+ * - 通过 mpv_render API 与 MPV 播放器集成
+ */
+
+// ==================== 系统框架导入 ====================
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
@@ -6,6 +22,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <CoreFoundation/CoreFoundation.h>
 
+// ==================== C++ 标准库 ====================
 #include <map>
 #include <mutex>
 #include <atomic>
@@ -18,6 +35,7 @@
 #include <memory>
 #include <vector>
 
+// ==================== MPV 库 ====================
 extern "C" {
 #include <mpv/client.h>
 #include <mpv/render.h>
@@ -25,6 +43,18 @@ extern "C" {
 }
 
 // ------------------ Context struct ------------------
+/**
+ * 视频渲染上下文（Video Render Context）
+ * 
+ * 管理视频渲染所需的所有资源，包括：
+ * - OpenGL 渲染上下文和渲染层
+ * - 渲染状态和调度标志
+ * - HDR 配置和色彩空间管理
+ * - 渲染尺寸和帧率信息
+ * 
+ * 注意：此结构体使用技术实现名称 GLRenderContext 以保持与底层 OpenGL 的对应关系。
+ * 在代码中可以使用 VideoRenderContext 类型别名以获得更好的语义。
+ */
 struct GLRenderContext {
     NSView *view = nil;
     CAOpenGLLayer *glLayer = nil;
@@ -98,6 +128,15 @@ struct GLRenderContext {
           jsDrivenRenderMode(false) {}
 };
 
+// 语义化类型别名：使用 VideoRenderContext 获得更好的语义
+using VideoRenderContext = GLRenderContext;
+
+/**
+ * OpenGL 上下文锁定器（RAII 模式）
+ * 
+ * 自动管理 OpenGL 上下文的锁定和解锁，确保线程安全。
+ * 在构造时锁定上下文，在析构时自动解锁。
+ */
 struct ScopedCGLock {
     CGLContextObj ctx;
     ScopedCGLock(CGLContextObj c) : ctx(c) {
@@ -108,19 +147,72 @@ struct ScopedCGLock {
     }
 };
 
+// ==================== 全局状态 ====================
 static std::map<int64_t, std::shared_ptr<GLRenderContext>> g_renderContexts;
 static std::mutex g_renderMutex;
 
+// ==================== 公共 C API 声明 ====================
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId);
 extern "C" void mpv_request_render(int64_t instanceId);
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled);
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled);
+/**
+ * 应用 HDR 配置（Apply HDR Configuration）
+ * 
+ * 根据用户设置和视频参数，配置 HDR 渲染模式。
+ * 包括设置 layer 的 EDR 支持、色彩空间、以及 mpv 的 HDR 选项。
+ * 
+ * @param rc 渲染上下文
+ * @param forceApply 是否强制应用（即使状态未改变）
+ */
 static void update_hdr_mode(GLRenderContext *rc, bool forceApply = false);
+
+/**
+ * 应用显示器色彩配置文件（Apply Display Color Profile）
+ * 
+ * 从系统获取显示器的 ICC 配置文件，并应用到 mpv 渲染上下文。
+ * 用于 SDR 模式的正确色彩管理。
+ * 
+ * @param rc 渲染上下文
+ */
 static void set_render_icc_profile(GLRenderContext *rc);
+
+/**
+ * 初始化默认 SDR 色彩空间配置（Initialize Default SDR Color Space）
+ * 
+ * 在创建渲染上下文时调用，确保首次打开 SDR 视频时就有正确的色彩空间设置。
+ * 
+ * @param rc 渲染上下文
+ */
 static void init_default_sdr_config(GLRenderContext *rc);
+
+/**
+ * 计算最小渲染间隔（Calculate Minimum Render Interval）
+ * 
+ * 根据视频帧率动态计算最小渲染间隔，避免过度渲染。
+ * 
+ * @param rc 渲染上下文
+ * @return 最小渲染间隔（毫秒）
+ */
 static uint64_t calculateMinRenderInterval(GLRenderContext *rc);
+
+/**
+ * 检查 Dolby Vision 轨道（Check Dolby Vision Track）
+ * 
+ * 检查当前选中的视频轨道是否为 Dolby Vision。
+ * 
+ * @param mpv MPV 句柄
+ * @return 如果当前视频是 Dolby Vision 则返回 true，否则返回 false
+ */
 static bool check_dolby_vision_track(mpv_handle *mpv);
 
+// ==================== OpenGL 渲染层 ====================
+/**
+ * MPV OpenGL 渲染层
+ * 
+ * 继承自 CAOpenGLLayer，实现视频渲染的核心逻辑。
+ * 包括渲染调度、HDR 支持、渲染节流等功能。
+ */
 @interface MPVOpenGLLayer : CAOpenGLLayer
 @property(nonatomic, assign) GLRenderContext *renderCtx;
 @end
@@ -515,6 +607,12 @@ static const char* get_optimal_tone_mapping(mpv_handle *mpv) {
     return "bt.2390";
 }
 
+/**
+ * 应用 HDR 配置实现
+ * 
+ * 根据用户设置和视频参数，配置 HDR 渲染模式。
+ * 包括设置 layer 的 EDR 支持、色彩空间、以及 mpv 的 HDR 选项。
+ */
 static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
     if (!rc || !rc->mpvHandle || !rc->view) return;
     
@@ -801,8 +899,9 @@ static void update_hdr_mode(GLRenderContext *rc, bool forceApply) {
 }
 
 /**
- * 初始化默认 SDR 色彩空间配置
- * 在创建渲染上下文时调用，确保首次打开 SDR 视频时就有正确的色彩空间设置
+ * 初始化默认 SDR 色彩空间配置实现
+ * 
+ * 在创建渲染上下文时调用，确保首次打开 SDR 视频时就有正确的色彩空间设置。
  */
 static void init_default_sdr_config(GLRenderContext *rc) {
     if (!rc || !rc->mpvHandle || !rc->view) return;
@@ -859,6 +958,12 @@ static void init_default_sdr_config(GLRenderContext *rc) {
     mpv_set_property_string(rc->mpvHandle, "hdr-compute-peak", "auto");
 }
 
+/**
+ * 应用显示器色彩配置文件实现
+ * 
+ * 从系统获取显示器的 ICC 配置文件，并应用到 mpv 渲染上下文。
+ * 用于 SDR 模式的正确色彩管理。
+ */
 static void set_render_icc_profile(GLRenderContext *rc) {
     if (!rc || !rc->mpvRenderCtx || !rc->view) return;
     NSScreen *screen = nil;
@@ -900,12 +1005,17 @@ static void *get_proc_address(void *ctx, const char *name) {
     return dlsym(RTLD_DEFAULT, name);
 }
 
-// ------------------ helper: ensure main thread execution ------------------
+// ==================== 辅助函数：线程管理 ====================
+/**
+ * 检查是否在主线程
+ */
 static bool isMainThread() {
     return [NSThread isMainThread];
 }
 
-// run a block on main thread synchronously or asynchronously
+/**
+ * 在主线程上异步执行代码块
+ */
 static void runOnMainAsync(dispatch_block_t block) {
     if (!block) return;
     if (isMainThread()) {
@@ -915,8 +1025,12 @@ static void runOnMainAsync(dispatch_block_t block) {
     }
 }
 
-// 使用用户交互优先级调度渲染请求，确保与 Electron UI 同步
-// 这样可以让 Electron 的 UI 事件优先处理，视频渲染不会阻塞用户交互
+/**
+ * 在主线程上异步执行渲染相关代码块
+ * 
+ * 使用用户交互优先级调度渲染请求，确保与 Electron UI 同步。
+ * 这样可以让 Electron 的 UI 事件优先处理，视频渲染不会阻塞用户交互。
+ */
 static void runOnMainAsyncForRender(dispatch_block_t block) {
     if (!block) return;
     if (isMainThread()) {
@@ -928,8 +1042,12 @@ static void runOnMainAsyncForRender(dispatch_block_t block) {
     }
 }
 
-// ------------------ mpv update callback ------------------
-// Called by mpv on arbitrary thread. We must not do GL here.
+// ==================== MPV 回调函数 ====================
+/**
+ * MPV 重绘回调
+ * 
+ * 由 MPV 在任意线程调用。注意：不能在这里执行 OpenGL 操作。
+ */
 static void on_mpv_redraw(void *ctx) {
     int64_t instanceId = (int64_t)(intptr_t)ctx;
     std::shared_ptr<GLRenderContext> rc = nullptr;
@@ -954,13 +1072,18 @@ static void on_mpv_redraw(void *ctx) {
     }
 }
 
-// ------------------ CVDisplayLink Callback ------------------
-// CVDisplayLink 在显示刷新时调用（通常 60Hz 或 120Hz）
-// 这个回调必须非常轻量，不能阻塞主线程，否则会影响 Electron UI 响应性
-// 与 Electron 渲染同步的关键：
-// 1. 只做必要的操作（report_swap 和标记需要渲染）
-// 2. 不在这里执行实际的渲染（渲染在 drawInCGLContext 中异步执行）
-// 3. 使用异步调度，让 Electron UI 事件优先处理
+// ==================== CVDisplayLink 回调 ====================
+/**
+ * CVDisplayLink 回调函数
+ * 
+ * CVDisplayLink 在显示刷新时调用（通常 60Hz 或 120Hz）。
+ * 这个回调必须非常轻量，不能阻塞主线程，否则会影响 Electron UI 响应性。
+ * 
+ * 与 Electron 渲染同步的关键：
+ * 1. 只做必要的操作（report_swap 和标记需要渲染）
+ * 2. 不在这里执行实际的渲染（渲染在 drawInCGLContext 中异步执行）
+ * 3. 使用异步调度，让 Electron UI 事件优先处理
+ */
 static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
                                     const CVTimeStamp *now,
                                     const CVTimeStamp *outputTime,
@@ -1003,7 +1126,15 @@ static CVReturn DisplayLinkCallback(CVDisplayLinkRef displayLink,
     return kCVReturnSuccess;
 }
 
-// ------------------ create GL (must be on main thread) ------------------
+// ==================== 渲染上下文生命周期管理 ====================
+/**
+ * 为视图创建 OpenGL 渲染上下文
+ * 
+ * 必须在主线程上调用。
+ * 
+ * @param rc 渲染上下文
+ * @return 成功返回 true，失败返回 false
+ */
 static bool createGLForView(GLRenderContext *rc) {
     if (!rc || !rc->view) return false;
 
@@ -1155,7 +1286,13 @@ static bool createGLForView(GLRenderContext *rc) {
     return true;
 }
 
-// ------------------ destroy GL ------------------
+/**
+ * 销毁 OpenGL 渲染上下文
+ * 
+ * 释放所有渲染资源，包括 OpenGL 上下文、渲染层等。
+ * 
+ * @param rc 渲染上下文（shared_ptr）
+ */
 static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
     if (!rc) return;
     
@@ -1236,6 +1373,16 @@ static void destroyGL(std::shared_ptr<GLRenderContext> rc) {
 }
 
 // ------------------ public: create context ------------------
+/**
+ * 为视图创建视频渲染上下文（Create Video Render Context for View）
+ * 
+ * 为指定的 NSView 创建 OpenGL 渲染上下文和渲染层，用于视频渲染。
+ * 
+ * @param instanceId 播放器实例 ID
+ * @param nsViewPtr NSView 指针（macOS）
+ * @param mpv MPV 句柄
+ * @return 渲染上下文指针，失败返回 nullptr
+ */
 extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, void *nsViewPtr, mpv_handle *mpv) {
     if (!nsViewPtr || !mpv) return nullptr;
     
@@ -1288,6 +1435,13 @@ extern "C" GLRenderContext *mpv_create_gl_context_for_view(int64_t instanceId, v
 }
 
 // ------------------ public: destroy context ------------------
+/**
+ * 销毁视频渲染上下文（Destroy Video Render Context）
+ * 
+ * 释放渲染上下文的所有资源，包括 OpenGL 上下文、渲染层等。
+ * 
+ * @param instanceId 播放器实例 ID
+ */
 extern "C" void mpv_destroy_gl_context(int64_t instanceId) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -1304,9 +1458,17 @@ extern "C" void mpv_destroy_gl_context(int64_t instanceId) {
 }
 
 // ------------------ public: set window size (pixel) ------------------
-// External code (Electron main/renderer) calls this when the window size changes.
-// 为了避免 JS 侧的缩放因子和 macOS 实际 backing 尺寸不一致，这里不直接使用传入的 width/height，
-// 而是在主线程上从 NSView 的 backing 尺寸读取真实像素大小。
+/**
+ * 设置渲染视口大小（Set Render Viewport Size）
+ * 
+ * 当窗口大小改变时调用，更新渲染视口的像素大小。
+ * 为了避免 JS 侧的缩放因子和 macOS 实际 backing 尺寸不一致，
+ * 这里不直接使用传入的 width/height，而是在主线程上从 NSView 的 backing 尺寸读取真实像素大小。
+ * 
+ * @param instanceId 播放器实例 ID
+ * @param width 窗口宽度（逻辑像素，实际使用 backing 尺寸）
+ * @param height 窗口高度（逻辑像素，实际使用 backing 尺寸）
+ */
 extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     if (width <= 0 || height <= 0) return;
     
@@ -1371,6 +1533,13 @@ extern "C" void mpv_set_window_size(int64_t instanceId, int width, int height) {
     });
 }
 
+/**
+ * 请求渲染（Request Render）
+ * 
+ * 请求渲染一帧视频。渲染由渲染循环控制，此函数只是标记需要渲染。
+ * 
+ * @param instanceId 播放器实例 ID
+ */
 extern "C" void mpv_request_render(int64_t instanceId) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -1411,14 +1580,27 @@ extern "C" void mpv_request_render(int64_t instanceId) {
 }
 
 // ------------------ render entry (exposed) ------------------
-// Called from render thread (background thread, not main thread)
+/**
+ * 请求渲染视频帧（Request Render Video Frame）
+ * 
+ * 从渲染线程（后台线程，非主线程）调用，请求渲染一帧视频。
+ * 实际渲染由渲染循环控制。
+ * 
+ * @param instanceId 播放器实例 ID
+ */
 extern "C" void mpv_render_frame_for_instance(int64_t instanceId) {
     mpv_request_render(instanceId);
 }
 
 // ------------------ JavaScript 驱动渲染模式控制 ------------------
-// 设置是否使用 JavaScript 驱动渲染模式
-// enabled: 1 = JavaScript 驱动模式（渲染由 JS 端控制），0 = CVDisplayLink 驱动模式（默认）
+/**
+ * 设置 JavaScript 驱动渲染模式（Set JavaScript-Driven Render Mode）
+ * 
+ * 控制渲染是由 JavaScript 端（如 requestAnimationFrame）驱动，还是由 CVDisplayLink 自动驱动。
+ * 
+ * @param instanceId 播放器实例 ID
+ * @param enabled 1 = JavaScript 驱动模式（渲染由 JS 端控制），0 = CVDisplayLink 驱动模式（默认）
+ */
 extern "C" void mpv_set_js_driven_render_mode(int64_t instanceId, int enabled) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -1445,7 +1627,12 @@ extern "C" void mpv_set_js_driven_render_mode(int64_t instanceId, int enabled) {
     }
 }
 
-// 获取当前是否使用 JavaScript 驱动渲染模式
+/**
+ * 获取 JavaScript 驱动渲染模式状态（Get JavaScript-Driven Render Mode）
+ * 
+ * @param instanceId 播放器实例 ID
+ * @return 1 = JavaScript 驱动模式，0 = CVDisplayLink 驱动模式
+ */
 extern "C" int mpv_get_js_driven_render_mode(int64_t instanceId) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -1460,6 +1647,14 @@ extern "C" int mpv_get_js_driven_render_mode(int64_t instanceId) {
     return rc->jsDrivenRenderMode.load() ? 1 : 0;
 }
 
+/**
+ * 设置黑屏模式（Set Blackout Mode）
+ * 
+ * 启用或禁用强制黑屏模式，用于暂停时显示黑屏。
+ * 
+ * @param instanceId 播放器实例 ID
+ * @param enabled 1 = 启用黑屏，0 = 禁用黑屏
+ */
 extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -1475,6 +1670,14 @@ extern "C" void mpv_set_force_black_mode(int64_t instanceId, int enabled) {
     mpv_request_render(instanceId);
 }
 
+/**
+ * 设置 HDR 模式（Set HDR Mode）
+ * 
+ * 启用或禁用 HDR 渲染模式。在暂停状态下切换 HDR 时，配置会立即应用。
+ * 
+ * @param instanceId 播放器实例 ID
+ * @param enabled 1 = 启用 HDR，0 = 禁用 HDR（使用 SDR）
+ */
 extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
@@ -1519,6 +1722,13 @@ extern "C" void mpv_set_hdr_mode(int64_t instanceId, int enabled) {
 }
 
 // ------------------ HDR 调试函数 ------------------
+/**
+ * 调试 HDR 状态（Debug HDR Status）
+ * 
+ * 输出当前 HDR 配置的详细信息，用于调试。
+ * 
+ * @param instanceId 播放器实例 ID
+ */
 extern "C" void mpv_debug_hdr_status(int64_t instanceId) {
     std::shared_ptr<GLRenderContext> rc = nullptr;
     {
