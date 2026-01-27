@@ -72,59 +72,6 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     this.controller.on('status', (status: MPVStatus) => {
       this.updateSessionFromStatus(status)
     })
-
-    // 监听文件加载完成
-    this.controller.on('file-loaded', () => {
-      // 文件加载完成后，获取最新状态
-      if (this.controller) {
-        const status = this.controller.getStatus()
-        this.updateSessionFromStatus(status)
-      }
-    })
-
-    // 监听播放结束
-    this.controller.on('ended', () => {
-      if (this.currentSession) {
-        const endedSession = PlaybackSession.create(
-          this.currentMedia,
-          PlaybackStatus.ENDED,
-          this.currentSession.progress,
-          this.currentSession.volume,
-          { isBuffering: false, bufferingPercent: 0 }
-        )
-        this.updateSession(endedSession)
-      }
-    })
-
-    // 监听停止
-    this.controller.on('stopped', () => {
-      const stoppedSession = PlaybackSession.create(
-        null,
-        PlaybackStatus.STOPPED,
-        { currentTime: 0, duration: 0 },
-        this.currentSession?.volume ?? 100,
-        { isBuffering: false, bufferingPercent: 0 }
-      )
-      this.updateSession(stoppedSession)
-      this.currentMedia = null
-    })
-
-    // 监听错误
-    this.controller.on('error', (error: Error) => {
-      this.emit('error', error)
-      if (this.currentSession) {
-        const errorSession = PlaybackSession.create(
-          this.currentMedia,
-          PlaybackStatus.ERROR,
-          this.currentSession.progress,
-          this.currentSession.volume,
-          this.currentSession.networkBuffering,
-          error.message,
-          false
-        )
-        this.updateSession(errorSession)
-      }
-    })
   }
 
   /**
@@ -213,16 +160,7 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     }
 
     await this.controller.stop()
-    
-    // 更新会话状态
-    const stoppedSession = PlaybackSession.create(
-      null,
-      PlaybackStatus.STOPPED,
-      { currentTime: 0, duration: 0 },
-      this.currentSession?.volume ?? 100,
-      { isBuffering: false, bufferingPercent: 0 }
-    )
-    this.updateSession(stoppedSession)
+
     this.currentMedia = null
   }
 

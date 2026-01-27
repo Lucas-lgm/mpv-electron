@@ -63,9 +63,40 @@ export class PlayerStateMachine extends EventEmitter {
     })
   }
 
+  /**
+   * 将会话重置为「干净的 idle 状态」
+   * - 清空媒体 / 进度 / 错误 / 缓冲状态
+   * - 保留音量
+   */
+  resetToIdle(): void {
+    const s = this.state.session
+    const nextSession = PlaybackSession.create(
+      null,
+      PlaybackStatus.IDLE,
+      { currentTime: 0, duration: 0 },
+      s.volume,
+      { isBuffering: false, bufferingPercent: 0 },
+      null,
+      false
+    )
+    const next: InternalState = {
+      session: nextSession,
+      isCoreIdle: false,
+      isIdleActive: false
+    }
+    this.setState(next)
+  }
+
   setPhase(phase: PlayerPhase, error: string | null = null): void {
     const s = this.state.session
     const status = phaseToStatus(phase)
+
+    if (status === PlaybackStatus.IDLE) {
+      // idle 走统一的 reset 逻辑，避免分支分散
+      this.resetToIdle()
+      return
+    }
+
     const nextSession = PlaybackSession.create(
       s.media,
       status,

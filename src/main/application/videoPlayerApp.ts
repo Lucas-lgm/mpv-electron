@@ -85,9 +85,17 @@ export class VideoPlayerApp {
   private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false
   private windowSyncTimer: NodeJS.Timeout | null = null
+  /** 上一次收到的 PlayerState.phase，用于边沿检测（避免 ended 触发多次） */
+  private lastPlayerPhase: string = 'idle'
 
-  private readonly onEndedPlayNext = (state: { phase: string }) => {
-    if (state.phase === 'ended') this.playNextFromPlaylist().catch(() => {})
+  private readonly onEndedPlayNext = (state: { phase: string; path?: string | null }) => {
+    const prev = this.lastPlayerPhase
+    const next = state.phase
+    this.lastPlayerPhase = next
+
+    if (prev === 'playing' && next === 'ended') {
+      this.playNextFromPlaylist().catch(() => {})
+    }
   }
   private readonly onVideoTimeUpdate = (payload: unknown) => {
     this.sendToPlaybackUIs('video-time-update', payload)
@@ -259,6 +267,8 @@ export class VideoPlayerApp {
         })
       }
     }
+
+    this.corePlayer.resetState()
 
     // UI 层职责：窗口管理
     const mainWindow = this.windowManager.getWindow('main')

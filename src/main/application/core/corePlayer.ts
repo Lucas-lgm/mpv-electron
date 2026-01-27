@@ -40,6 +40,8 @@ export interface CorePlayer extends EventEmitter {
   isUsingEmbeddedMode(): boolean
   cleanup(): Promise<void>
   getPlayerState(): PlayerState
+  /** 将内部 PlayerState 重置为干净的 idle 状态，并立刻广播一次 player-state */
+  resetState(): void
   onPlayerState(listener: (state: PlayerState) => void): void
   offPlayerState(listener: (state: PlayerState) => void): void
   sendKey(key: string): Promise<void>
@@ -93,7 +95,8 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       () => this.stateMachine.getState()
     )
     
-    // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染
+    // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染，
+    // 同时所有 PlayerState 变化都会经 CorePlayer 再转发一遍给上层（VideoPlayerApp）。
     this.stateMachineStateListener = (st: PlayerState) => {
       this.timeline?.handlePlayerStateChange(st.phase)
       // 确保渲染循环运行（如果还没运行）
@@ -103,6 +106,8 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
           this.renderManager.start()
         }
       }
+      // 向外部广播 player-state，覆盖 resetState / mpv 回写等所有来源
+      this.emit('player-state', st)
     }
     this.stateMachine.on('state', this.stateMachineStateListener)
     
@@ -263,12 +268,18 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     }
   }
 
+  resetState(): void {
+    // 重置内部状态机为 idle，并立刻广播给上层（VideoPlayerApp → 前端）
+    this.stateMachine.resetToIdle()
+  }
+
   async play(filePath: string): Promise<void> {
     const windowId = await this.prepareControllerForPlayback()
     if (!windowId) {
       return
     }
     try {
+      this.resetState();
       await this.mediaPlayer.play(Media.create(filePath))
       await this.syncWindowSize()
     } catch {
@@ -360,8 +371,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       if (wasSeeking && !isSeeking) {
         this.renderManager?.markSeekComplete()
       }
-      
-      this.emit('player-state', this.getPlayerState())
     })
     
     // 监听视频帧率变化，动态调整渲染间隔
@@ -416,7 +425,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     if (status) {
       this.updateFromMPVStatus(status as MPVStatus)
       await this.timeline?.broadcastTimeline({ currentTime: time, duration: status.duration })
-      this.emit('player-state', this.getPlayerState())
     }
   }
 
@@ -429,7 +437,9 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   }
 
   async stop(): Promise<void> {
-    if (this.controller) await this.mediaPlayer.stop()
+    if (this.controller) {
+      await this.mediaPlayer.stop()
+    }
   }
 
   getStatus() {

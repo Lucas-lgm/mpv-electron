@@ -826,7 +826,6 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.phase = 'playing'
         }
         this.emit('status', { ...this.currentStatus })
-        this.emit('file-loaded')
         break
       }
       case MPV_EVENT_SEEK: {
@@ -848,7 +847,6 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.isNetworkBuffering = false
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
-          this.emit('stopped')
           this.setForceBlackMode(true)
         } else if (reason === MPV_END_FILE_REASON_EOF) {
           this.currentStatus.phase = 'ended'
@@ -856,21 +854,18 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.isNetworkBuffering = false
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
-          this.emit('ended')
         } else if (reason === MPV_END_FILE_REASON_ERROR) {
           this.currentStatus.phase = 'error'
           this.currentStatus.isSeeking = false
           this.currentStatus.isNetworkBuffering = false
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
-          this.emit('ended')
         } else {
           this.currentStatus.phase = 'stopped'
           this.currentStatus.isSeeking = false
           this.currentStatus.isNetworkBuffering = false
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
-          this.emit('ended')
         }
         break
       }
@@ -883,7 +878,6 @@ export class LibMPVController extends EventEmitter {
         this.currentStatus.isNetworkBuffering = false
         this.currentStatus.networkBufferingPercent = 0
         this.emit('status', { ...this.currentStatus })
-        this.emit('shutdown')
         break
     }
   }

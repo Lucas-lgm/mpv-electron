@@ -253,6 +253,19 @@ const handleVideoEnded = () => {
 const handlePlayVideo = (file: { name: string; path: string }) => {
   currentVideoName.value = file.name
   currentPath.value = file.path
+
+  // 收到新的播放指令时，前端立即做一次乐观清理，
+  // 避免等待后端 idle / loading 状态广播期间，UI 还停留在上一个错误 / 时间轴上。
+  playerError.value = null
+  isVideoReady.value = false
+  isScrubbing.value = false
+  isSeeking.value = false
+  isNetworkBuffering.value = false
+  networkBufferingPercent.value = null
+  currentTimeAdjustable.reset(0)
+  duration.value = 0
+  // 先进入 loading 态，等后端真正广播 phase 再修正
+  isLoading.value = true
 }
 
 const handlePlayerError = (payload: { message: string }) => {
