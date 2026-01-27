@@ -18,6 +18,13 @@
       </div>
       <h1 class="title">{{ currentVideoName || '视频播放器' }}</h1>
     </header>
+    <!-- 播放错误提示（全屏遮罩，居中显示） -->
+    <div v-if="playerError" class="error-overlay">
+      <div class="error-content">
+        <div class="error-title">播放出错</div>
+        <div class="error-message">{{ playerError }}</div>
+      </div>
+    </div>
     <div v-if="isLoading" class="loading-overlay">
       <div class="loading-content">
         <span class="loading-text">
@@ -152,6 +159,7 @@ const isSeeking = ref(false)
 const isNetworkBuffering = ref(false)
 const networkBufferingPercent = ref<number | null>(null)
 const isScrubbing = ref(false)
+const playerError = ref<string | null>(null)
 
 interface PlaylistItem {
   name: string
@@ -267,6 +275,13 @@ const handlePlayerState = (state: PlayerState) => {
   isLoading.value = state.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
   const wasPlaying = isPlaying.value
   isPlaying.value = state.phase === 'playing'
+
+  // 记录错误信息（由后端通过 PlayerState.error 传递而来）
+  if (state.phase === 'error') {
+    playerError.value = state.error || '播放出错'
+  } else {
+    playerError.value = null
+  }
   
   // 判断是否应该显示黑色背景（只在视频真正开始播放或暂停时，背景才透明）
   isVideoReady.value = 
@@ -626,6 +641,38 @@ onUnmounted(() => {
   padding: 8px 12px;
   color: #fff;
   font-size: 0.9rem;
+}
+
+.error-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  pointer-events: auto;
+}
+
+.error-content {
+  max-width: 60%;
+  padding: 1rem 1.75rem;
+  border-radius: 12px;
+  background: rgba(255, 59, 48, 0.15);
+  border: 1px solid rgba(255, 95, 87, 0.7);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.55);
+  color: #ffe9e7;
+}
+
+.error-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  font-size: 1rem;
+}
+
+.error-message {
+  word-break: break-word;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .playlist-title {

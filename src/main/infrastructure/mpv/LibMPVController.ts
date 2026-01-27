@@ -2,10 +2,13 @@ import { EventEmitter } from 'events'
 import * as path from 'path'
 import { existsSync } from 'fs'
 import type { MPVBinding, MPVStatus } from './types'
+import { createLogger } from '../logging'
 
 // Native binding 实例（延迟加载）
 let mpvBinding: MPVBinding | null = null
 let bindingLoadAttempted = false
+
+const logger = createLogger('LibMPVController')
 
 /**
  * 加载 native binding
@@ -23,9 +26,9 @@ export function loadMPVBinding(): boolean {
     const dllPath = path.join(__dirname, '../../vendor/mpv/win32-x64/lib')
     if (existsSync(dllPath)) {
       process.env.PATH = `${dllPath};${process.env.PATH}`
-      console.log('[DLL] Added to PATH:', dllPath)
+      logger.info('[DLL] Added to PATH', { dllPath })
     } else {
-      console.warn('[DLL] DLL path not found:', dllPath)
+      logger.warn('[DLL] DLL path not found', { dllPath })
     }
   }
 
@@ -724,7 +727,18 @@ export class LibMPVController extends EventEmitter {
           this.recentMpvLogLines.splice(0, this.recentMpvLogLines.length - 50)
         }
 
-        console.log(line)
+        // 记录最后一条 error/fatal 级别的“纯文本”错误信息
+        if (level === 'error' || level === 'fatal') {
+          this.lastMpvErrorLogLine = text
+
+          if (this.currentStatus.phase === 'error') {
+            this.currentStatus.errorMessage = text
+            this.currentStatus.errorLogSnippet = [...this.recentMpvLogLines]
+            this.emit('status', { ...this.currentStatus })
+          }
+        }
+
+        logger.debug(line)
         break
       }
       case MPV_EVENT_PROPERTY_CHANGE: {
@@ -792,6 +806,10 @@ export class LibMPVController extends EventEmitter {
       }
       case MPV_EVENT_START_FILE: {
         this.fileLoadGeneration++
+        // 新文件开始时，重置错误信息
+        this.lastMpvErrorLogLine = null
+        this.currentStatus.errorMessage = undefined
+        this.currentStatus.errorLogSnippet = undefined
         this.currentStatus.isSeeking = false
         this.currentStatus.isNetworkBuffering = false
         this.currentStatus.networkBufferingPercent = 0

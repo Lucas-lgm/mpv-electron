@@ -40,4 +40,8 @@ export interface MPVStatus {
   isIdleActive?: boolean
   isNetworkBuffering?: boolean
   networkBufferingPercent?: number
+  /** 最近一次 mpv 错误的简要信息（单行，人类可读） */
+  errorMessage?: string
+  /** 最近一次错误相关的若干日志行（技术详情，可选） */
+  errorLogSnippet?: string[]
 }

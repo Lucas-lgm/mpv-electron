@@ -22,7 +22,7 @@ export class MpvAdapter {
   ): PlaybackSession {
     const phase = options?.overridePhase ?? mpvStatus.phase
     const status = this.mapPhaseToStatus(phase)
-    
+
     return PlaybackSession.create(
       media,
       status,
@@ -36,7 +36,7 @@ export class MpvAdapter {
         isBuffering: mpvStatus.isNetworkBuffering ?? false,
         bufferingPercent: mpvStatus.networkBufferingPercent ?? 0
       },
-      null,
+      status === PlaybackStatus.ERROR ? (mpvStatus.errorMessage ?? null) : null,
       mpvStatus.isSeeking ?? false
     )
   }

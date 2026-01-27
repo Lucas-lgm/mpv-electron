@@ -4,6 +4,7 @@ import { Media } from '../../domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 import { MpvAdapter } from '../../infrastructure/mpv'
 import type { PlayerPhase, PlayerState } from './playerStateTypes'
+import { createLogger } from '../../infrastructure/logging'
 
 export type { PlayerState, PlayerPhase } from './playerStateTypes'
 
@@ -45,6 +46,8 @@ const defaultSession = (): PlaybackSession =>
     100,
     { isBuffering: false, bufferingPercent: 0 }
   )
+
+const logger = createLogger('PlayerStateMachine')
 
 export class PlayerStateMachine extends EventEmitter {
   private state: InternalState = {
@@ -130,6 +133,12 @@ export class PlayerStateMachine extends EventEmitter {
       prevPs.isNetworkBuffering !== nextPs.isNetworkBuffering ||
       prevPs.networkBufferingPercent !== nextPs.networkBufferingPercent
     ) {
+      if (prevPs.phase !== nextPs.phase) {
+        logger.debug('PlayerState phase changed', {
+          prev: prevPs.phase,
+          next: nextPs.phase
+        })
+      }
       this.emit('state', this.getState())
     }
   }
