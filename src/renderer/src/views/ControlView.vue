@@ -155,6 +155,8 @@ const hdrEnabled = ref(true)
 const volumeAdjustable = useAdjustableValue<number>({
   initial: 100,
   debugLabel: 'volume',
+  // 音量希望拖动时实时生效，所以在 onUserInput 阶段就发送命令
+  sendOnInput: true,
   sendCommand: (v: number) => {
     // eslint-disable-next-line no-console
     console.log('[ControlView] send control-volume', v)

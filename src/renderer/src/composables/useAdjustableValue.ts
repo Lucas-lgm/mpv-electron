@@ -9,6 +9,8 @@ export interface AdjustableValueOptions<T> {
   sendCommand: (value: T) => void
   /** 是否输出调试日志 */
   debugLabel?: string
+  /** 是否在 onUserInput 阶段就实时发送命令（如音量） */
+  sendOnInput?: boolean
 }
 
 export interface AdjustableValue<T> {
@@ -29,7 +31,7 @@ export interface AdjustableValue<T> {
  * 适用于音量、进度、播放速度等标量可调控件。
  */
 export function useAdjustableValue<T>(options: AdjustableValueOptions<T>): AdjustableValue<T> {
-  const { initial, justChangedWindowMs, sendCommand, debugLabel } = options
+  const { initial, justChangedWindowMs, sendCommand, debugLabel, sendOnInput } = options
   const value = ref(initial) as Ref<T>
 
   const JUST_CHANGED_WINDOW = justChangedWindowMs ?? 200
@@ -48,6 +50,9 @@ export function useAdjustableValue<T>(options: AdjustableValueOptions<T>): Adjus
     isAdjusting = true
     log('onUserInput', { v })
     value.value = v
+    if (sendOnInput) {
+      sendCommand(v)
+    }
   }
 
   const onUserCommit = (v: T) => {
