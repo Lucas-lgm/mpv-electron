@@ -401,10 +401,32 @@ export class VideoPlayerApp {
     const controlWindow = this.getControlWindow()
     const isFullscreen = !videoWindow.isFullScreen()
 
+    // macOS: 在全屏切换前，先通知 BrowserView 隐藏控制栏
+    // 这样可以避免网页渲染延迟导致的视觉问题
+    if (process.platform === 'darwin' && this.controlView && !this.controlView.webContents.isDestroyed()) {
+      // 立即隐藏控制栏，避免渲染延迟
+      this.controlView.webContents.send('control-bar-hide-immediate')
+    }
+
     videoWindow.setFullScreen(isFullscreen)
 
     if (process.platform === 'win32' && controlWindow && !controlWindow.isDestroyed()) {
       controlWindow.setFullScreen(isFullscreen)
+    }
+    
+    // macOS: 全屏切换完成后，延迟恢复控制栏（如果需要）
+    // 进入全屏时，控制栏会保持隐藏直到用户交互
+    // 退出全屏时，可以延迟一点再显示，确保窗口已完全切换
+    if (process.platform === 'darwin' && this.controlView && !this.controlView.webContents.isDestroyed()) {
+      if (!isFullscreen) {
+        // 退出全屏时，延迟显示控制栏，确保窗口切换完成
+        setTimeout(() => {
+          if (this.controlView && !this.controlView.webContents.isDestroyed()) {
+            this.controlView.webContents.send('control-bar-show')
+          }
+        }, 200)
+      }
+      // 进入全屏时，不立即显示，等待用户交互
     }
   }
 

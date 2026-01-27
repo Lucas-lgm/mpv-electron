@@ -304,9 +304,18 @@ const togglePlaylist = () => {
 }
 
 const toggleFullscreen = () => {
+  // 全屏切换时，先立即隐藏控制栏，避免渲染延迟导致的视觉问题
+  // 网页渲染比原生窗口慢，先隐藏可以避免看到渲染延迟
+  controlsVisible.value = false
+  
   if (window.electronAPI) {
     window.electronAPI.send('control-toggle-fullscreen')
   }
+  
+  // 延迟恢复控制栏显示（如果需要）
+  // 全屏时通常控制栏会自动隐藏，所以这里不需要立即恢复
+  // 如果进入全屏，控制栏会保持隐藏直到用户交互
+  // 如果退出全屏，控制栏会在用户交互时显示
 }
 
 const handleWindowAction = (action: 'close' | 'minimize' | 'maximize') => {
@@ -430,6 +439,10 @@ onMounted(() => {
         scheduleHide()
       }
     })
+    // 立即隐藏控制栏（用于全屏切换等场景，避免渲染延迟）
+    window.electronAPI.on('control-bar-hide-immediate', () => {
+      controlsVisible.value = false
+    })
     
     window.electronAPI.send('get-playlist')
   }
@@ -507,6 +520,15 @@ onUnmounted(() => {
   opacity: 1;
   transition: opacity 0.3s ease;
   will-change: opacity;
+}
+
+/* 控制栏隐藏时，优化性能：减少 backdrop-filter 的性能消耗 */
+.control-view.controls-hidden .header {
+  /* 隐藏时使用更简单的背景，减少 backdrop-filter 的性能消耗 */
+  backdrop-filter: blur(5px);
+  /* 或者完全禁用 backdrop-filter */
+  /* backdrop-filter: none; */
+  /* background: rgba(0, 0, 0, 0.6); */
 }
 
 .window-controls {
@@ -660,6 +682,8 @@ onUnmounted(() => {
 .control-view.controls-hidden .playback-controls {
   opacity: 0;
   pointer-events: none;
+  /* 隐藏时禁用 transition，提升性能 */
+  transition: none;
 }
 
 /* 确保 loading-overlay 和 playlist-panel 始终可见（如果它们需要显示） */
