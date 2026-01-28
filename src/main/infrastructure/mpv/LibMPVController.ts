@@ -441,7 +441,6 @@ export class LibMPVController extends EventEmitter {
 
     // mpv 的 start 参数要求整数秒，这里统一用非负整数秒
     const start = startTime ?? 0
-    const startInt = Math.max(0, Math.floor(start))
 
     try {
       if (start > 0) {
@@ -450,13 +449,13 @@ export class LibMPVController extends EventEmitter {
         // 格式：["loadfile", path, "replace", "start=XXX"]
         // 注意：mpv 0.38+ 增加了 index 参数，位于 flags 和 options 之间
         // 新格式：["loadfile", path, "replace", <index>, "options"]
-        await this.binding.command(this.instanceId, [
-          'loadfile',
-          path,
-          'replace',
-          '-1', // playlist index: -1 表示自动/追加，这里作为占位符以支持后续的 options
-          `start=${start}`
-        ])
+              await this.binding.command(this.instanceId, [
+                'loadfile',
+                path,
+                'replace',
+                '-1', // playlist index: -1 表示自动/追加，这里作为占位符以支持后续的 options
+                `start=${start},hr-seek=yes` // 多个选项用逗号分隔，强制使用精确 seek
+              ])
         this.currentStatus.position = start
       } else {
         // 没有起播时间时，直接用底层 loadFile
