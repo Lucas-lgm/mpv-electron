@@ -2,12 +2,14 @@ import { BrowserWindow, BrowserView, screen } from 'electron'
 import { EventEmitter } from 'events'
 import { PlayerStateMachine, type PlayerState, type PlayerPhase } from '../state/playerState'
 import type { MPVStatus } from '../../infrastructure/mpv'
-import { LibMPVController, isLibMPVAvailable, MpvMediaPlayer } from '../../infrastructure/mpv'
+import { MpvMediaPlayer } from '../../infrastructure/mpv'
 import { getNSViewPointer, getHWNDPointer } from '../../infrastructure/platform/nativeHelper'
 import { Timeline } from '../timeline/timeline'
 import { RenderManager } from '../../infrastructure/rendering/renderManager'
 import { Media } from '../../domain/models/Media'
-import type { MediaPlayer } from './MediaPlayer'
+import type { PlaybackSession } from '../../domain/models/Playback'
+import { PlaybackStatus } from '../../domain/models/Playback'
+import type { MediaPlayer, PlayerStatus } from './MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 import { WINDOW_DELAYS } from '../constants'
 
@@ -27,20 +29,16 @@ const WINDOW_PREPARE_DELAYS = {
 
 export interface CorePlayer extends EventEmitter {
   setVideoWindow(window: BrowserWindow | null): Promise<void>
-  /** 在 playMedia 前调用：初始化 controller、挂载窗口、setExternalController，供 RenderManager / Timeline 使用 */
-  ensureControllerReadyForPlayback(): Promise<void>
-  setControlView(view: BrowserView | null): void
-  setControlWindow(window: BrowserWindow | null): void
-  play(filePath: string): Promise<void>
+  ensureMediaPlayerReadyForPlayback(): Promise<void>
+  play(media: Media): Promise<void>
   pause(): Promise<void>
   resume(): Promise<void>
   stop(): Promise<void>
   seek(time: number): Promise<void>
   setVolume(volume: number): Promise<void>
-  isUsingEmbeddedMode(): boolean
+  getCurrentSession(): PlaybackSession | null
   cleanup(): Promise<void>
   getPlayerState(): PlayerState
-  /** 将内部 PlayerState 重置为干净的 idle 状态，并立刻广播一次 player-state */
   resetState(): void
   onPlayerState(listener: (state: PlayerState) => void): void
   offPlayerState(listener: (state: PlayerState) => void): void
@@ -52,72 +50,107 @@ export interface CorePlayer extends EventEmitter {
 }
 
 class CorePlayerImpl extends EventEmitter implements CorePlayer {
-  private controller: LibMPVController | null = null
   private videoWindow: BrowserWindow | null = null
-  private useLibMPV: boolean = false
   private isCleaningUp: boolean = false
-  private initPromise: Promise<void> | null = null
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
   private timelineListener?: (payload: { currentTime: number; duration: number; updatedAt: number }) => void
   private stateMachineStateListener?: (st: PlayerState) => void
-  private controllerFpsChangeListener?: (fps: number | null) => void
   private pendingResizeTimer: NodeJS.Timeout | null = null
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
-  private controlView: BrowserView | null = null
-  private controlWindow: BrowserWindow | null = null
-  private lastIsSeeking: boolean = false
   private renderManager: RenderManager | null = null
-  private readonly mediaPlayer = new MpvMediaPlayer()
+  private mediaPlayer: MediaPlayer
+  private sessionChangeListener?: (session: PlaybackSession) => void
 
-  constructor() {
+  constructor(mediaPlayer?: MediaPlayer) {
     super()
-    if (isLibMPVAvailable()) {
-      this.controller = new LibMPVController()
-      this.initPromise = this.controller.initialize().catch(() => {
-        this.controller = null
-        this.initPromise = null
-      })
-    }
+    // 支持依赖注入，默认使用 MpvMediaPlayer
+    this.mediaPlayer = mediaPlayer || new MpvMediaPlayer()
+    
     this.timeline = new Timeline({
       interval: 100,
-      getStatus: () => this.getStatus()
+      getStatus: () => {
+        const status = this.getStatus()
+        if (!status) return null
+        // 将 PlayerStatus 适配为 MPVStatus（临时方案，等 Timeline 支持 PlayerStatus）
+        return {
+          position: status.currentTime,
+          duration: status.duration,
+          volume: status.volume,
+          path: status.path,
+          phase: status.phase,
+          isSeeking: status.isSeeking,
+          isNetworkBuffering: status.isNetworkBuffering,
+          networkBufferingPercent: status.networkBufferingPercent,
+          errorMessage: status.errorMessage
+        }
+      }
     })
     this.timelineListener = (payload) => {
       this.emit('video-time-update', payload)
     }
     this.timeline.on('timeline', this.timelineListener)
     
-    // 初始化渲染管理器
+    // 初始化渲染管理器（使用 MediaPlayer）
     this.renderManager = new RenderManager(
-      this.controller,
+      this.mediaPlayer,
       () => this.stateMachine.getState()
     )
+    
+    // 监听 MediaPlayer 的状态变化，更新 PlayerStateMachine
+    // 当 MpvMediaPlayer 的 controller 发出 'status' 事件时，会更新 session 并触发此回调
+    this.sessionChangeListener = (session: PlaybackSession) => {
+      // 从 session 中提取状态信息，更新 PlayerStateMachine
+      // 注意：这里使用 getStatus() 获取最新状态，因为 session 可能不是最新的
+      const status = this.mediaPlayer.getStatus()
+      if (status) {
+        this.updateFromPlayerStatus(status)
+      } else {
+        // 如果 getStatus() 返回 null，说明 controller 还未初始化
+        // 但从 session 中我们可以获取基本信息来更新状态机
+        const mpvStatus: MPVStatus = {
+          position: session.progress.currentTime,
+          duration: session.progress.duration,
+          volume: session.volume,
+          path: session.media?.uri || null,
+          phase: this.mapPlaybackStatusToPhase(session.status),
+          isSeeking: session.isSeeking,
+          isNetworkBuffering: session.networkBuffering.isBuffering,
+          networkBufferingPercent: session.networkBuffering.bufferingPercent,
+          errorMessage: session.error || undefined
+        }
+        this.stateMachine.updateFromStatus(mpvStatus)
+      }
+    }
+    this.mediaPlayer.onSessionChange(this.sessionChangeListener)
     
     // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染，
     // 同时所有 PlayerState 变化都会经 CorePlayer 再转发一遍给上层（VideoPlayerApp）。
     this.stateMachineStateListener = (st: PlayerState) => {
       this.timeline?.handlePlayerStateChange(st.phase)
       // 确保渲染循环运行（如果还没运行）
-      if (this.renderManager && this.controller && process.platform === 'darwin') {
-        const isJsDriven = this.controller.getJsDrivenRenderMode()
-        if (isJsDriven && !this.renderManager.isActive()) {
-          this.renderManager.start()
-        }
+      if (this.renderManager && this.shouldStartRenderLoop()) {
+        this.renderManager.start()
       }
       // 向外部广播 player-state，覆盖 resetState / mpv 回写等所有来源
       this.emit('player-state', st)
     }
     this.stateMachine.on('state', this.stateMachineStateListener)
     
-    // 监听视频帧率变化，动态调整渲染间隔（构造函数中的初始监听）
-    if (this.controller) {
-      this.controllerFpsChangeListener = (fps: number | null) => {
-        this.renderManager?.updateFps(fps)
-      }
-      this.controller.on('fps-change', this.controllerFpsChangeListener)
-    }
+    // 监听视频帧率变化，动态调整渲染间隔
+    this.mediaPlayer.onFpsChange((fps: number | null) => {
+      this.renderManager?.updateFps(fps)
+    })
+  }
+  
+  /**
+   * 判断是否应该启动渲染循环
+   */
+  private shouldStartRenderLoop(): boolean {
+    if (!this.renderManager || process.platform !== 'darwin') return false
+    const renderMode = this.mediaPlayer.getRenderMode()
+    return renderMode === 'js-driven' && !this.renderManager.isActive()
   }
   
 
@@ -144,10 +177,8 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
         }
         
         if (windowId !== null) {
-          // 设置到 MpvMediaPlayer
-          const mediaPlayer = this.mediaPlayer as any
-          if (mediaPlayer && typeof mediaPlayer.setWindowId === 'function') {
-            mediaPlayer.setWindowId(windowId)
+          if (this.mediaPlayer instanceof MpvMediaPlayer) {
+            this.mediaPlayer.setWindowId(windowId)
           }
         }
       } catch (error) {
@@ -158,10 +189,10 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     }
   }
   /**
-   * 准备 controller 用于播放（提取自 play() 的公共逻辑）
+   * 准备播放器用于播放（初始化 MediaPlayer 的窗口）
    * @returns windowId，如果准备失败则返回 undefined
    */
-  private async prepareControllerForPlayback(): Promise<number | undefined> {
+  private async prepareMediaPlayerForPlayback(): Promise<number | undefined> {
     if (this.isCleaningUp) return undefined
     if (!this.videoWindow || this.videoWindow.isDestroyed()) return undefined
 
@@ -208,87 +239,70 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       return undefined
     }
 
-    if (!isLibMPVAvailable() || !windowId) return undefined
+    if (!windowId) return undefined
 
-    this.useLibMPV = true
     try {
-      if (!this.controller) {
-        this.controller = new LibMPVController()
-        // Windows 上需要在初始化前设置 wid
-        if (process.platform === 'win32' && windowId) {
-          this.initPromise = this.controller.initialize(windowId)
-        } else {
-          this.initPromise = this.controller.initialize()
-        }
+      // 设置窗口 ID（MpvMediaPlayer 会在 play 时使用它来初始化播放器）
+      // 注意：这里需要类型检查，因为 MediaPlayer 接口没有 setWindowId 方法
+      // 这是 MPV 特定的，未来可以抽象到 MediaPlayer 接口
+      if (this.mediaPlayer instanceof MpvMediaPlayer) {
+        this.mediaPlayer.setWindowId(windowId)
       }
-      if (this.initPromise) {
-        await this.initPromise
-        this.initPromise = null
+      
+      // 更新 RenderManager 的 mediaPlayer 引用（如果已创建）
+      if (this.renderManager) {
+        this.renderManager.setMediaPlayer(this.mediaPlayer)
       }
-      // macOS 和 Windows 都需要调用 setWindowId 来创建渲染上下文
-      if (windowId) {
-        await this.controller.setWindowId(windowId)
-        if (this.renderManager) this.renderManager.setController(this.controller)
-        const currentState = this.getPlayerState()
-        if (currentState.phase === 'playing' && this.renderManager) this.renderManager.start()
-      }
-      await this.syncWindowSize()
+      
       this.setupResizeHandler()
       this.setupEventHandlers()
-      this.mediaPlayer.setExternalController(this.controller!, windowId)
+      
       return windowId
-    } catch {
-      this.useLibMPV = false
+    } catch (error) {
+      logger.error('Error preparing media player for playback', {
+        error: error instanceof Error ? error.message : String(error)
+      })
       return undefined
     }
   }
 
-  async ensureControllerReadyForPlayback(): Promise<void> {
-    const windowId = await this.prepareControllerForPlayback()
+  async ensureMediaPlayerReadyForPlayback(): Promise<void> {
+    const windowId = await this.prepareMediaPlayerForPlayback()
     if (!windowId) {
-      throw new Error('Failed to prepare controller for playback')
+      throw new Error('Failed to prepare media player for playback')
     }
-  }
-
-  setControlView(view: BrowserView | null) {
-    this.controlView = view
-  }
-
-  setControlWindow(window: BrowserWindow | null) {
-    this.controlWindow = window
-  }
-
-  isUsingEmbeddedMode(): boolean {
-    return this.useLibMPV
   }
 
   setHdrEnabled(enabled: boolean): void {
-    if (this.controller) {
-      this.controller.setHdrEnabled(enabled)
-    }
+    this.mediaPlayer.setHdrEnabled(enabled)
   }
 
   resetState(): void {
-    // 重置内部状态机为 idle，并立刻广播给上层（VideoPlayerApp → 前端）
     this.stateMachine.resetToIdle()
   }
 
-  async play(filePath: string): Promise<void> {
-    const windowId = await this.prepareControllerForPlayback()
+  async play(media: Media): Promise<void> {
+    const windowId = await this.prepareMediaPlayerForPlayback()
     if (!windowId) {
-      return
+      throw new Error('Failed to prepare media player for playback')
     }
     try {
-      this.resetState();
-      await this.mediaPlayer.play(Media.create(filePath))
+      this.resetState()
+      await this.mediaPlayer.play(media)
+      // 播放后同步窗口大小（此时播放器已初始化）
       await this.syncWindowSize()
-    } catch {
-      this.useLibMPV = false
+      // 检查是否需要启动渲染循环
+      const currentState = this.getPlayerState()
+      if (currentState.phase === 'playing' && this.renderManager) {
+        this.renderManager.start()
+      }
+    } catch (error) {
+      throw error
     }
   }
 
   private async syncWindowSize(): Promise<void> {
-    if (!this.videoWindow || this.videoWindow.isDestroyed() || !this.controller) {
+    if (!this.videoWindow || this.videoWindow.isDestroyed()) {
       return
     }
     const bounds = this.videoWindow.getContentBounds()
@@ -296,9 +310,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     const scaleFactor = display.scaleFactor
     const width = Math.round(bounds.width * scaleFactor)
     const height = Math.round(bounds.height * scaleFactor)
-    if (this.controller instanceof LibMPVController) {
-      await this.controller.setWindowSize(width, height)
-    }
+    await this.mediaPlayer.setWindowSize(width, height)
   }
 
   private setupResizeHandler(): void {
@@ -324,7 +336,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   }
 
   private async syncWindowSizeThrottled(): Promise<void> {
-    if (!this.videoWindow || this.videoWindow.isDestroyed() || !this.controller) {
+    if (!this.videoWindow || this.videoWindow.isDestroyed()) {
       return
     }
     const bounds = this.videoWindow.getContentBounds()
@@ -342,108 +354,56 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     })
     this.lastPhysicalWidth = width
     this.lastPhysicalHeight = height
-    if (this.controller instanceof LibMPVController) {
-      await this.controller.setWindowSize(width, height)
-    }
+    await this.mediaPlayer.setWindowSize(width, height)
   }
 
   private setupEventHandlers(): void {
-    if (!this.controller) return
     const videoWindow = this.videoWindow
     if (!videoWindow) return
     
-    // 先移除旧的监听器，避免重复注册
-    this.controller.removeAllListeners('status')
-    this.controller.removeAllListeners('file-loaded')
-    this.controller.removeAllListeners('fps-change')
+    // 监听 MediaPlayer 的状态变化（通过 getStatus 轮询或事件）
+    // 注意：当前通过 Timeline 轮询 getStatus，这里暂时不需要额外的事件监听
+    // 如果 MediaPlayer 支持状态变化事件，可以在这里监听
     
-    this.controller.on('status', (status: MPVStatus) => {
-      // 检测 seek 完成（isSeeking 从 true 变为 false）
-      const wasSeeking = this.lastIsSeeking
-      const isSeeking = status.isSeeking ?? false
-      this.lastIsSeeking = isSeeking
-      
-      // 先更新状态，确保 stateMachine 中的状态是最新的
-      this.updateFromMPVStatus(status)
-      
-      // 数据驱动：seek 完成后，标记需要渲染
-      // renderLoop 会检测到 pendingSeekRender 并触发渲染
-      if (wasSeeking && !isSeeking) {
-        this.renderManager?.markSeekComplete()
-      }
-    })
-    
-    // 监听视频帧率变化，动态调整渲染间隔
-    this.controller.on('fps-change', (fps: number | null) => {
-      this.renderManager?.updateFps(fps)
-    })
-    
-    // 监听文件加载完成事件，确保自动播放
-    this.controller.on('file-loaded', async () => {
-      if (!this.controller) return
-      try {
-        // 主动获取一次视频帧率，确保渲染间隔及时更新
-        const fps = await this.controller.getProperty('estimated-vf-fps')
-        if (typeof fps === 'number' && fps > 0.1) {
-          this.renderManager?.updateFps(fps)
-        }
-        
-        // 检查 pause 状态，如果为 true 则自动播放
-        const pauseState = await this.controller.getProperty('pause')
-        if (pauseState === true) {
-          await this.controller.play()
-        }
-      } catch (error) {
-        // 忽略错误，继续执行
-      }
-    })
-  }
-
-  async togglePause(): Promise<void> {
-    if (this.controller) {
-      await this.controller.togglePause()
-      const status = this.controller.getStatus()
-      if (status) {
-        this.updateFromMPVStatus(status as MPVStatus)
-      }
-    }
+    // FPS 变化已经在构造函数中通过 mediaPlayer.onFpsChange 监听
   }
 
   async pause(): Promise<void> {
-    if (this.controller) await this.mediaPlayer.pause()
+    await this.mediaPlayer.pause()
   }
 
   async resume(): Promise<void> {
-    if (this.controller) await this.mediaPlayer.resume()
+    await this.mediaPlayer.resume()
   }
 
   async seek(time: number): Promise<void> {
-    if (!this.controller) return
     this.timeline?.markSeek(time)
     await this.mediaPlayer.seek(time)
-    const status = this.controller.getStatus()
+    const status = this.mediaPlayer.getStatus()
     if (status) {
-      this.updateFromMPVStatus(status as MPVStatus)
+      this.updateFromPlayerStatus(status)
       await this.timeline?.broadcastTimeline({ currentTime: time, duration: status.duration })
     }
   }
 
   async setVolume(volume: number): Promise<void> {
-    if (this.controller) {
-      await this.mediaPlayer.setVolume(volume)
-      const status = this.controller.getStatus()
-      if (status) this.updateFromMPVStatus(status as MPVStatus)
+    await this.mediaPlayer.setVolume(volume)
+    const status = this.mediaPlayer.getStatus()
+    if (status) {
+      this.updateFromPlayerStatus(status)
     }
   }
 
   async stop(): Promise<void> {
-    if (this.controller) {
-      await this.mediaPlayer.stop()
-    }
+    await this.mediaPlayer.stop()
   }
 
-  getStatus() {
-    return this.controller?.getStatus() || null
+  getCurrentSession(): PlaybackSession | null {
+    return this.mediaPlayer.getCurrentSession()
+  }
+
+  getStatus(): PlayerStatus | null {
+    return this.mediaPlayer.getStatus()
   }
 
   async cleanup(): Promise<void> {
@@ -463,28 +423,63 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
         this.stateMachine.off('state', this.stateMachineStateListener)
         this.stateMachineStateListener = undefined
       }
-      if (this.controller && this.controllerFpsChangeListener) {
-        this.controller.off('fps-change', this.controllerFpsChangeListener)
-        this.controllerFpsChangeListener = undefined
+      // 移除 session change 监听
+      if (this.sessionChangeListener) {
+        this.mediaPlayer.offSessionChange(this.sessionChangeListener)
+        this.sessionChangeListener = undefined
       }
+      // FPS 变化监听通过 mediaPlayer.onFpsChange，会在 mediaPlayer.cleanup 中清理
       if (this.videoWindow) {
         this.videoWindow.removeAllListeners('resize')
       }
       this.timeline?.dispose()
       await this.mediaPlayer.cleanup()
-      if (this.controller instanceof LibMPVController) {
-        await this.controller.stop()
-        await this.controller.destroy()
-      }
-      this.controller = null
-      this.controlView = null
     } finally {
       this.isCleaningUp = false
     }
   }
 
-  updateFromMPVStatus(status: MPVStatus) {
-    this.stateMachine.updateFromStatus(status)
+  /**
+   * 从 PlayerStatus 更新状态机
+   */
+  private updateFromPlayerStatus(status: PlayerStatus): void {
+    // 将 PlayerStatus 适配为 MPVStatus 格式（临时方案，等 PlayerStateMachine 支持 PlayerStatus）
+    const mpvStatus: MPVStatus = {
+      position: status.currentTime,
+      duration: status.duration,
+      volume: status.volume,
+      path: status.path,
+      phase: status.phase,
+      isSeeking: status.isSeeking,
+      isNetworkBuffering: status.isNetworkBuffering,
+      networkBufferingPercent: status.networkBufferingPercent,
+      errorMessage: status.errorMessage
+    }
+    this.stateMachine.updateFromStatus(mpvStatus)
+  }
+
+  /**
+   * 将 PlaybackStatus 映射为 PlayerPhase
+   */
+  private mapPlaybackStatusToPhase(status: PlaybackStatus): PlayerPhase {
+    switch (status) {
+      case PlaybackStatus.IDLE:
+        return 'idle'
+      case PlaybackStatus.LOADING:
+        return 'loading'
+      case PlaybackStatus.PLAYING:
+        return 'playing'
+      case PlaybackStatus.PAUSED:
+        return 'paused'
+      case PlaybackStatus.STOPPED:
+        return 'stopped'
+      case PlaybackStatus.ENDED:
+        return 'ended'
+      case PlaybackStatus.ERROR:
+        return 'error'
+      default:
+        return 'idle'
+    }
   }
 
   setPhase(phase: PlayerPhase) {
@@ -509,27 +504,15 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
 
 
   async sendKey(key: string): Promise<void> {
-    if (!this.controller) {
-      return
-    }
-    if (this.initPromise) {
-      try {
-        await this.initPromise
-        this.initPromise = null
-      } catch {
-      }
-    }
-    await this.controller.keypress(key)
+    await this.mediaPlayer.sendKey(key)
   }
  
   async debugVideoState(): Promise<void> {
-    if (this.controller) {
-      await this.controller.debugVideoState()
-    }
+    await this.mediaPlayer.debugVideoState()
   }
 
   async debugHdrStatus(): Promise<void> {
-    if (this.controller) await this.controller.debugHdrStatus()
+    await this.mediaPlayer.debugHdrStatus()
   }
 
   getMediaPlayer(): MediaPlayer {

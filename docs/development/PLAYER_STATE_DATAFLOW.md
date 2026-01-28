@@ -47,8 +47,9 @@ flowchart LR
 
   subgraph Main["Main Process"]
     LC[LibMPVController]
-    SM[PlayerStateMachine]
+    MP[MpvMediaPlayer]
     Core[CorePlayer]
+    SM[PlayerStateMachine]
     App[VideoPlayerApp]
   end
 
@@ -58,15 +59,18 @@ flowchart LR
   end
 
   MPVCore -- status 事件 / 属性轮询 --> LC
-  LC -- MPVStatus --> SM
-  SM --> Core
-  Core --> App
+  LC -- MPVStatus (status事件) --> MP
+  MP -- PlaybackSession (session-change事件) --> Core
+  Core -- PlayerStatus --> SM
+  SM -- PlayerState (state事件) --> Core
+  Core -- player-state事件 --> App
   App --> UI
   UI --> UIState
 ```
 
 - **mpv core → LibMPVController**：通过事件回调 / `get_property` 周期性获取底层状态。
-- **LibMPVController → PlayerStateMachine**：构造 `MPVStatus`，交由状态机推导高层状态。
+- **LibMPVController → MpvMediaPlayer**：发出 `'status'` 事件（`MPVStatus`），`MpvMediaPlayer` 监听并适配为 `PlaybackSession`，发出 `'session-change'` 事件。
+- **MpvMediaPlayer → CorePlayer**：`CorePlayer` 监听 `MediaPlayer.onSessionChange`，从 `PlaybackSession` 或 `getStatus()` 获取状态，更新 `PlayerStateMachine`。
 - **PlayerStateMachine → CorePlayer**：`emit('state', PlayerState)` 事件驱动 Timeline / RenderManager（以及 reset 流程）。
 - **CorePlayer → VideoPlayerApp**：将 `PlayerState` 作为 `'player-state'` 事件再对外抛出。
 - **VideoPlayerApp → Renderer**：经 `sendToPlaybackUIs('player-state', state)` 广播给视频窗口和控制栏。
@@ -109,13 +113,24 @@ flowchart LR
     ```
 
   - 作为业务入口调用状态机：
-    - `updateFromMPVStatus(status)` → `stateMachine.updateFromStatus(status)`
+    - `updateFromPlayerStatus(status)` → `stateMachine.updateFromStatus(status)`（将 `PlayerStatus` 适配为 `MPVStatus`）
     - `setPhase(phase)` / `setError(message)` → `stateMachine.setPhase(...)`
     - `resetState()` → `stateMachine.resetToIdle()`（用于 stop / 新播放前的全局清理）
+  
+  - 监听 `MediaPlayer` 的状态变化：
+    ```ts
+    this.sessionChangeListener = (session: PlaybackSession) => {
+      const status = this.mediaPlayer.getStatus()
+      if (status) {
+        this.updateFromPlayerStatus(status)  // 更新状态机
+      }
+    }
+    this.mediaPlayer.onSessionChange(this.sessionChangeListener)
+    ```
 
 > 设计要点：  
 > `CorePlayer` **不直接管理 PlayerState 的细节**，而是作为「状态机的用户 + 事件转发桥接者」存在：  
-> - 向状态机写入状态（来自 mpv 或业务事件）；  
+> - 向状态机写入状态（通过监听 `MediaPlayer.onSessionChange` 获取状态变化，或来自业务事件）；  
 > - 监听状态机变化并转发给上层（VideoPlayerApp / Timeline / RenderManager）。
 
 #### 2.3 VideoPlayerApp：业务协调者 & IPC 广播中枢

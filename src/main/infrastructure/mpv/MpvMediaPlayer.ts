@@ -3,7 +3,7 @@
 import { EventEmitter } from 'events'
 import { LibMPVController, isLibMPVAvailable } from './LibMPVController'
 import type { MPVStatus } from './types'
-import type { MediaPlayer } from '../../application/core/MediaPlayer'
+import type { MediaPlayer, PlayerStatus } from '../../application/core/MediaPlayer'
 import { Media } from '../../domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 import { MpvAdapter } from './MpvAdapter'
@@ -16,12 +16,14 @@ import { MpvAdapter } from './MpvAdapter'
  */
 export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
   private controller: LibMPVController | null = null
+
   private currentMedia: Media | null = null
   private currentSession: PlaybackSession | null = null
   private windowId: number | null = null
   private isInitialized: boolean = false
-  private externalController: boolean = false
   private sessionChangeListeners: Set<(session: PlaybackSession) => void> = new Set()
+  private fpsChangeListeners: Set<(fps: number | null) => void> = new Set()
+  private fpsChangeHandler?: (fps: number | null) => void
 
   constructor() {
     super()
@@ -32,18 +34,6 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
 
   setWindowId(windowId: number): void {
     this.windowId = windowId
-  }
-
-  /**
-   * 使用外部已初始化的 Controller（供 CorePlayer 等集成，阶段 5）
-   * 调用方负责 create/init/setWindowId；本类不再 create/destroy controller。
-   */
-  setExternalController(controller: LibMPVController, windowId: number): void {
-    this.controller = controller
-    this.windowId = windowId
-    this.externalController = true
-    this.setupEventHandlers()
-    this.isInitialized = true
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -72,6 +62,38 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     this.controller.on('status', (status: MPVStatus) => {
       this.updateSessionFromStatus(status)
     })
+    
+    // 监听 FPS 变化
+    if (this.fpsChangeListeners.size > 0) {
+      this.setupFpsChangeHandler()
+    }
+  }
+  
+  /**
+   * 设置 FPS 变化处理器
+   */
+  private setupFpsChangeHandler(): void {
+    if (!this.controller || this.fpsChangeHandler) return
+    
+    this.fpsChangeHandler = (fps: number | null) => {
+      this.fpsChangeListeners.forEach(listener => {
+        try {
+          listener(fps)
+        } catch (error) {
+          console.error('[MpvMediaPlayer] Error in FPS change listener:', error)
+        }
+      })
+    }
+    this.controller.on('fps-change', this.fpsChangeHandler)
+  }
+  
+  /**
+   * 移除 FPS 变化处理器
+   */
+  private removeFpsChangeHandler(): void {
+    if (!this.controller || !this.fpsChangeHandler) return
+    this.controller.off('fps-change', this.fpsChangeHandler)
+    this.fpsChangeHandler = undefined
   }
 
   /**
@@ -234,18 +256,129 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     this.sessionChangeListeners.delete(listener)
   }
 
+  /**
+   * 获取播放器状态
+   */
+  getStatus(): PlayerStatus | null {
+    if (!this.controller || !this.isInitialized) return null
+    
+    const mpvStatus = this.controller.getStatus()
+    return this.adaptMPVStatusToPlayerStatus(mpvStatus)
+  }
+  
+  /**
+   * 将 MPVStatus 适配为 PlayerStatus
+   */
+  private adaptMPVStatusToPlayerStatus(mpvStatus: MPVStatus): PlayerStatus {
+    return {
+      currentTime: mpvStatus.position ?? 0,
+      duration: mpvStatus.duration ?? 0,
+      volume: mpvStatus.volume ?? 100,
+      isPaused: mpvStatus.phase === 'paused',
+      isSeeking: mpvStatus.isSeeking ?? false,
+      isNetworkBuffering: mpvStatus.isNetworkBuffering ?? false,
+      networkBufferingPercent: mpvStatus.networkBufferingPercent ?? 0,
+      path: mpvStatus.path,
+      phase: mpvStatus.phase ?? 'idle',
+      errorMessage: mpvStatus.errorMessage
+    }
+  }
+  
+  /**
+   * 请求渲染一帧
+   */
+  requestRender(): void {
+    this.controller?.requestRender()
+  }
+  
+  /**
+   * 获取渲染模式
+   */
+  getRenderMode(): 'js-driven' | 'native' | 'none' {
+    if (!this.controller || !this.isInitialized) return 'none'
+    
+    // MPV 在 macOS 上使用 JS 驱动渲染（gpu-next）
+    if (process.platform === 'darwin' && this.controller.getJsDrivenRenderMode()) {
+      return 'js-driven'
+    }
+    return 'native'
+  }
+  
+  /**
+   * 设置窗口大小
+   */
+  async setWindowSize(width: number, height: number): Promise<void> {
+    if (this.controller) {
+      await this.controller.setWindowSize(width, height)
+    }
+  }
+  
+  /**
+   * 监听视频帧率变化
+   */
+  onFpsChange(listener: (fps: number | null) => void): void {
+    this.fpsChangeListeners.add(listener)
+    
+    // 如果 controller 已初始化，设置处理器
+    if (this.controller && this.isInitialized && !this.fpsChangeHandler) {
+      this.setupFpsChangeHandler()
+    }
+  }
+  
+  /**
+   * 移除 FPS 变化监听
+   */
+  offFpsChange(listener: (fps: number | null) => void): void {
+    this.fpsChangeListeners.delete(listener)
+    
+    // 如果没有监听器了，移除处理器
+    if (this.fpsChangeListeners.size === 0) {
+      this.removeFpsChangeHandler()
+    }
+  }
+  
+  /**
+   * 设置 HDR 启用状态
+   */
+  setHdrEnabled(enabled: boolean): void {
+    this.controller?.setHdrEnabled(enabled)
+  }
+  
+  /**
+   * 发送按键事件
+   */
+  async sendKey(key: string): Promise<void> {
+    if (!this.controller) {
+      throw new Error('MPV controller not initialized')
+    }
+    await this.controller.keypress(key)
+  }
+  
+  /**
+   * 调试：输出视频状态信息
+   */
+  async debugVideoState(): Promise<void> {
+    if (this.controller) {
+      await this.controller.debugVideoState()
+    }
+  }
+  
+  /**
+   * 调试：输出 HDR 状态信息
+   */
+  async debugHdrStatus(): Promise<void> {
+    if (this.controller) {
+      await this.controller.debugHdrStatus()
+    }
+  }
+
   async cleanup(): Promise<void> {
     this.sessionChangeListeners.clear()
+    this.fpsChangeListeners.clear()
+    this.removeFpsChangeHandler()
     this.removeAllListeners()
-    if (this.externalController) {
-      this.controller = null
-      this.currentMedia = null
-      this.currentSession = null
-      this.isInitialized = false
-      this.windowId = null
-      this.externalController = false
-      return
-    }
+    
+    // Controller 由本类创建和管理，清理时销毁
     if (this.controller) {
       try {
         await this.controller.stop()

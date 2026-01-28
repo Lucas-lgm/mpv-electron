@@ -1,12 +1,12 @@
 import type { PlayerState } from '../../application/state/playerState'
-import type { LibMPVController } from '../mpv'
+import type { MediaPlayer } from '../../application/core/MediaPlayer'
 
 /**
  * 渲染管理器（完全数据驱动）
  * 负责管理渲染循环、状态标记和渲染间隔
  */
 export class RenderManager {
-  private controller: LibMPVController | null = null
+  private mediaPlayer: MediaPlayer | null = null
   private getState: () => PlayerState
   
   // 渲染循环状态
@@ -32,16 +32,16 @@ export class RenderManager {
   private lastRenderRequestTime: number = 0
   private renderRequestCount: number = 0
 
-  constructor(controller: LibMPVController | null, getState: () => PlayerState) {
-    this.controller = controller
+  constructor(mediaPlayer: MediaPlayer | null, getState: () => PlayerState) {
+    this.mediaPlayer = mediaPlayer
     this.getState = getState
   }
 
   /**
-   * 设置 controller（用于动态更新）
+   * 设置 mediaPlayer（用于动态更新）
    */
-  setController(controller: LibMPVController | null): void {
-    this.controller = controller
+  setMediaPlayer(mediaPlayer: MediaPlayer | null): void {
+    this.mediaPlayer = mediaPlayer
   }
 
   /**
@@ -141,9 +141,7 @@ export class RenderManager {
       this.checkAndAdjustRenderInterval()
       
       // 请求渲染
-      if (this.controller) {
-        this.controller.requestRender()
-      }
+      this.mediaPlayer?.requestRender()
     }
     
     // 继续下一帧（使用动态计算的间隔）
@@ -165,9 +163,9 @@ export class RenderManager {
       return
     }
     // 数据驱动架构：renderLoop 持续运行，不依赖播放状态
-    if (this.controller && process.platform === 'darwin') {
-      const isJsDriven = this.controller.getJsDrivenRenderMode()
-      if (isJsDriven) {
+    if (this.mediaPlayer) {
+      const renderMode = this.mediaPlayer.getRenderMode()
+      if (renderMode === 'js-driven') {
         this.renderLoopActive = true
         this.renderLoopHandle = setTimeout(this.renderLoop, this.currentRenderInterval)
         console.log(`[RenderManager] ✅ Started data-driven render loop (interval: ${this.currentRenderInterval}ms)`)

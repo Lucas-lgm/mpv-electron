@@ -113,10 +113,6 @@ export class VideoPlayerApp {
     this.corePlayer.on('player-state', this.onPlayerStateBroadcast)
   }
 
-  private get mediaPlayer() {
-    return this.corePlayer.getMediaPlayer()
-  }
-
   /** 播放媒体（原 ApplicationService.playMedia 逻辑内联） */
   async playMedia(opts: {
     mediaUri: string
@@ -129,39 +125,39 @@ export class VideoPlayerApp {
       this.playlist.add(media)
       this.playlist.setCurrentByUri(media.uri)
     }
-    await this.mediaPlayer.play(media)
+    await this.corePlayer.play(media)
     if (opts.options) {
       if (opts.options.volume !== undefined) {
-        await this.mediaPlayer.setVolume(opts.options.volume)
+        await this.corePlayer.setVolume(opts.options.volume)
       }
       if (opts.options.autoResume !== false) {
-        const session = this.mediaPlayer.getCurrentSession()
+        const session = this.corePlayer.getCurrentSession()
         if (session && session.status !== 'playing') {
-          await this.mediaPlayer.resume()
+          await this.corePlayer.resume()
         }
       }
     }
   }
 
   async pausePlayback(): Promise<void> {
-    await this.mediaPlayer.pause()
+    await this.corePlayer.pause()
   }
 
   async resumePlayback(): Promise<void> {
-    await this.mediaPlayer.resume()
+    await this.corePlayer.resume()
   }
 
   async seek(time: number): Promise<void> {
-    await this.mediaPlayer.seek(time)
+    await this.corePlayer.seek(time)
   }
 
   async setVolume(volume: number): Promise<void> {
-    await this.mediaPlayer.setVolume(volume)
+    await this.corePlayer.setVolume(volume)
     this.config.setVolume(volume)
   }
 
   async stopPlayback(): Promise<void> {
-    await this.mediaPlayer.stop()
+    await this.corePlayer.stop()
   }
 
   /**
@@ -297,8 +293,8 @@ export class VideoPlayerApp {
     // 设置视频窗口（同时设置 MpvMediaPlayer 的 windowId）
     await this.corePlayer.setVideoWindow(videoWindow)
 
-    // 初始化 controller、挂载窗口、setExternalController，供 RenderManager / Timeline 使用
-    await this.corePlayer.ensureControllerReadyForPlayback()
+    // 初始化播放器、挂载窗口，供 RenderManager / Timeline 使用
+    await this.corePlayer.ensureMediaPlayerReadyForPlayback()
 
     this.sendToPlaybackUIs('play-video', {
       name: target.name,
@@ -314,12 +310,6 @@ export class VideoPlayerApp {
           autoResume: true,
           addToPlaylist: false
         }
-      })
-
-      const isEmbedded = this.corePlayer.isUsingEmbeddedMode()
-      this.sendToPlaybackUIs('player-embedded', {
-        embedded: isEmbedded,
-        mode: isEmbedded ? 'native' : 'ipc'
       })
     } catch (error) {
       this.sendToPlaybackUIs('player-error', {
@@ -817,7 +807,6 @@ export class VideoPlayerApp {
 
       this.controlView = view
       this.controlWindow = null
-      this.corePlayer.setControlView(view)
 
       // 注意：不设置 setIgnoreMouseEvents，让 BrowserView 正常接收鼠标事件
       // BrowserView 覆盖整个窗口，可以正常接收所有鼠标事件
@@ -1025,7 +1014,6 @@ export class VideoPlayerApp {
 
       this.controlWindow = controlWindow
       this.controlView = null
-      this.corePlayer.setControlWindow(controlWindow)
 
       // 设置控制栏自动隐藏（统一处理）
       this.setupControlBarAutoHideForWebContents(controlWindow.webContents)
