@@ -2,22 +2,27 @@
 
 import { EventEmitter } from 'events'
 import { Media } from '../../domain/models/Media'
-import { PlaybackSession } from '../../domain/models/Playback'
+import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
 
 /**
  * 通用播放器状态接口
+ * 
+ * 统一的状态表示，用于：
+ * - MediaPlayer 接口的状态返回
+ * - 跨进程通信（替代原来的 PlayerState）
+ * - 状态机状态输出
  */
 export interface PlayerStatus {
+  phase: PlaybackStatus  // 统一使用 PlaybackStatus 枚举，消除与 PlayerPhase 的重复
   currentTime: number
   duration: number
   volume: number
+  path: string | null
   isPaused: boolean
   isSeeking: boolean
   isNetworkBuffering: boolean
   networkBufferingPercent: number
-  path: string | null
-  phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
-  errorMessage?: string
+  errorMessage?: string  // 统一使用 errorMessage（可选），替代原来的 error: string | null
 }
 
 /**
@@ -43,6 +48,19 @@ export interface MediaPlayer extends EventEmitter {
    * @returns 通用播放器状态，如果未初始化则返回 null
    */
   getStatus(): PlayerStatus | null
+  
+  // 状态变化事件（用于状态更新优化）
+  /**
+   * 监听播放器状态变化
+   * 当播放器状态更新时，会直接发出 PlayerStatus 事件
+   * 这是状态更新的主要事件，比 session-change 更直接
+   */
+  onStatusChange(listener: (status: PlayerStatus) => void): void
+  
+  /**
+   * 移除状态变化监听
+   */
+  offStatusChange(listener: (status: PlayerStatus) => void): void
   
   // 渲染能力
   /**

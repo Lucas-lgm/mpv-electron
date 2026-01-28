@@ -1,34 +1,34 @@
 import { EventEmitter } from 'events'
 import { Media } from '../../domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
-import type { PlayerPhase, PlayerState } from './playerStateTypes'
+import type { PlayerPhase } from './playerStateTypes'
 import type { PlayerStatus } from '../core/MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 
-export type { PlayerState, PlayerPhase } from './playerStateTypes'
+export type { PlayerPhase } from './playerStateTypes'
+// PlayerState 已合并到 PlayerStatus，保留导出以保持向后兼容
+export type { PlayerStatus as PlayerState } from '../core/MediaPlayer'
 
 type InternalState = {
   session: PlaybackSession
 }
 
-function sessionToPlayerState(session: PlaybackSession): PlayerState {
-  const phase = session.status as unknown as PlayerPhase
+function sessionToPlayerStatus(session: PlaybackSession): PlayerStatus {
   return {
-    phase,
+    phase: session.status,  // 直接使用 PlaybackStatus，无需转换
     currentTime: session.progress.currentTime,
     duration: session.progress.duration,
     volume: session.volume,
     path: session.media?.uri ?? null,
-    error: session.error,
+    isPaused: session.status === PlaybackStatus.PAUSED,
     isSeeking: session.isSeeking,
     isNetworkBuffering: session.networkBuffering.isBuffering,
-    networkBufferingPercent: session.networkBuffering.bufferingPercent
+    networkBufferingPercent: session.networkBuffering.bufferingPercent,
+    errorMessage: session.error || undefined
   }
 }
 
-function phaseToStatus(p: PlayerPhase): PlaybackStatus {
-  return p as unknown as PlaybackStatus
-}
+// phaseToStatus 已不再需要，PlayerPhase 就是 PlaybackStatus 的别名
 
 const defaultSession = (): PlaybackSession =>
   PlaybackSession.create(
@@ -46,8 +46,8 @@ export class PlayerStateMachine extends EventEmitter {
     session: defaultSession()
   }
 
-  getState() {
-    return sessionToPlayerState(this.state.session)
+  getState(): PlayerStatus {
+    return sessionToPlayerStatus(this.state.session)
   }
 
   /**
@@ -74,7 +74,8 @@ export class PlayerStateMachine extends EventEmitter {
 
   setPhase(phase: PlayerPhase, error: string | null = null): void {
     const s = this.state.session
-    const status = phaseToStatus(phase)
+    // PlayerPhase 就是 PlaybackStatus 的别名，直接使用
+    const status = phase
 
     if (status === PlaybackStatus.IDLE) {
       // idle 走统一的 reset 逻辑，避免分支分散
@@ -112,8 +113,8 @@ export class PlayerStateMachine extends EventEmitter {
    * 从 PlayerStatus 更新状态机
    */
   updateFromStatus(status: PlayerStatus): void {
-    const phase = this.derivePhase(status)
-    const playbackStatus = phaseToStatus(phase)
+    // PlayerStatus.phase 现在就是 PlaybackStatus，直接使用
+    const playbackStatus = status.phase
     const media = status.path ? Media.create(status.path) : null
     
     const session = PlaybackSession.create(
@@ -135,29 +136,21 @@ export class PlayerStateMachine extends EventEmitter {
     this.setState({ session })
   }
 
-  private derivePhase(status: PlayerStatus): PlayerPhase {
-    if (status.phase === 'stopped') return 'stopped'
-    if (status.phase === 'idle' || !status.path) return 'idle'
-    if (status.phase === 'paused') return 'paused'
-    if (status.phase === 'playing') return 'playing'
-    if (status.phase === 'ended') return 'ended'
-    if (status.phase === 'error') return 'error'
-    if (status.phase === 'loading') return 'loading'
-    return 'idle'
-  }
+  // derivePhase 已不再需要，PlayerStatus.phase 现在就是 PlaybackStatus 类型
 
   private setState(next: InternalState): void {
     const prev = this.state
     this.state = next
-    const prevPs = sessionToPlayerState(prev.session)
-    const nextPs = sessionToPlayerState(next.session)
+    const prevPs = sessionToPlayerStatus(prev.session)
+    const nextPs = sessionToPlayerStatus(next.session)
     if (
       prevPs.phase !== nextPs.phase ||
       prevPs.currentTime !== nextPs.currentTime ||
       prevPs.duration !== nextPs.duration ||
       prevPs.volume !== nextPs.volume ||
       prevPs.path !== nextPs.path ||
-      prevPs.error !== nextPs.error ||
+      prevPs.errorMessage !== nextPs.errorMessage ||
+      prevPs.isPaused !== nextPs.isPaused ||
       prevPs.isSeeking !== nextPs.isSeeking ||
       prevPs.isNetworkBuffering !== nextPs.isNetworkBuffering ||
       prevPs.networkBufferingPercent !== nextPs.networkBufferingPercent

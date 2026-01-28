@@ -22,6 +22,7 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
   private windowId: number | null = null
   private isInitialized: boolean = false
   private sessionChangeListeners: Set<(session: PlaybackSession) => void> = new Set()
+  private statusChangeListeners: Set<(status: PlayerStatus) => void> = new Set()
   private fpsChangeListeners: Set<(fps: number | null) => void> = new Set()
   private fpsChangeHandler?: (fps: number | null) => void
 
@@ -123,6 +124,34 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
 
     // 发出事件
     this.emit('session-change', session)
+    
+    // 同时发出状态变化事件（用于状态更新优化）
+    // 将 PlaybackSession 转换为 PlayerStatus
+    // 注意：PlaybackStatus 枚举的值就是字符串字面量，可以直接使用
+    const playerStatus: PlayerStatus = {
+      currentTime: session.progress.currentTime,
+      duration: session.progress.duration,
+      volume: session.volume,
+      isPaused: session.status === PlaybackStatus.PAUSED,
+      isSeeking: session.isSeeking,
+      isNetworkBuffering: session.networkBuffering.isBuffering,
+      networkBufferingPercent: session.networkBuffering.bufferingPercent,
+      path: session.media?.uri || null,
+      phase: session.status,  // 直接使用 PlaybackStatus，无需转换
+      errorMessage: session.error || undefined
+    }
+    
+    // 通知状态变化监听器
+    this.statusChangeListeners.forEach(listener => {
+      try {
+        listener(playerStatus)
+      } catch (error) {
+        console.error('[MpvMediaPlayer] Error in status change listener:', error)
+      }
+    })
+    
+    // 发出事件
+    this.emit('status-change', playerStatus)
   }
 
   /**
@@ -257,6 +286,31 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
   }
 
   /**
+   * 监听播放器状态变化
+   * 当播放器状态更新时，会直接发出 PlayerStatus 事件
+   */
+  onStatusChange(listener: (status: PlayerStatus) => void): void {
+    this.statusChangeListeners.add(listener)
+    
+    // 如果当前有状态，立即通知一次
+    const currentStatus = this.getStatus()
+    if (currentStatus) {
+      try {
+        listener(currentStatus)
+      } catch (error) {
+        console.error('[MpvMediaPlayer] Error in initial status change notification:', error)
+      }
+    }
+  }
+
+  /**
+   * 移除状态变化监听器
+   */
+  offStatusChange(listener: (status: PlayerStatus) => void): void {
+    this.statusChangeListeners.delete(listener)
+  }
+
+  /**
    * 获取播放器状态
    */
   getStatus(): PlayerStatus | null {
@@ -279,7 +333,7 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
       isNetworkBuffering: mpvStatus.isNetworkBuffering ?? false,
       networkBufferingPercent: mpvStatus.networkBufferingPercent ?? 0,
       path: mpvStatus.path,
-      phase: mpvStatus.phase ?? 'idle',
+      phase: MpvAdapter.mapPhaseToStatus(mpvStatus.phase),
       errorMessage: mpvStatus.errorMessage
     }
   }
@@ -374,6 +428,7 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
 
   async cleanup(): Promise<void> {
     this.sessionChangeListeners.clear()
+    this.statusChangeListeners.clear()
     this.fpsChangeListeners.clear()
     this.removeFpsChangeHandler()
     this.removeAllListeners()

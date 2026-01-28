@@ -42,9 +42,9 @@ export class MpvAdapter {
   }
 
   /**
-   * 将 MPV phase 映射到 PlaybackStatus
+   * 将 MPV phase（字符串字面量）映射到 PlaybackStatus 枚举
    */
-  private static mapPhaseToStatus(phase?: PlayerPhase | MPVStatus['phase']): PlaybackStatus {
+  static mapPhaseToStatus(phase?: string): PlaybackStatus {
     switch (phase) {
       case 'idle': return PlaybackStatus.IDLE
       case 'loading': return PlaybackStatus.LOADING

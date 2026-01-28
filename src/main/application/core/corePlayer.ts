@@ -1,13 +1,12 @@
 import { BrowserWindow, BrowserView, screen } from 'electron'
 import { EventEmitter } from 'events'
-import { PlayerStateMachine, type PlayerState, type PlayerPhase } from '../state/playerState'
+import { PlayerStateMachine, type PlayerPhase } from '../state/playerState'
 import { MpvMediaPlayer } from '../../infrastructure/mpv'
 import { getNSViewPointer, getHWNDPointer } from '../../infrastructure/platform/nativeHelper'
 import { Timeline } from '../timeline/timeline'
 import { RenderManager } from '../../infrastructure/rendering/renderManager'
 import { Media } from '../../domain/models/Media'
 import type { PlaybackSession } from '../../domain/models/Playback'
-import { PlaybackStatus } from '../../domain/models/Playback'
 import type { MediaPlayer, PlayerStatus } from './MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 import { WINDOW_DELAYS } from '../constants'
@@ -37,10 +36,10 @@ export interface CorePlayer extends EventEmitter {
   setVolume(volume: number): Promise<void>
   getCurrentSession(): PlaybackSession | null
   cleanup(): Promise<void>
-  getPlayerState(): PlayerState
+  getPlayerState(): PlayerStatus
   resetState(): void
-  onPlayerState(listener: (state: PlayerState) => void): void
-  offPlayerState(listener: (state: PlayerState) => void): void
+  onPlayerState(listener: (state: PlayerStatus) => void): void
+  offPlayerState(listener: (state: PlayerStatus) => void): void
   sendKey(key: string): Promise<void>
   debugVideoState(): Promise<void>
   debugHdrStatus(): Promise<void>
@@ -54,13 +53,13 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
   private timelineListener?: (payload: { currentTime: number; duration: number; updatedAt: number }) => void
-  private stateMachineStateListener?: (st: PlayerState) => void
+  private stateMachineStateListener?: (st: PlayerStatus) => void
   private pendingResizeTimer: NodeJS.Timeout | null = null
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
   private renderManager: RenderManager | null = null
   private mediaPlayer: MediaPlayer
-  private sessionChangeListener?: (session: PlaybackSession) => void
+  private statusChangeListener?: (status: PlayerStatus) => void
 
   constructor(mediaPlayer?: MediaPlayer) {
     super()
@@ -86,36 +85,16 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     )
     
     // 监听 MediaPlayer 的状态变化，更新 PlayerStateMachine
-    // 当 MpvMediaPlayer 的 controller 发出 'status' 事件时，会更新 session 并触发此回调
-    this.sessionChangeListener = (session: PlaybackSession) => {
-      // 从 session 中提取状态信息，更新 PlayerStateMachine
-      // 注意：这里使用 getStatus() 获取最新状态，因为 session 可能不是最新的
-      const status = this.mediaPlayer.getStatus()
-      if (status) {
-        this.updateFromPlayerStatus(status)
-      } else {
-        // 如果 getStatus() 返回 null，说明 controller 还未初始化
-        // 但从 session 中我们可以获取基本信息来更新状态机
-        const playerStatus: PlayerStatus = {
-          currentTime: session.progress.currentTime,
-          duration: session.progress.duration,
-          volume: session.volume,
-          isPaused: session.status === PlaybackStatus.PAUSED,
-          isSeeking: session.isSeeking,
-          isNetworkBuffering: session.networkBuffering.isBuffering,
-          networkBufferingPercent: session.networkBuffering.bufferingPercent,
-          path: session.media?.uri || null,
-          phase: this.mapPlaybackStatusToPhase(session.status),
-          errorMessage: session.error || undefined
-        }
-        this.stateMachine.updateFromStatus(playerStatus)
-      }
+    // 使用 onStatusChange 直接接收 PlayerStatus，避免中间转换
+    this.statusChangeListener = (status: PlayerStatus) => {
+      // 直接使用 PlayerStatus 更新 PlayerStateMachine
+      this.updateFromPlayerStatus(status)
     }
-    this.mediaPlayer.onSessionChange(this.sessionChangeListener)
+    this.mediaPlayer.onStatusChange(this.statusChangeListener)
     
     // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染，
-    // 同时所有 PlayerState 变化都会经 CorePlayer 再转发一遍给上层（VideoPlayerApp）。
-    this.stateMachineStateListener = (st: PlayerState) => {
+    // 同时所有 PlayerStatus 变化都会经 CorePlayer 再转发一遍给上层（VideoPlayerApp）。
+    this.stateMachineStateListener = (st: PlayerStatus) => {
       this.timeline?.handlePlayerStateChange(st.phase)
       // 确保渲染循环运行（如果还没运行）
       if (this.renderManager && this.shouldStartRenderLoop()) {
@@ -411,10 +390,10 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
         this.stateMachine.off('state', this.stateMachineStateListener)
         this.stateMachineStateListener = undefined
       }
-      // 移除 session change 监听
-      if (this.sessionChangeListener) {
-        this.mediaPlayer.offSessionChange(this.sessionChangeListener)
-        this.sessionChangeListener = undefined
+      // 移除状态变化监听
+      if (this.statusChangeListener) {
+        this.mediaPlayer.offStatusChange(this.statusChangeListener)
+        this.statusChangeListener = undefined
       }
       // FPS 变化监听通过 mediaPlayer.onFpsChange，会在 mediaPlayer.cleanup 中清理
       if (this.videoWindow) {
@@ -435,30 +414,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.stateMachine.updateFromStatus(status)
   }
 
-  /**
-   * 将 PlaybackStatus 映射为 PlayerPhase
-   */
-  private mapPlaybackStatusToPhase(status: PlaybackStatus): PlayerPhase {
-    switch (status) {
-      case PlaybackStatus.IDLE:
-        return 'idle'
-      case PlaybackStatus.LOADING:
-        return 'loading'
-      case PlaybackStatus.PLAYING:
-        return 'playing'
-      case PlaybackStatus.PAUSED:
-        return 'paused'
-      case PlaybackStatus.STOPPED:
-        return 'stopped'
-      case PlaybackStatus.ENDED:
-        return 'ended'
-      case PlaybackStatus.ERROR:
-        return 'error'
-      default:
-        return 'idle'
-    }
-  }
-
   setPhase(phase: PlayerPhase) {
     this.stateMachine.setPhase(phase)
   }
@@ -467,15 +422,15 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.stateMachine.setError(message)
   }
 
-  getPlayerState(): PlayerState {
+  getPlayerState(): PlayerStatus {
     return this.stateMachine.getState()
   }
 
-  onPlayerState(listener: (state: PlayerState) => void) {
+  onPlayerState(listener: (state: PlayerStatus) => void) {
     this.stateMachine.on('state', listener)
   }
 
-  offPlayerState(listener: (state: PlayerState) => void) {
+  offPlayerState(listener: (state: PlayerStatus) => void) {
     this.stateMachine.off('state', listener)
   }
 

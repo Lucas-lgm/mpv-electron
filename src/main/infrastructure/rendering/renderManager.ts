@@ -1,4 +1,4 @@
-import type { PlayerState } from '../../application/state/playerState'
+import type { PlayerStatus } from '../../application/core/MediaPlayer'
 import type { MediaPlayer } from '../../application/core/MediaPlayer'
 
 /**
@@ -7,7 +7,7 @@ import type { MediaPlayer } from '../../application/core/MediaPlayer'
  */
 export class RenderManager {
   private mediaPlayer: MediaPlayer | null = null
-  private getState: () => PlayerState
+  private getState: () => PlayerStatus
   
   // 渲染循环状态
   private renderLoopActive: boolean = false
@@ -32,7 +32,7 @@ export class RenderManager {
   private lastRenderRequestTime: number = 0
   private renderRequestCount: number = 0
 
-  constructor(mediaPlayer: MediaPlayer | null, getState: () => PlayerState) {
+  constructor(mediaPlayer: MediaPlayer | null, getState: () => PlayerStatus) {
     this.mediaPlayer = mediaPlayer
     this.getState = getState
   }
@@ -47,7 +47,7 @@ export class RenderManager {
   /**
    * 统一的渲染判断逻辑（完全数据驱动）
    */
-  private shouldRender(state: PlayerState): boolean {
+  private shouldRender(state: PlayerStatus): boolean {
     // 1. Seek 过程中不渲染
     if (state.isSeeking) {
       return false

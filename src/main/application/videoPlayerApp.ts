@@ -85,10 +85,9 @@ export class VideoPlayerApp {
   private controlWindow: BrowserWindow | null = null
   private isQuitting: boolean = false
   private windowSyncTimer: NodeJS.Timeout | null = null
-  /** 上一次收到的 PlayerState.phase，用于边沿检测（避免 ended 触发多次） */
   private lastPlayerPhase: string = 'idle'
 
-  private readonly onEndedPlayNext = (state: { phase: string; path?: string | null }) => {
+  private readonly onEndedPlayNext = (state: { phase: string; path?: string | null }) => {  // 使用 PlayerStatus 的简化形式
     const prev = this.lastPlayerPhase
     const next = state.phase
     this.lastPlayerPhase = next
@@ -131,8 +130,8 @@ export class VideoPlayerApp {
         await this.corePlayer.setVolume(opts.options.volume)
       }
       if (opts.options.autoResume !== false) {
-        const session = this.corePlayer.getCurrentSession()
-        if (session && session.status !== 'playing') {
+        const state = this.corePlayer.getPlayerState()
+        if (state.phase !== 'playing') {
           await this.corePlayer.resume()
         }
       }
