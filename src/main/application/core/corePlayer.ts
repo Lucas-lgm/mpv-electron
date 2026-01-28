@@ -39,6 +39,7 @@ export interface CorePlayer extends EventEmitter {
   resetStatus(): void
   setPhase(phase: PlayerPhase): void
   setError(message: string): void
+  setSwitching(isSwitching: boolean): void
   onPlayerStatus(listener: (status: PlayerStatus) => void): void
   offPlayerStatus(listener: (status: PlayerStatus) => void): void
   sendKey(key: string): Promise<void>
@@ -394,6 +395,10 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
 
   setError(message: string) {
     this.stateMachine.setError(message)
+  }
+
+  setSwitching(isSwitching: boolean) {
+    this.stateMachine.setSwitching(isSwitching)
   }
 
   getPlayerStatus(): PlayerStatus {

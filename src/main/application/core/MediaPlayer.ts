@@ -13,7 +13,7 @@ import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
  * - 状态机状态输出
  */
 export interface PlayerStatus {
-  phase: PlaybackStatus  // 统一使用 PlaybackStatus 枚举，消除与 PlayerPhase 的重复
+  phase: PlaybackStatus
   currentTime: number
   duration: number
   volume: number
@@ -22,7 +22,8 @@ export interface PlayerStatus {
   isSeeking: boolean
   isNetworkBuffering: boolean
   networkBufferingPercent: number
-  errorMessage?: string  // 统一使用 errorMessage（可选），替代原来的 error: string | null
+  errorMessage?: string
+  isSwitching?: boolean
 }
 
 /**

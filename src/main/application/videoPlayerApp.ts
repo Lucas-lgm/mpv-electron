@@ -244,8 +244,8 @@ export class VideoPlayerApp {
   }
 
   async play(target: PlaylistItem) {
-    // 如果当前有视频在播放，先停止
     if (this.hasActiveVideo()) {
+      this.corePlayer.setSwitching(true)
       try {
         await this.stopPlayback()
         // 等待一小段时间，确保停止操作完成
@@ -268,6 +268,8 @@ export class VideoPlayerApp {
 
     const videoWindow = this.createVideoWindow()
     if (!videoWindow) {
+      // 创建窗口失败，无法继续切换，恢复切换标志
+      this.corePlayer.setSwitching(false)
       return
     }
 
@@ -306,9 +308,12 @@ export class VideoPlayerApp {
           addToPlaylist: false
         }
       })
+      // 播放开始后，切换状态会在第一个有效的 player-status（phase 进入 loading/playing/paused/error）时自动清除
+      // 由 PlayerStateMachine.updateFromStatus() 自动处理
     } catch (error) {
       // 统一使用 player-status 通道承载错误信息（phase=error + errorMessage）
       this.corePlayer.setError(error instanceof Error ? error.message : 'Unknown error')
+      // 错误时，切换状态会在 setError 后的 player-status（phase=error）时自动清除
     }
   }
 

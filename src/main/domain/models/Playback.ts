@@ -44,7 +44,12 @@ export class PlaybackSession {
     public readonly volume: number,
     public readonly networkBuffering: NetworkBufferingState,
     public readonly error: string | null = null,
-    public readonly isSeeking: boolean = false
+    public readonly isSeeking: boolean = false,
+    /**
+     * 是否处于“切换过程”中（从一个媒体切到另一个媒体）
+     * - 这是应用层附加的流程状态，但放在 Session 里便于统一序列化
+     */
+    public readonly isSwitching: boolean = false
   ) {}
 
   /**
@@ -94,7 +99,8 @@ export class PlaybackSession {
     volume: number,
     networkBuffering?: Partial<NetworkBufferingState>,
     error?: string | null,
-    isSeeking?: boolean
+    isSeeking?: boolean,
+    isSwitching?: boolean
   ): PlaybackSession {
     const fullProgress: PlaybackProgress = {
       currentTime: progress.currentTime ?? 0,
@@ -117,7 +123,8 @@ export class PlaybackSession {
       volume,
       buffering,
       error ?? null,
-      isSeeking ?? false
+      isSeeking ?? false,
+      isSwitching ?? false
     )
   }
 }

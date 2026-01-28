@@ -25,17 +25,20 @@
         <div class="error-message">{{ playerError }}</div>
       </div>
     </div>
-    <div v-if="isLoading" class="loading-overlay">
+    <!-- 加载 / 切换 / 跳转 / 缓冲 提示（统一使用一个 overlay，只切换文案） -->
+    <div v-if="isLoading || isSwitchingVideo" class="loading-overlay">
       <div class="loading-content">
         <span class="loading-text">
           {{
-            isNetworkBuffering
-              ? networkBufferingPercent !== null
-                ? `网络缓冲中... ${networkBufferingPercent}%`
-                : '网络缓冲中...'
-              : isSeeking
-                ? '正在跳转...'
-                : '加载中...'
+            isSwitchingVideo
+              ? '正在切换视频...'
+              : isNetworkBuffering
+                  ? networkBufferingPercent !== null
+                    ? `网络缓冲中... ${networkBufferingPercent}%`
+                    : '网络缓冲中...'
+                  : isSeeking
+                    ? '正在跳转...'
+                    : '加载中...'
           }}
         </span>
       </div>
@@ -161,6 +164,8 @@ const networkBufferingPercent = ref<number | null>(null)
 const isScrubbing = ref(false)
 const playerError = ref<string | null>(null)
 
+const isSwitchingVideo = ref(false)
+
 interface PlaylistItem {
   name: string
   path: string
@@ -227,9 +232,11 @@ type PlayerStatusSnapshot = {
   isNetworkBuffering: boolean
   networkBufferingPercent: number
   errorMessage?: string
+  isSwitching?: boolean  // 是否正在切换视频（由后端管理）
 }
 
 const handlePlayVideo = (file: { name: string; path: string }) => {
+  // 更新视频信息（切换状态由后端通过 player-status.isSwitching 管理）
   currentVideoName.value = file.name
   currentPath.value = file.path
 
@@ -250,6 +257,9 @@ const handlePlayVideo = (file: { name: string; path: string }) => {
 const handlePlayerState = (status: PlayerStatusSnapshot) => {
   console.log('status:', status)
   const wasSeeking = isSeeking.value
+  
+  // 更新切换状态（由后端管理）
+  isSwitchingVideo.value = !!status.isSwitching
   
   isSeeking.value = !!status.isSeeking
   isNetworkBuffering.value = !!status.isNetworkBuffering
