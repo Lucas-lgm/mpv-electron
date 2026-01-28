@@ -736,8 +736,6 @@ export interface MPVStatus {
   path: string | null       // 当前文件路径
   phase?: PlayerPhase       // 播放阶段
   isSeeking?: boolean       // 是否正在跳转
-  isCoreIdle?: boolean      // 核心是否空闲
-  isIdleActive?: boolean    // 是否处于激活空闲状态
   isNetworkBuffering?: boolean      // 是否网络缓冲
   networkBufferingPercent?: number  // 网络缓冲百分比
 }
@@ -753,8 +751,6 @@ export interface MPVStatus {
 | `path` | `string \| null` | 是 | 当前文件路径 | `"/video.mp4"` |
 | `phase` | `PlayerPhase` | 否 | 播放阶段 | `"playing"` |
 | `isSeeking` | `boolean` | 否 | 是否正在跳转（辅助状态标志） | `false` |
-| `isCoreIdle` | `boolean` | 否 | 核心是否空闲 | `false` |
-| `isIdleActive` | `boolean` | 否 | 是否激活空闲 | `false` |
 | `isNetworkBuffering` | `boolean` | 否 | 是否网络缓冲 | `true` |
 | `networkBufferingPercent` | `number` | 否 | 网络缓冲百分比 | `75` |
 
@@ -771,8 +767,6 @@ export interface PlayerState {
   path: string | null       // 文件路径
   error: string | null      // 错误信息
   isSeeking: boolean        // 是否跳转中
-  isCoreIdle: boolean       // 核心空闲
-  isIdleActive: boolean     // 激活空闲
   isNetworkBuffering: boolean      // 网络缓冲中
   networkBufferingPercent: number  // 缓冲百分比
 }

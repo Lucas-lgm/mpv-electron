@@ -36,8 +36,6 @@ export interface MPVStatus {
   path: string | null
   phase?: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
   isSeeking?: boolean
-  isCoreIdle?: boolean
-  isIdleActive?: boolean
   isNetworkBuffering?: boolean
   networkBufferingPercent?: number
   /** 最近一次 mpv 错误的简要信息（单行，人类可读） */

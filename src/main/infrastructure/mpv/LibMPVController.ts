@@ -105,8 +105,6 @@ export class LibMPVController extends EventEmitter {
     path: null,
     phase: 'idle',
     isSeeking: false,
-    isCoreIdle: false,
-    isIdleActive: false,
     isNetworkBuffering: false,
     networkBufferingPercent: 0
   }
@@ -767,12 +765,6 @@ export class LibMPVController extends EventEmitter {
             break
           case 'volume':
             this.currentStatus.volume = typeof value === 'number' ? value : 100
-            break
-          case 'core-idle':
-            this.currentStatus.isCoreIdle = !!value
-            break
-          case 'idle-active':
-            this.currentStatus.isIdleActive = !!value
             break
           case 'paused-for-cache':
             this.currentStatus.isNetworkBuffering = !!value

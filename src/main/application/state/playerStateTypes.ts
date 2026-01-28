@@ -8,8 +8,6 @@ export interface PlayerState {
   path: string | null
   error: string | null
   isSeeking: boolean
-  isCoreIdle: boolean
-  isIdleActive: boolean
   isNetworkBuffering: boolean
   networkBufferingPercent: number
 }

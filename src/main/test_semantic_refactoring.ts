@@ -82,11 +82,9 @@ export async function testDomainModels(): Promise<void> {
   const sm = new PlayerStateMachine()
   sm.updateFromStatus({
     ...mpvStatus,
-    isCoreIdle: true,
-    isIdleActive: true
   })
   const state = sm.getState()
-  console.log(`   ✅ updateFromStatus → getState: phase=${state.phase} path=${state.path} isCoreIdle=${state.isCoreIdle}`)
+  console.log(`   ✅ updateFromStatus → getState: phase=${state.phase} path=${state.path}`)
   let emitted = false
   sm.on('state', () => { emitted = true })
   sm.setPhase('paused')

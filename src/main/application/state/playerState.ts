@@ -10,14 +10,9 @@ export type { PlayerState, PlayerPhase } from './playerStateTypes'
 
 type InternalState = {
   session: PlaybackSession
-  isCoreIdle: boolean
-  isIdleActive: boolean
 }
 
-function sessionToPlayerState(
-  session: PlaybackSession,
-  extras: { isCoreIdle: boolean; isIdleActive: boolean }
-): PlayerState {
+function sessionToPlayerState(session: PlaybackSession): PlayerState {
   const phase = session.status as unknown as PlayerPhase
   return {
     phase,
@@ -27,8 +22,6 @@ function sessionToPlayerState(
     path: session.media?.uri ?? null,
     error: session.error,
     isSeeking: session.isSeeking,
-    isCoreIdle: extras.isCoreIdle,
-    isIdleActive: extras.isIdleActive,
     isNetworkBuffering: session.networkBuffering.isBuffering,
     networkBufferingPercent: session.networkBuffering.bufferingPercent
   }
@@ -51,16 +44,11 @@ const logger = createLogger('PlayerStateMachine')
 
 export class PlayerStateMachine extends EventEmitter {
   private state: InternalState = {
-    session: defaultSession(),
-    isCoreIdle: false,
-    isIdleActive: false
+    session: defaultSession()
   }
 
   getState() {
-    return sessionToPlayerState(this.state.session, {
-      isCoreIdle: this.state.isCoreIdle,
-      isIdleActive: this.state.isIdleActive
-    })
+    return sessionToPlayerState(this.state.session)
   }
 
   /**
@@ -80,9 +68,7 @@ export class PlayerStateMachine extends EventEmitter {
       false
     )
     const next: InternalState = {
-      session: nextSession,
-      isCoreIdle: false,
-      isIdleActive: false
+      session: nextSession
     }
     this.setState(next)
   }
@@ -127,9 +113,7 @@ export class PlayerStateMachine extends EventEmitter {
     const overridePhase = this.derivePhase(status)
     const media = status.path ? Media.create(status.path) : null
     const session = MpvAdapter.toPlaybackSession(status, media, { overridePhase })
-    const isCoreIdle = status.isCoreIdle ?? false
-    const isIdleActive = status.isIdleActive ?? false
-    this.setState({ session, isCoreIdle, isIdleActive })
+    this.setState({ session })
   }
 
   private derivePhase(status: MPVStatus): PlayerPhase {
@@ -145,14 +129,8 @@ export class PlayerStateMachine extends EventEmitter {
   private setState(next: InternalState): void {
     const prev = this.state
     this.state = next
-    const prevPs = sessionToPlayerState(prev.session, {
-      isCoreIdle: prev.isCoreIdle,
-      isIdleActive: prev.isIdleActive
-    })
-    const nextPs = sessionToPlayerState(next.session, {
-      isCoreIdle: next.isCoreIdle,
-      isIdleActive: next.isIdleActive
-    })
+    const prevPs = sessionToPlayerState(prev.session)
+    const nextPs = sessionToPlayerState(next.session)
     if (
       prevPs.phase !== nextPs.phase ||
       prevPs.currentTime !== nextPs.currentTime ||

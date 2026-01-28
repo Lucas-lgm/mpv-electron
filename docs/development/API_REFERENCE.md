@@ -133,8 +133,6 @@ interface PlayerState {
   path: string | null       // 文件路径
   error: string | null      // 错误信息
   isSeeking: boolean        // 是否跳转中
-  isCoreIdle: boolean       // 核心空闲
-  isIdleActive: boolean     // 激活空闲
   isNetworkBuffering: boolean      // 网络缓冲中
   networkBufferingPercent: number  // 缓冲百分比
 }
@@ -161,8 +159,6 @@ interface MPVStatus {
   path: string | null       // 当前文件路径
   phase?: PlayerPhase       // 播放阶段
   isSeeking?: boolean       // 是否正在跳转
-  isCoreIdle?: boolean      // 核心是否空闲
-  isIdleActive?: boolean    // 是否处于激活空闲状态
   isNetworkBuffering?: boolean      // 是否网络缓冲
   networkBufferingPercent?: number  // 网络缓冲百分比
 }
