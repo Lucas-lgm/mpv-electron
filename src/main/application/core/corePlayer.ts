@@ -27,7 +27,7 @@ const WINDOW_PREPARE_DELAYS = {
 export interface CorePlayer extends EventEmitter {
   setVideoWindow(window: BrowserWindow | null): Promise<void>
   ensureMediaPlayerReadyForPlayback(): Promise<void>
-  play(media: Media): Promise<void>
+  play(media: Media, startTime?: number): Promise<void>
   pause(): Promise<void>
   resume(): Promise<void>
   stop(): Promise<void>
@@ -235,14 +235,14 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.stateMachine.resetToIdle()
   }
 
-  async play(media: Media): Promise<void> {
+  async play(media: Media, startTime?: number): Promise<void> {
     const windowId = await this.prepareMediaPlayerForPlayback()
     if (!windowId) {
       throw new Error('Failed to prepare media player for playback')
     }
     try {
       this.resetStatus()
-      await this.mediaPlayer.play(media)
+      await this.mediaPlayer.play(media, startTime)
       // 播放后同步窗口大小（此时播放器已初始化）
       await this.syncWindowSize()
     } catch (error) {

@@ -31,7 +31,12 @@ export interface PlayerStatus {
  */
 export interface MediaPlayer extends EventEmitter {
   // 播放控制
-  play(media: Media): Promise<void>
+  /**
+   * 播放媒体
+   * @param media 媒体对象
+   * @param startTime 起播时间（秒，可选）。如果提供，则从指定时间开始播放。
+   */
+  play(media: Media, startTime?: number): Promise<void>
   pause(): Promise<void>
   resume(): Promise<void>
   stop(): Promise<void>

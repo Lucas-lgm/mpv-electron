@@ -156,8 +156,11 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
 
   /**
    * 播放媒体
+   * @param media 媒体对象
+   * @param startTime 起播时间（秒，可选）。如果提供，则通过 libmpv 的 loadfile start=xxx
+   *                  一次性从指定时间开始播放，而不是先从 0 再 seek。
    */
-  async play(media: Media): Promise<void> {
+  async play(media: Media, startTime?: number): Promise<void> {
     await this.ensureInitialized()
 
     if (!this.controller) {
@@ -165,13 +168,13 @@ export class MpvMediaPlayer extends EventEmitter implements MediaPlayer {
     }
 
     this.currentMedia = media
-    await this.controller.loadFile(media.uri)
+    await this.controller.loadFile(media.uri, startTime)
 
     // 更新会话状态为加载中
     const loadingSession = PlaybackSession.create(
       media,
       PlaybackStatus.LOADING,
-      { currentTime: 0, duration: 0 },
+      { currentTime: startTime ?? 0, duration: 0 },
       100,
       { isBuffering: false, bufferingPercent: 0 }
     )

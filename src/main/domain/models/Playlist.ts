@@ -10,6 +10,11 @@ export interface PlaylistEntry {
   readonly media: Media
   readonly addedAt: Date
   readonly playedAt?: Date
+  /**
+   * 起播时间（秒，可选）
+   * - 用于记忆播放 / 指定从某个时间点开始播放
+   */
+  readonly startTime?: number
 }
 
 /**
@@ -22,11 +27,12 @@ export class Playlist {
   /**
    * 添加媒体到播放列表
    */
-  add(media: Media): PlaylistEntry {
+  add(media: Media, startTime?: number): PlaylistEntry {
     const entry: PlaylistEntry = {
       id: `entry-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       media,
-      addedAt: new Date()
+      addedAt: new Date(),
+      startTime
     }
     this.entries.push(entry)
     return entry

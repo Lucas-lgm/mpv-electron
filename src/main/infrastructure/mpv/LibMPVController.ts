@@ -425,16 +425,36 @@ export class LibMPVController extends EventEmitter {
 
   /**
    * 加载文件
+   *
+   * @param path      媒体路径
+   * @param startTime 起播时间（秒，可选）。如果提供，则使用 mpv 的 loadfile start=xxx
    */
-  async loadFile(path: string): Promise<void> {
+  async loadFile(path: string, startTime?: number): Promise<void> {
     if (this.instanceId === null) {
       throw new Error('MPV instance not initialized')
     }
 
     try {
-      this.binding.loadFile(this.instanceId, path)
+      const hasStartTime =
+        typeof startTime === 'number' &&
+        Number.isFinite(startTime) &&
+        startTime > 0
+
+      if (hasStartTime) {
+        this.binding.command(this.instanceId, [
+          'loadfile',
+          path,
+          'replace',
+          `start=${startTime}`
+        ])
+        this.currentStatus.position = startTime
+      } else {
+        // 兼容原有行为：不带起播时间时，直接用底层 loadFile
+        this.binding.loadFile(this.instanceId, path)
+        this.currentStatus.position = 0
+      }
+
       this.currentStatus.path = path
-      this.currentStatus.position = 0
       this.currentStatus.duration = 0
       this.currentStatus.isSeeking = false
       this.currentStatus.isNetworkBuffering = false

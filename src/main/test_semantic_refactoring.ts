@@ -91,7 +91,7 @@ export async function testDomainModels(): Promise<void> {
     isNetworkBuffering: mpvStatus.isNetworkBuffering ?? false,
     networkBufferingPercent: mpvStatus.networkBufferingPercent ?? 0,
     path: mpvStatus.path,
-    phase: mpvStatus.phase ?? 'idle',
+    phase: mpvStatus.phase as PlaybackStatus,
     errorMessage: mpvStatus.errorMessage
   }
   sm.updateFromStatus(playerStatus)
@@ -99,7 +99,7 @@ export async function testDomainModels(): Promise<void> {
   console.log(`   ✅ updateFromStatus → getState: phase=${state.phase} path=${state.path}`)
   let emitted = false
   sm.on('state', () => { emitted = true })
-  sm.setPhase('paused')
+  sm.setPhase(PlaybackStatus.PAUSED)
   console.log(`   ✅ setPhase → emit: ${emitted ? 'yes' : 'no'}`)
 
   console.log('\n✅ ========== 领域模型测试完成 ==========\n')

@@ -17,6 +17,11 @@ export interface SelectVideoFileRequest {
 export interface PlayVideoRequest {
   name: string
   path: string
+  /**
+   * 起播时间（秒，可选）
+   * - 由前端传入，用于记忆播放 / 继续播放
+   */
+  startTime?: number
 }
 
 /**

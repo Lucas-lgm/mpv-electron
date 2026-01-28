@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { WindowManager } from './windows/windowManager'
 import type { CorePlayer } from './core/corePlayer'
+import type { PlayerStatus } from './core/MediaPlayer'
+import type { PlayVideoRequest } from './command/ipcTypes'
 import { Playlist } from '../domain/models/Playlist'
 import { Media } from '../domain/models/Media'
 import { createLogger } from '../infrastructure/logging'
@@ -13,11 +15,18 @@ const logger = createLogger('VideoPlayerApp')
 export interface PlaylistItem {
   path: string
   name: string
+  /**
+   * 起播时间（秒，可选）
+   * - 用于记忆播放 / 指定从某个时间点开始播放
+   */
+  startTime?: number
 }
 
 class ConfigManager {
   private volume: number = 100
   private readonly configPath: string
+  // 记忆播放进度：path -> lastPositionInSeconds
+  private playbackPositions: Record<string, number> = {}
 
   constructor() {
     const userData = app.getPath('userData')
@@ -53,6 +62,15 @@ class ConfigManager {
       if (typeof data.volume === 'number') {
         this.volume = data.volume
       }
+      if (data.playbackPositions && typeof data.playbackPositions === 'object') {
+        const map: Record<string, number> = {}
+        for (const [path, pos] of Object.entries(data.playbackPositions)) {
+          if (typeof pos === 'number' && isFinite(pos) && pos > 0) {
+            map[path] = pos
+          }
+        }
+        this.playbackPositions = map
+      }
     } catch {
     }
   }
@@ -60,7 +78,8 @@ class ConfigManager {
   private save() {
     try {
       const data = {
-        volume: this.volume
+        volume: this.volume,
+        playbackPositions: this.playbackPositions
       }
       writeFileSync(this.configPath, JSON.stringify(data), 'utf-8')
     } catch {
@@ -75,6 +94,23 @@ class ConfigManager {
     this.volume = value
     this.save()
   }
+
+  /**
+   * 获取某个媒体的上次播放进度（秒）
+   */
+  getLastPosition(path: string): number | undefined {
+    return this.playbackPositions[path]
+  }
+
+  /**
+   * 记录某个媒体的播放进度（秒）
+   */
+  setLastPosition(path: string, position: number): void {
+    if (!path) return
+    if (typeof position !== 'number' || !isFinite(position) || position <= 0) return
+    this.playbackPositions[path] = position
+    this.save()
+  }
 }
 
 export class VideoPlayerApp {
@@ -87,7 +123,7 @@ export class VideoPlayerApp {
   private windowSyncTimer: NodeJS.Timeout | null = null
   private lastPlayerPhase: string = 'idle'
 
-  private readonly onEndedPlayNext = (status: { phase: string; path?: string | null }) => {  // 使用 PlayerStatus 的简化形式
+  private readonly onEndedPlayNext = (status: PlayerStatus) => {
     const prev = this.lastPlayerPhase
     const next = status.phase
     this.lastPlayerPhase = next
@@ -96,7 +132,34 @@ export class VideoPlayerApp {
       this.playNextFromPlaylist().catch(() => {})
     }
   }
-  private readonly onPlayerStatusBroadcast = (status: unknown) => {
+
+  /**
+   * 业务侧监听：记忆播放进度 + 转发给前端
+   */
+  private readonly onPlayerStatusBroadcast = (status: PlayerStatus) => {
+    // 1) 先做业务：记忆播放进度
+    const path = status.path
+    const currentTime = status.currentTime
+    if (
+      path &&
+      typeof currentTime === 'number' &&
+      isFinite(currentTime) &&
+      currentTime > 0
+    ) {
+      // 只在「稳定阶段」记录进度，避免 loading 抖动：
+      // playing / paused / stopped / ended / error
+      if (
+        status.phase === 'playing' ||
+        status.phase === 'paused' ||
+        status.phase === 'stopped' ||
+        status.phase === 'ended' ||
+        status.phase === 'error'
+      ) {
+        this.config.setLastPosition(path, currentTime)
+      }
+    }
+
+    // 2) 再广播给前端
     this.sendToPlaybackUIs('player-status', status)
   }
 
@@ -112,15 +175,39 @@ export class VideoPlayerApp {
   async playMedia(opts: {
     mediaUri: string
     mediaName?: string
-    options?: { volume?: number; autoResume?: boolean; addToPlaylist?: boolean }
+    options?: {
+      volume?: number
+      autoResume?: boolean
+      addToPlaylist?: boolean
+      /**
+       * 显式起播时间（秒，可选）
+       * - 优先级高于后端记忆的播放进度
+       */
+      startTime?: number
+    }
   }): Promise<void> {
     const media = Media.create(opts.mediaUri, { title: opts.mediaName })
     const addToPlaylist = opts.options?.addToPlaylist !== false
     if (addToPlaylist) {
-      this.playlist.add(media)
+      this.playlist.add(media, opts.options?.startTime)
       this.playlist.setCurrentByUri(media.uri)
     }
-    await this.corePlayer.play(media)
+
+    // 起播时间优先级：
+    // 1) 显式传入的 options.startTime（通常来自前端记忆）
+    // 2) 后端本地记忆的播放进度（ConfigManager）
+    let startTime: number | undefined
+    const explicitStart = opts.options?.startTime
+    if (typeof explicitStart === 'number' && isFinite(explicitStart) && explicitStart > 0) {
+      startTime = explicitStart
+    } else {
+      const lastPosition = this.config.getLastPosition(media.uri)
+      if (typeof lastPosition === 'number' && isFinite(lastPosition) && lastPosition > 0) {
+        startTime = lastPosition
+      }
+    }
+
+    await this.corePlayer.play(media, startTime)
     if (opts.options) {
       if (opts.options.volume !== undefined) {
         await this.corePlayer.setVolume(opts.options.volume)
@@ -212,14 +299,15 @@ export class VideoPlayerApp {
   getList(): PlaylistItem[] {
     return this.playlist.getAll().map((e) => ({
       path: e.media.uri,
-      name: e.media.displayName
+      name: e.media.displayName,
+      startTime: e.startTime
     }))
   }
 
   setList(items: PlaylistItem[]): void {
     this.playlist.clear()
     for (const it of items) {
-      this.playlist.add(Media.create(it.path, { title: it.name }))
+      this.playlist.add(Media.create(it.path, { title: it.name }), it.startTime)
     }
     if (items.length > 0) this.playlist.setCurrentByIndex(0)
   }
@@ -230,20 +318,36 @@ export class VideoPlayerApp {
 
   getCurrent(): PlaylistItem | null {
     const cur = this.playlist.getCurrent()
-    return cur ? { path: cur.media.uri, name: cur.media.displayName } : null
+    return cur
+      ? {
+          path: cur.media.uri,
+          name: cur.media.displayName
+          // startTime 由前端或 config 决定，这里不反推
+        }
+      : null
   }
 
   next(): PlaylistItem | null {
     const n = this.playlist.next()
-    return n ? { path: n.media.uri, name: n.media.displayName } : null
+    return n
+      ? {
+          path: n.media.uri,
+          name: n.media.displayName
+        }
+      : null
   }
 
   prev(): PlaylistItem | null {
     const p = this.playlist.previous()
-    return p ? { path: p.media.uri, name: p.media.displayName } : null
+    return p
+      ? {
+          path: p.media.uri,
+          name: p.media.displayName
+        }
+      : null
   }
 
-  async play(target: PlaylistItem) {
+  async play(target: PlaylistItem, startTimeOverride?: number) {
     if (this.hasActiveVideo()) {
       this.corePlayer.setSwitching(true)
       try {
@@ -298,6 +402,12 @@ export class VideoPlayerApp {
       path: target.path
     })
 
+    // 起播时间：优先使用显式 override，其次使用 PlaylistItem 自带的 startTime
+    const effectiveStartTime =
+      typeof startTimeOverride === 'number' && isFinite(startTimeOverride) && startTimeOverride > 0
+        ? startTimeOverride
+        : target.startTime
+
     try {
       await this.playMedia({
         mediaUri: target.path,
@@ -305,7 +415,8 @@ export class VideoPlayerApp {
         options: {
           volume: this.config.getVolume(),
           autoResume: true,
-          addToPlaylist: false
+          addToPlaylist: false,
+          startTime: effectiveStartTime
         }
       })
       // 播放开始后，切换状态会在第一个有效的 player-status（phase 进入 loading/playing/paused/error）时自动清除
@@ -351,13 +462,20 @@ export class VideoPlayerApp {
   // ========== IPC 层调用的业务方法（封装业务逻辑，避免 ipcHandlers 包含业务） ==========
 
   /** 处理 play-video IPC：添加到列表（如不存在）、设为当前、播放、广播列表更新 */
-  async handlePlayVideo(file: { name: string; path: string }): Promise<void> {
+  async handlePlayVideo(file: PlayVideoRequest): Promise<void> {
     const currentList = this.getList()
     if (!currentList.some(item => item.path === file.path)) {
-      this.setList([...currentList, { name: file.name, path: file.path }])
+      this.setList([
+        ...currentList,
+        {
+          name: file.name,
+          path: file.path,
+          startTime: file.startTime
+        }
+      ])
     }
     this.setCurrentByPath(file.path)
-    await this.play({ path: file.path, name: file.name })
+    await this.play({ path: file.path, name: file.name, startTime: file.startTime })
     this.broadcastPlaylistUpdated()
   }
 
