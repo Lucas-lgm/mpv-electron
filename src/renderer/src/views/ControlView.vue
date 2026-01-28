@@ -217,7 +217,7 @@ const isWindows =
   typeof window.electronAPI !== 'undefined' &&
   window.electronAPI.platform === 'win32'
 
-type PlayerState = {
+type PlayerStatusSnapshot = {
   phase: 'idle' | 'loading' | 'playing' | 'paused' | 'stopped' | 'ended' | 'error'
   currentTime: number
   duration: number
@@ -247,21 +247,21 @@ const handlePlayVideo = (file: { name: string; path: string }) => {
   isLoading.value = true
 }
 
-const handlePlayerState = (state: PlayerState) => {
-  console.log('state:', state)
+const handlePlayerState = (status: PlayerStatusSnapshot) => {
+  console.log('status:', status)
   const wasSeeking = isSeeking.value
   
-  isSeeking.value = !!state.isSeeking
-  isNetworkBuffering.value = !!state.isNetworkBuffering
+  isSeeking.value = !!status.isSeeking
+  isNetworkBuffering.value = !!status.isNetworkBuffering
   networkBufferingPercent.value =
-    typeof state.networkBufferingPercent === 'number' ? state.networkBufferingPercent : null
-  isLoading.value = state.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
+    typeof status.networkBufferingPercent === 'number' ? status.networkBufferingPercent : null
+  isLoading.value = status.phase === 'loading' || isSeeking.value || isNetworkBuffering.value
   const wasPlaying = isPlaying.value
-  isPlaying.value = state.phase === 'playing'
+  isPlaying.value = status.phase === 'playing'
 
   // 记录错误信息（由后端通过 PlayerState.error 传递而来）
-  if (state.phase === 'error') {
-    playerError.value = state.errorMessage || '播放出错'
+  if (status.phase === 'error') {
+    playerError.value = status.errorMessage || '播放出错'
     // 错误时也同步一下标题，避免依赖额外的 player-error 通道
     currentVideoName.value = `播放出错: ${playerError.value}`
   } else {
@@ -270,19 +270,19 @@ const handlePlayerState = (state: PlayerState) => {
   
   // 判断是否应该显示黑色背景（只在视频真正开始播放或暂停时，背景才透明）
   isVideoReady.value = 
-    state.phase === 'playing' || 
-    state.phase === 'paused'
+    status.phase === 'playing' || 
+    status.phase === 'paused'
   
   // 使用 composable 处理播放状态变化
   handlePlayerStateChange(wasPlaying)
   
   // 更新 duration（只在有有效值时更新，避免覆盖）
-  if (typeof state.duration === 'number' && state.duration > 0) {
-    duration.value = state.duration
+  if (typeof status.duration === 'number' && status.duration > 0) {
+    duration.value = status.duration
   }
   
   // 处理播放结束状态：将 currentTime 设置为 duration
-  if (state.phase === 'ended') {
+  if (status.phase === 'ended') {
     if (duration.value > 0) {
       currentTimeAdjustable.applyServerState(duration.value)
     }
@@ -295,23 +295,23 @@ const handlePlayerState = (state: PlayerState) => {
   }
   
   // 更新 currentTime（只在非拖动、非跳转状态下更新，且不是播放结束状态）
-  if (typeof state.currentTime === 'number' && !isScrubbing.value && !isSeeking.value && state.phase !== 'ended') {
-    currentTimeAdjustable.applyServerState(state.currentTime)
+  if (typeof status.currentTime === 'number' && !isScrubbing.value && !isSeeking.value && status.phase !== 'ended') {
+    currentTimeAdjustable.applyServerState(status.currentTime)
   }
   
-  if (typeof state.volume === 'number') {
+  if (typeof status.volume === 'number') {
     // eslint-disable-next-line no-console
-    console.log('[ControlView] handlePlayerState volume from backend', state.volume)
-    volumeAdjustable.applyServerState(state.volume)
+    console.log('[ControlView] handlePlayerState volume from backend', status.volume)
+    volumeAdjustable.applyServerState(status.volume)
   }
-  if (typeof state.path === 'string') {
-    currentPath.value = state.path
-    const found = playlist.value.find((item: PlaylistItem) => item.path === state.path)
+  if (typeof status.path === 'string') {
+    currentPath.value = status.path
+    const found = playlist.value.find((item: PlaylistItem) => item.path === status.path)
     if (found) {
       currentVideoName.value = found.name
     } else {
-      const parts = state.path.split(/[/\\]/)
-      currentVideoName.value = parts[parts.length - 1] || state.path
+      const parts = status.path.split(/[/\\]/)
+      currentVideoName.value = parts[parts.length - 1] || status.path
     }
   }
 }

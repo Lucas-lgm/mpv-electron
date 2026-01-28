@@ -6,8 +6,6 @@ import type { PlayerStatus } from '../core/MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 
 export type { PlayerPhase } from './playerStateTypes'
-// PlayerState 已合并到 PlayerStatus，保留导出以保持向后兼容
-export type { PlayerStatus as PlayerState } from '../core/MediaPlayer'
 
 type InternalState = {
   session: PlaybackSession

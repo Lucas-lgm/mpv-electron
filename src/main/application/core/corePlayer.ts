@@ -38,9 +38,7 @@ export interface CorePlayer extends EventEmitter {
   cleanup(): Promise<void>
   getPlayerStatus(): PlayerStatus
   resetStatus(): void
-  /** 直接驱动状态机：设置阶段（用于业务侧纠偏/兜底） */
   setPhase(phase: PlayerPhase): void
-  /** 直接驱动状态机：设置错误（统一走 player-status） */
   setError(message: string): void
   onPlayerStatus(listener: (status: PlayerStatus) => void): void
   offPlayerStatus(listener: (status: PlayerStatus) => void): void
@@ -262,11 +260,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       await this.mediaPlayer.play(media)
       // 播放后同步窗口大小（此时播放器已初始化）
       await this.syncWindowSize()
-      // 检查是否需要启动渲染循环
-      const currentStatus = this.getPlayerStatus()
-      if (currentStatus.phase === 'playing' && this.renderManager) {
-        this.renderManager.start()
-      }
     } catch (error) {
       throw error
     }
