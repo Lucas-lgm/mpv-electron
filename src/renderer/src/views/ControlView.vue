@@ -375,7 +375,9 @@ const playFromPlaylist = (item: PlaylistItem) => {
   if (window.electronAPI) {
     window.electronAPI.send('play-video', {
       name: item.name,
-      path: item.path
+      path: item.path,
+      // 将后端反推的起播时间传回主进程，用于记忆播放
+      startTime: item.startTime
     })
   }
 }

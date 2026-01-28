@@ -193,9 +193,6 @@ export class VideoPlayerApp {
       this.playlist.setCurrentByUri(media.uri)
     }
 
-    // 起播时间优先级：
-    // 1) 显式传入的 options.startTime（通常来自前端记忆）
-    // 2) 后端本地记忆的播放进度（ConfigManager）
     let startTime: number | undefined
     const explicitStart = opts.options?.startTime
     if (typeof explicitStart === 'number' && isFinite(explicitStart) && explicitStart > 0) {

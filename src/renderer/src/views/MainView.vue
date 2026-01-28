@@ -335,6 +335,7 @@ const handleNasFilePlay = (file: any) => {
   window.electronAPI.send('play-video', {
     name: file.name,
     path: playPath
+    // 这里暂不传 startTime，首次播放从头开始，记忆进度由后端在播放过程中记录
   })
 }
 
@@ -436,6 +437,7 @@ const handlePlayVideo = (video: MediaResource) => {
   window.electronAPI.send('play-video', {
     name: video.name,
     path: playPath
+    // 同上，起播时间默认为 0，由后端记忆后续进度
   })
 }
 

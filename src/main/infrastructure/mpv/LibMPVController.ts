@@ -427,29 +427,39 @@ export class LibMPVController extends EventEmitter {
    * 加载文件
    *
    * @param path      媒体路径
-   * @param startTime 起播时间（秒，可选）。如果提供，则使用 mpv 的 loadfile start=xxx
+   * @param startTime 起播时间（秒，可选）。
+   *
+   * 说明：
+   * - mpv 支持通过 `loadfile` 命令的 `start=XXX` 参数从指定时间起播：
+   *   `["loadfile", "video.mp4", "replace", "start=90"]`
+   * - 这里直接使用 binding.command 调用该命令。
    */
   async loadFile(path: string, startTime?: number): Promise<void> {
     if (this.instanceId === null) {
       throw new Error('MPV instance not initialized')
     }
 
-    try {
-      const hasStartTime =
-        typeof startTime === 'number' &&
-        Number.isFinite(startTime) &&
-        startTime > 0
+    // mpv 的 start 参数要求整数秒，这里统一用非负整数秒
+    const start = startTime ?? 0
+    const startInt = Math.max(0, Math.floor(start))
 
-      if (hasStartTime) {
-        this.binding.command(this.instanceId, [
+    try {
+      if (start > 0) {
+        // 用户希望能直接在 loadfile 中指定 start 时间，而不是使用 seek
+        // 这样可以避免先加载再跳转带来的性能损耗和画面闪烁
+        // 格式：["loadfile", path, "replace", "start=XXX"]
+        // 注意：mpv 0.38+ 增加了 index 参数，位于 flags 和 options 之间
+        // 新格式：["loadfile", path, "replace", <index>, "options"]
+        await this.binding.command(this.instanceId, [
           'loadfile',
           path,
           'replace',
-          `start=${startTime}`
+          '-1', // playlist index: -1 表示自动/追加，这里作为占位符以支持后续的 options
+          `start=${start}`
         ])
-        this.currentStatus.position = startTime
+        this.currentStatus.position = start
       } else {
-        // 兼容原有行为：不带起播时间时，直接用底层 loadFile
+        // 没有起播时间时，直接用底层 loadFile
         this.binding.loadFile(this.instanceId, path)
         this.currentStatus.position = 0
       }
