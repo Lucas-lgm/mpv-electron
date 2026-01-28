@@ -1,4 +1,4 @@
-import { runApp, getWindowManager } from './application/bootstrap'
+import { runApp } from './application/bootstrap'
 
 if (process.env.NODE_ENV === 'development') {
   import('./test_semantic_refactoring').then(async ({ testDomainModels }) => {
@@ -10,5 +10,3 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 runApp()
-
-export { getWindowManager }
