@@ -36,12 +36,3 @@ export const UI_DELAYS = {
   CONTROL_BAR_HIDE_DELAY_MS: 100,
 } as const
 
-/**
- * Timeline 配置
- */
-export const TIMELINE_CONFIG = {
-  /** 默认更新间隔（毫秒） */
-  DEFAULT_INTERVAL_MS: 100,
-  /** Seek 保护期（毫秒） */
-  SEEK_PROTECTION_PERIOD_MS: 2000,
-} as const

@@ -96,9 +96,6 @@ export class VideoPlayerApp {
       this.playNextFromPlaylist().catch(() => {})
     }
   }
-  private readonly onVideoTimeUpdate = (payload: unknown) => {
-    this.sendToPlaybackUIs('video-time-update', payload)
-  }
   private readonly onPlayerStatusBroadcast = (status: unknown) => {
     this.sendToPlaybackUIs('player-status', status)
   }
@@ -108,7 +105,6 @@ export class VideoPlayerApp {
     this.config = new ConfigManager()
     this.playlist = new Playlist()
     this.corePlayer.onPlayerStatus(this.onEndedPlayNext)
-    this.corePlayer.on('video-time-update', this.onVideoTimeUpdate)
     this.corePlayer.on('player-status', this.onPlayerStatusBroadcast)
   }
 
@@ -174,7 +170,6 @@ export class VideoPlayerApp {
   /** 移除对 CorePlayer 的监听，在 cleanup 前调用，避免泄漏 */
   private releaseCorePlayerListeners(): void {
     this.corePlayer.offPlayerStatus(this.onEndedPlayNext)
-    this.corePlayer.off('video-time-update', this.onVideoTimeUpdate)
     this.corePlayer.off('player-status', this.onPlayerStatusBroadcast)
   }
 
@@ -524,13 +519,6 @@ export class VideoPlayerApp {
   }
 
   /** 转发视频时间更新到视频窗口（用于 renderer → main → video window 的转发） */
-  forwardVideoTimeUpdate(data: { currentTime: number; duration: number }): void {
-    const videoWindow = this.windowManager.getWindow('video')
-    if (videoWindow) {
-      videoWindow.webContents.send('video-time-update', data)
-    }
-  }
-
   /** 转发视频结束到视频窗口 */
   forwardVideoEnded(): void {
     const videoWindow = this.windowManager.getWindow('video')

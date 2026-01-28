@@ -3,7 +3,6 @@ import { EventEmitter } from 'events'
 import { PlayerStateMachine, type PlayerPhase } from '../state/playerState'
 import { MpvMediaPlayer } from '../../infrastructure/mpv'
 import { getNSViewPointer, getHWNDPointer } from '../../infrastructure/platform/nativeHelper'
-import { Timeline } from '../timeline/timeline'
 import { RenderManager } from '../../infrastructure/rendering/renderManager'
 import { Media } from '../../domain/models/Media'
 import type { PlaybackSession } from '../../domain/models/Playback'
@@ -53,8 +52,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   private videoWindow: BrowserWindow | null = null
   private isCleaningUp: boolean = false
   private stateMachine = new PlayerStateMachine()
-  private timeline: Timeline | null = null
-  private timelineListener?: (payload: { currentTime: number; duration: number; updatedAt: number }) => void
   private stateMachineStateListener?: (status: PlayerStatus) => void
   private pendingResizeTimer: NodeJS.Timeout | null = null
   private lastPhysicalWidth: number = -1
@@ -67,18 +64,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     super()
     // 支持依赖注入，默认使用 MpvMediaPlayer
     this.mediaPlayer = mediaPlayer || new MpvMediaPlayer()
-    
-    this.timeline = new Timeline({
-      interval: 100,
-      getStatus: () => {
-        // 直接返回 PlayerStatus，Timeline 已支持
-        return this.getStatus()
-      }
-    })
-    this.timelineListener = (payload) => {
-      this.emit('video-time-update', payload)
-    }
-    this.timeline.on('timeline', this.timelineListener)
     
     // 初始化渲染管理器（使用 MediaPlayer）
     this.renderManager = new RenderManager(
@@ -97,7 +82,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染，
     // 同时所有 PlayerStatus 变化都会经 CorePlayer 再转发一遍给上层（VideoPlayerApp）。
     this.stateMachineStateListener = (status: PlayerStatus) => {
-      this.timeline?.handlePlayerStateChange(status.phase)
       // 确保渲染循环运行（如果还没运行）
       if (this.renderManager && this.shouldStartRenderLoop()) {
         this.renderManager.start()
@@ -341,12 +325,10 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   }
 
   async seek(time: number): Promise<void> {
-    this.timeline?.markSeek(time)
     await this.mediaPlayer.seek(time)
     const status = this.mediaPlayer.getStatus()
     if (status) {
       this.updateFromPlayerStatus(status)
-      await this.timeline?.broadcastTimeline({ currentTime: time, duration: status.duration })
     }
   }
 
@@ -379,10 +361,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
         clearTimeout(this.pendingResizeTimer)
         this.pendingResizeTimer = null
       }
-      if (this.timeline && this.timelineListener) {
-        this.timeline.off('timeline', this.timelineListener)
-        this.timelineListener = undefined
-      }
       if (this.stateMachine && this.stateMachineStateListener) {
         this.stateMachine.off('state', this.stateMachineStateListener)
         this.stateMachineStateListener = undefined
@@ -396,7 +374,6 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       if (this.videoWindow) {
         this.videoWindow.removeAllListeners('resize')
       }
-      this.timeline?.dispose()
       await this.mediaPlayer.cleanup()
     } finally {
       this.isCleaningUp = false
