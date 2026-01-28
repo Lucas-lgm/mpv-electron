@@ -443,6 +443,12 @@ export class LibMPVController extends EventEmitter {
     const start = startTime ?? 0
 
     try {
+      // 启用强制黑屏模式，以清除上一视频的残留帧
+      // mpv_set_force_black_mode 会触发一次立即渲染（清空缓冲区为黑色）
+      this.setForceBlackMode(true)
+      // 给一点时间让渲染线程完成清除操作（避免 async/await 竞争导致的闪烁）
+      await new Promise(resolve => setTimeout(resolve, 30))
+
       if (start > 0) {
         // 用户希望能直接在 loadfile 中指定 start 时间，而不是使用 seek
         // 这样可以避免先加载再跳转带来的性能损耗和画面闪烁
@@ -469,6 +475,7 @@ export class LibMPVController extends EventEmitter {
       this.currentStatus.isNetworkBuffering = false
       this.currentStatus.networkBufferingPercent = 0
     } catch (error) {
+      this.setForceBlackMode(false)
       throw new Error(`Failed to load file: ${error}`)
     }
   }
@@ -857,6 +864,8 @@ export class LibMPVController extends EventEmitter {
       case MPV_EVENT_PLAYBACK_RESTART: {
         this.currentStatus.isSeeking = false
         this.emit('status', { ...this.currentStatus })
+        // 播放重新开始（或新文件开始播放）时，关闭黑屏模式，显示视频
+        this.setForceBlackMode(false)
         break
       }
       case MPV_EVENT_END_FILE: {
@@ -868,7 +877,7 @@ export class LibMPVController extends EventEmitter {
           this.currentStatus.isNetworkBuffering = false
           this.currentStatus.networkBufferingPercent = 0
           this.emit('status', { ...this.currentStatus })
-          // this.setForceBlackMode(true)
+          this.setForceBlackMode(true)
         } else if (reason === MPV_END_FILE_REASON_EOF) {
           this.currentStatus.phase = 'ended'
           this.currentStatus.isSeeking = false

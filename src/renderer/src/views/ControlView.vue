@@ -303,6 +303,8 @@ const handlePlayerState = (status: PlayerStatusSnapshot) => {
   if (wasSeeking && !isSeeking.value && isScrubbing.value) {
     isScrubbing.value = false
   }
+
+  // console.log('[ControlView] handlePlayerState phase',status, isScrubbing.value, isSeeking.value)
   
   // 更新 currentTime（只在非拖动、非跳转状态下更新，且不是播放结束状态）
   if (typeof status.currentTime === 'number' && !isScrubbing.value && !isSeeking.value && status.phase !== 'ended') {
