@@ -184,8 +184,8 @@ window.electronAPI.send('debug-hdr-status')
 #### 主进程 → 渲染进程
 ```typescript
 // 渲染进程中接收消息
-window.electronAPI.on('player-state', (state) => {
-  console.log('播放器状态更新:', state)
+window.electronAPI.on('player-status', (status) => {
+  console.log('播放器状态更新:', status)
 })
 
 window.electronAPI.on('playlist-updated', (playlist) => {
@@ -295,13 +295,13 @@ const playerState = ref(null)
 
 onMounted(() => {
   // 监听播放器状态
-  window.electronAPI.on('player-state', (state) => {
-    playerState.value = state
+  window.electronAPI.on('player-status', (status) => {
+    playerStatus.value = status
   })
 })
 
 onUnmounted(() => {
-  window.electronAPI.removeListener('player-state')
+  window.electronAPI.removeListener('player-status')
 })
 
 // 控制播放

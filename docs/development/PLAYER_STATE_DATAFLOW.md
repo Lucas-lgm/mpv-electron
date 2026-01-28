@@ -62,19 +62,19 @@ flowchart LR
   LC -- MPVStatus (status事件) --> MP
   MP -- PlaybackSession (session-change事件) --> Core
   Core -- PlayerStatus --> SM
-  SM -- PlayerState (state事件) --> Core
-  Core -- player-state事件 --> App
+  SM -- PlayerStatus (state事件) --> Core
+  Core -- player-status事件 --> App
   App --> UI
   UI --> UIState
 ```
 
 - **mpv core → LibMPVController**：通过事件回调 / `get_property` 周期性获取底层状态。
 - **LibMPVController → MpvMediaPlayer**：发出 `'status'` 事件（`MPVStatus`），`MpvMediaPlayer` 监听并适配为 `PlaybackSession`，发出 `'session-change'` 事件。
-- **MpvMediaPlayer → CorePlayer**：`CorePlayer` 监听 `MediaPlayer.onSessionChange`，从 `PlaybackSession` 或 `getStatus()` 获取状态，更新 `PlayerStateMachine`。
-- **PlayerStateMachine → CorePlayer**：`emit('state', PlayerState)` 事件驱动 Timeline / RenderManager（以及 reset 流程）。
-- **CorePlayer → VideoPlayerApp**：将 `PlayerState` 作为 `'player-state'` 事件再对外抛出。
-- **VideoPlayerApp → Renderer**：经 `sendToPlaybackUIs('player-state', state)` 广播给视频窗口和控制栏。
-- **Renderer → 本地 UI 状态**：`ControlView.vue` 的 `handlePlayerState` 根据 phase/时间轴/错误来更新 loading、错误 overlay、timeline 等本地 state。
+- **MpvMediaPlayer → CorePlayer**：`CorePlayer` 监听 `MediaPlayer.onStatusChange`，从 `PlayerStatus` 获取状态，更新 `PlayerStateMachine`。
+- **PlayerStateMachine → CorePlayer**：`emit('state', PlayerStatus)` 事件驱动 Timeline / RenderManager（以及 reset 流程）。
+- **CorePlayer → VideoPlayerApp**：将 `PlayerStatus` 作为 `'player-status'` 事件再对外抛出。
+- **VideoPlayerApp → Renderer**：经 `sendToPlaybackUIs('player-status', status)` 广播给视频窗口和控制栏。
+- **Renderer → 本地 UI 状态**：`ControlView.vue` 的 `handlePlayerState`（消费的是 PlayerStatus）根据 phase/时间轴/错误来更新 loading、错误 overlay、timeline 等本地 state。
 
 ### 2. 关键节点详解
 
