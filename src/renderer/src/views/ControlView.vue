@@ -223,29 +223,10 @@ type PlayerState = {
   duration: number
   volume: number
   path: string | null
-  error: string | null
   isSeeking: boolean
   isNetworkBuffering: boolean
   networkBufferingPercent: number
-}
-
-const handleVideoTimeUpdate = (data: { currentTime: number; duration: number }) => {
-  // 在拖动进度条或跳转中时，不更新 currentTime，避免跳转
-  if (!isScrubbing.value && !isSeeking.value) {
-    currentTimeAdjustable.applyServerState(data.currentTime)
-  }
-  // 只在有有效值时更新 duration，避免播放结束时被设置为 0
-  if (typeof data.duration === 'number' && data.duration > 0) {
-    duration.value = data.duration
-  }
-}
-
-const handleVideoEnded = () => {
-  // 不立即改变 isPlaying，等待主进程响应回来的状态（phase === 'ended'）
-  // 播放结束时，将 currentTime 设置为 duration，而不是 0
-  if (duration.value > 0) {
-    currentTime.value = duration.value
-  }
+  errorMessage?: string
 }
 
 const handlePlayVideo = (file: { name: string; path: string }) => {
@@ -266,15 +247,6 @@ const handlePlayVideo = (file: { name: string; path: string }) => {
   isLoading.value = true
 }
 
-const handlePlayerError = (payload: { message: string }) => {
-  // 不立即改变 isPlaying，等待主进程响应回来的状态（phase === 'error'）
-  currentVideoName.value = `播放出错: ${payload.message}`
-}
-
-const handlePlayerEmbedded = (payload: { embedded: boolean; mode: string }) => {
-  console.log('player embedded mode:', payload)
-}
-
 const handlePlayerState = (state: PlayerState) => {
   console.log('state:', state)
   const wasSeeking = isSeeking.value
@@ -289,7 +261,9 @@ const handlePlayerState = (state: PlayerState) => {
 
   // 记录错误信息（由后端通过 PlayerState.error 传递而来）
   if (state.phase === 'error') {
-    playerError.value = state.error || '播放出错'
+    playerError.value = state.errorMessage || '播放出错'
+    // 错误时也同步一下标题，避免依赖额外的 player-error 通道
+    currentVideoName.value = `播放出错: ${playerError.value}`
   } else {
     playerError.value = null
   }
@@ -471,12 +445,8 @@ const toggleMute = () => {
 
 onMounted(() => {
   if (window.electronAPI) {
-    window.electronAPI.on('video-time-update', handleVideoTimeUpdate)
-    window.electronAPI.on('video-ended', handleVideoEnded)
     window.electronAPI.on('play-video', handlePlayVideo)
-    window.electronAPI.on('player-error', handlePlayerError)
-    window.electronAPI.on('player-embedded', handlePlayerEmbedded)
-    window.electronAPI.on('player-state', handlePlayerState)
+    window.electronAPI.on('player-status', handlePlayerState)
     window.electronAPI.on('playlist-updated', handlePlaylistUpdated)
     
     // 控制栏显示/隐藏 IPC 消息（macOS BrowserView 模式）
@@ -502,12 +472,8 @@ onUnmounted(() => {
   cleanupAutoHide()
   
   if (window.electronAPI) {
-    window.electronAPI.removeListener('video-time-update', handleVideoTimeUpdate)
-    window.electronAPI.removeListener('video-ended', handleVideoEnded)
     window.electronAPI.removeListener('play-video', handlePlayVideo)
-    window.electronAPI.removeListener('player-error', handlePlayerError)
-    window.electronAPI.removeListener('player-embedded', handlePlayerEmbedded)
-    window.electronAPI.removeListener('player-state', handlePlayerState)
+    window.electronAPI.removeListener('player-status', handlePlayerState)
     window.electronAPI.removeListener('playlist-updated', handlePlaylistUpdated)
   }
 })

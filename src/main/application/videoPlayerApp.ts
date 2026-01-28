@@ -87,9 +87,9 @@ export class VideoPlayerApp {
   private windowSyncTimer: NodeJS.Timeout | null = null
   private lastPlayerPhase: string = 'idle'
 
-  private readonly onEndedPlayNext = (state: { phase: string; path?: string | null }) => {  // 使用 PlayerStatus 的简化形式
+  private readonly onEndedPlayNext = (status: { phase: string; path?: string | null }) => {  // 使用 PlayerStatus 的简化形式
     const prev = this.lastPlayerPhase
-    const next = state.phase
+    const next = status.phase
     this.lastPlayerPhase = next
 
     if (prev === 'playing' && next === 'ended') {
@@ -99,17 +99,17 @@ export class VideoPlayerApp {
   private readonly onVideoTimeUpdate = (payload: unknown) => {
     this.sendToPlaybackUIs('video-time-update', payload)
   }
-  private readonly onPlayerStateBroadcast = (state: unknown) => {
-    this.sendToPlaybackUIs('player-state', state)
+  private readonly onPlayerStatusBroadcast = (status: unknown) => {
+    this.sendToPlaybackUIs('player-status', status)
   }
 
   constructor(private readonly corePlayer: CorePlayer) {
     this.windowManager = new WindowManager()
     this.config = new ConfigManager()
     this.playlist = new Playlist()
-    this.corePlayer.onPlayerState(this.onEndedPlayNext)
+    this.corePlayer.onPlayerStatus(this.onEndedPlayNext)
     this.corePlayer.on('video-time-update', this.onVideoTimeUpdate)
-    this.corePlayer.on('player-state', this.onPlayerStateBroadcast)
+    this.corePlayer.on('player-status', this.onPlayerStatusBroadcast)
   }
 
   /** 播放媒体（原 ApplicationService.playMedia 逻辑内联） */
@@ -130,8 +130,8 @@ export class VideoPlayerApp {
         await this.corePlayer.setVolume(opts.options.volume)
       }
       if (opts.options.autoResume !== false) {
-        const state = this.corePlayer.getPlayerState()
-        if (state.phase !== 'playing') {
+        const status = this.corePlayer.getPlayerStatus()
+        if (status.phase !== 'playing') {
           await this.corePlayer.resume()
         }
       }
@@ -164,8 +164,8 @@ export class VideoPlayerApp {
    * @returns true 如果有视频在播放、加载中、暂停
    */
   private hasActiveVideo(): boolean {
-    const state = this.corePlayer.getPlayerState()
-    const phase = state.phase
+    const status = this.corePlayer.getPlayerStatus()
+    const phase = status.phase
     return phase === 'loading' || 
            phase === 'playing' || 
            phase === 'paused'
@@ -173,9 +173,9 @@ export class VideoPlayerApp {
 
   /** 移除对 CorePlayer 的监听，在 cleanup 前调用，避免泄漏 */
   private releaseCorePlayerListeners(): void {
-    this.corePlayer.offPlayerState(this.onEndedPlayNext)
+    this.corePlayer.offPlayerStatus(this.onEndedPlayNext)
     this.corePlayer.off('video-time-update', this.onVideoTimeUpdate)
-    this.corePlayer.off('player-state', this.onPlayerStateBroadcast)
+    this.corePlayer.off('player-status', this.onPlayerStatusBroadcast)
   }
 
   getControlWindow(): BrowserWindow | null {
@@ -263,7 +263,7 @@ export class VideoPlayerApp {
       }
     }
 
-    this.corePlayer.resetState()
+    this.corePlayer.resetStatus()
 
     // UI 层职责：窗口管理
     const mainWindow = this.windowManager.getWindow('main')
@@ -311,13 +311,8 @@ export class VideoPlayerApp {
         }
       })
     } catch (error) {
-      this.sendToPlaybackUIs('player-error', {
-        message: error instanceof Error ? error.message : 'Unknown error'
-      })
-      this.sendToPlaybackUIs('player-embedded', {
-        embedded: false,
-        mode: 'none'
-      })
+      // 统一使用 player-status 通道承载错误信息（phase=error + errorMessage）
+      this.corePlayer.setError(error instanceof Error ? error.message : 'Unknown error')
     }
   }
 
@@ -376,8 +371,8 @@ export class VideoPlayerApp {
 
   /** 处理 control-play IPC：根据状态决定是播放当前项还是恢复播放 */
   async handleControlPlay(): Promise<void> {
-    const state = this.corePlayer.getPlayerState()
-    if (state.phase === 'ended' || state.phase === 'stopped') {
+    const status = this.corePlayer.getPlayerStatus()
+    if (status.phase === 'ended' || status.phase === 'stopped') {
       await this.playCurrentFromPlaylist()
     } else {
       await this.resumePlayback()

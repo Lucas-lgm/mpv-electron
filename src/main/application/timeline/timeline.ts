@@ -33,20 +33,20 @@ export class Timeline extends EventEmitter {
     this.getStatusFn = options.getStatus
   }
 
-  handlePlayerStateChange(state: PlayerPhase) {
-    if (state === 'playing') {
+  handlePlayerStateChange(phase: PlayerPhase) {
+    if (phase === 'playing') {
       this.start()
     } else if (
-      state === 'paused' ||
-      state === 'stopped' ||
-      state === 'ended' ||
-      state === 'error' ||
-      state === 'idle' ||
-      state === 'loading'
+      phase === 'paused' ||
+      phase === 'stopped' ||
+      phase === 'ended' ||
+      phase === 'error' ||
+      phase === 'idle' ||
+      phase === 'loading'
     ) {
       this.stop()
     }
-    if (state === 'idle' || state === 'stopped') {
+    if (phase === 'idle' || phase === 'stopped') {
       this.update(0, 0)
     }
   }

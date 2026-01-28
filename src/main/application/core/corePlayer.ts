@@ -36,10 +36,14 @@ export interface CorePlayer extends EventEmitter {
   setVolume(volume: number): Promise<void>
   getCurrentSession(): PlaybackSession | null
   cleanup(): Promise<void>
-  getPlayerState(): PlayerStatus
-  resetState(): void
-  onPlayerState(listener: (state: PlayerStatus) => void): void
-  offPlayerState(listener: (state: PlayerStatus) => void): void
+  getPlayerStatus(): PlayerStatus
+  resetStatus(): void
+  /** 直接驱动状态机：设置阶段（用于业务侧纠偏/兜底） */
+  setPhase(phase: PlayerPhase): void
+  /** 直接驱动状态机：设置错误（统一走 player-status） */
+  setError(message: string): void
+  onPlayerStatus(listener: (status: PlayerStatus) => void): void
+  offPlayerStatus(listener: (status: PlayerStatus) => void): void
   sendKey(key: string): Promise<void>
   debugVideoState(): Promise<void>
   debugHdrStatus(): Promise<void>
@@ -53,7 +57,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   private stateMachine = new PlayerStateMachine()
   private timeline: Timeline | null = null
   private timelineListener?: (payload: { currentTime: number; duration: number; updatedAt: number }) => void
-  private stateMachineStateListener?: (st: PlayerStatus) => void
+  private stateMachineStateListener?: (status: PlayerStatus) => void
   private pendingResizeTimer: NodeJS.Timeout | null = null
   private lastPhysicalWidth: number = -1
   private lastPhysicalHeight: number = -1
@@ -94,14 +98,14 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     
     // 数据驱动架构：renderLoop 持续运行，根据状态决定是否渲染，
     // 同时所有 PlayerStatus 变化都会经 CorePlayer 再转发一遍给上层（VideoPlayerApp）。
-    this.stateMachineStateListener = (st: PlayerStatus) => {
-      this.timeline?.handlePlayerStateChange(st.phase)
+    this.stateMachineStateListener = (status: PlayerStatus) => {
+      this.timeline?.handlePlayerStateChange(status.phase)
       // 确保渲染循环运行（如果还没运行）
       if (this.renderManager && this.shouldStartRenderLoop()) {
         this.renderManager.start()
       }
-      // 向外部广播 player-state，覆盖 resetState / mpv 回写等所有来源
-      this.emit('player-state', st)
+      // 向外部广播 player-status，覆盖 resetStatus / mpv 回写等所有来源
+      this.emit('player-status', status)
     }
     this.stateMachine.on('state', this.stateMachineStateListener)
     
@@ -244,7 +248,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.mediaPlayer.setHdrEnabled(enabled)
   }
 
-  resetState(): void {
+  resetStatus(): void {
     this.stateMachine.resetToIdle()
   }
 
@@ -254,13 +258,13 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       throw new Error('Failed to prepare media player for playback')
     }
     try {
-      this.resetState()
+      this.resetStatus()
       await this.mediaPlayer.play(media)
       // 播放后同步窗口大小（此时播放器已初始化）
       await this.syncWindowSize()
       // 检查是否需要启动渲染循环
-      const currentState = this.getPlayerState()
-      if (currentState.phase === 'playing' && this.renderManager) {
+      const currentStatus = this.getPlayerStatus()
+      if (currentStatus.phase === 'playing' && this.renderManager) {
         this.renderManager.start()
       }
     } catch (error) {
@@ -422,15 +426,15 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.stateMachine.setError(message)
   }
 
-  getPlayerState(): PlayerStatus {
+  getPlayerStatus(): PlayerStatus {
     return this.stateMachine.getState()
   }
 
-  onPlayerState(listener: (state: PlayerStatus) => void) {
+  onPlayerStatus(listener: (status: PlayerStatus) => void) {
     this.stateMachine.on('state', listener)
   }
 
-  offPlayerState(listener: (state: PlayerStatus) => void) {
+  offPlayerStatus(listener: (status: PlayerStatus) => void) {
     this.stateMachine.off('state', listener)
   }
 

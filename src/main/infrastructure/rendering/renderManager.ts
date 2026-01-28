@@ -7,7 +7,7 @@ import type { MediaPlayer } from '../../application/core/MediaPlayer'
  */
 export class RenderManager {
   private mediaPlayer: MediaPlayer | null = null
-  private getState: () => PlayerStatus
+  private getPlayerStatus: () => PlayerStatus
   
   // 渲染循环状态
   private renderLoopActive: boolean = false
@@ -32,9 +32,9 @@ export class RenderManager {
   private lastRenderRequestTime: number = 0
   private renderRequestCount: number = 0
 
-  constructor(mediaPlayer: MediaPlayer | null, getState: () => PlayerStatus) {
+  constructor(mediaPlayer: MediaPlayer | null, getPlayerStatus: () => PlayerStatus) {
     this.mediaPlayer = mediaPlayer
-    this.getState = getState
+    this.getPlayerStatus = getPlayerStatus
   }
 
   /**
@@ -47,9 +47,9 @@ export class RenderManager {
   /**
    * 统一的渲染判断逻辑（完全数据驱动）
    */
-  private shouldRender(state: PlayerStatus): boolean {
+  private shouldRender(status: PlayerStatus): boolean {
     // 1. Seek 过程中不渲染
-    if (state.isSeeking) {
+    if (status.isSeeking) {
       return false
     }
     
@@ -68,14 +68,14 @@ export class RenderManager {
     if (this.pendingResizeRender) {
       this.pendingResizeRender = false // 清除标记
       // 只在非播放状态时渲染（播放中由循环自动处理）
-      if (state.phase !== 'playing') {
+      if (status.phase !== 'playing') {
         return true
       }
       return false
     }
     
     // 5. 正常播放状态渲染
-    if (state.phase === 'playing') {
+    if (status.phase === 'playing') {
       return true
     }
     
@@ -133,10 +133,10 @@ export class RenderManager {
   private renderLoop = (): void => {
     if (!this.renderLoopActive) return
     
-    const currentState = this.getState()
+    const currentStatus = this.getPlayerStatus()
     
     // 使用统一的判断逻辑
-    if (this.shouldRender(currentState)) {
+    if (this.shouldRender(currentStatus)) {
       // 检测渲染是否跟上，如果跟不上则降低间隔（增加频率）
       this.checkAndAdjustRenderInterval()
       
@@ -259,9 +259,9 @@ export class RenderManager {
       this.resizeStableTimer = null
       // 100ms 内没有新的 resize 事件，认为已稳定
       this.isResizing = false
-      const currentState = this.getState()
+      const currentStatus = this.getPlayerStatus()
       // 只在非播放状态时标记需要渲染（播放中由循环自动处理）
-      if (currentState.phase !== 'playing') {
+      if (currentStatus.phase !== 'playing') {
         this.pendingResizeRender = true
         console.log('[RenderManager] ✅ Resize stabilized, marked for render (non-playing)')
       } else {
