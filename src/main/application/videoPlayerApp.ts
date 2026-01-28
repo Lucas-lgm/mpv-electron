@@ -287,10 +287,11 @@ export class VideoPlayerApp {
     // 设置视频窗口（同时设置 MpvMediaPlayer 的 windowId）
     await this.corePlayer.setVideoWindow(videoWindow)
 
-    // 初始化播放器、挂载窗口，供 RenderManager / Timeline 使用
+    // 初始化播放器、挂载窗口，供 RenderManager 使用
     await this.corePlayer.ensureMediaPlayerReadyForPlayback()
 
-    this.sendToPlaybackUIs('play-video', {
+    // 通知播放 UI：当前播放条目已切换
+    this.sendToPlaybackUIs('current-video-changed', {
       name: target.name,
       path: target.path
     })

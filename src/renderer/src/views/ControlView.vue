@@ -445,7 +445,8 @@ const toggleMute = () => {
 
 onMounted(() => {
   if (window.electronAPI) {
-    window.electronAPI.on('play-video', handlePlayVideo)
+    // 当前播放条目变更通知（由主进程广播）
+    window.electronAPI.on('current-video-changed', handlePlayVideo)
     window.electronAPI.on('player-status', handlePlayerState)
     window.electronAPI.on('playlist-updated', handlePlaylistUpdated)
     
@@ -472,7 +473,7 @@ onUnmounted(() => {
   cleanupAutoHide()
   
   if (window.electronAPI) {
-    window.electronAPI.removeListener('play-video', handlePlayVideo)
+    window.electronAPI.removeListener('current-video-changed', handlePlayVideo)
     window.electronAPI.removeListener('player-status', handlePlayerState)
     window.electronAPI.removeListener('playlist-updated', handlePlaylistUpdated)
   }
