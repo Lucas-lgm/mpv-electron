@@ -12,6 +12,7 @@ import { Media } from './domain/models/Media'
 import { Playlist } from './domain/models/Playlist'
 import { PlaybackSession, PlaybackStatus } from './domain/models/Playback'
 import { MpvAdapter, type MPVStatus } from './infrastructure/mpv'
+import type { PlayerStatus } from './application/core/MediaPlayer'
 
 export async function testDomainModels(): Promise<void> {
   console.log('\n🧪 ========== 领域模型测试 ==========\n')
@@ -76,13 +77,24 @@ export async function testDomainModels(): Promise<void> {
   console.log(`   ✅ MPV phase → PlaybackStatus: ${mpvStatus.phase} → ${adaptedSession.status}`)
   console.log(`   ✅ 进度转换: ${adaptedSession.progress.percentage.toFixed(1)}%`)
 
-  // 测试 PlayerStateMachine（session → getState）
+  // 测试 PlayerStateMachine（PlayerStatus → getState）
   console.log('\n5️⃣ 测试 PlayerStateMachine')
   const { PlayerStateMachine } = await import('./application/state/playerState')
   const sm = new PlayerStateMachine()
-  sm.updateFromStatus({
-    ...mpvStatus,
-  })
+  // 将 MPVStatus 转换为 PlayerStatus
+  const playerStatus: PlayerStatus = {
+    currentTime: mpvStatus.position ?? 0,
+    duration: mpvStatus.duration ?? 0,
+    volume: mpvStatus.volume ?? 100,
+    isPaused: mpvStatus.phase === 'paused',
+    isSeeking: mpvStatus.isSeeking ?? false,
+    isNetworkBuffering: mpvStatus.isNetworkBuffering ?? false,
+    networkBufferingPercent: mpvStatus.networkBufferingPercent ?? 0,
+    path: mpvStatus.path,
+    phase: mpvStatus.phase ?? 'idle',
+    errorMessage: mpvStatus.errorMessage
+  }
+  sm.updateFromStatus(playerStatus)
   const state = sm.getState()
   console.log(`   ✅ updateFromStatus → getState: phase=${state.phase} path=${state.path}`)
   let emitted = false

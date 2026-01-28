@@ -1,7 +1,6 @@
 import { BrowserWindow, BrowserView, screen } from 'electron'
 import { EventEmitter } from 'events'
 import { PlayerStateMachine, type PlayerState, type PlayerPhase } from '../state/playerState'
-import type { MPVStatus } from '../../infrastructure/mpv'
 import { MpvMediaPlayer } from '../../infrastructure/mpv'
 import { getNSViewPointer, getHWNDPointer } from '../../infrastructure/platform/nativeHelper'
 import { Timeline } from '../timeline/timeline'
@@ -71,20 +70,8 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     this.timeline = new Timeline({
       interval: 100,
       getStatus: () => {
-        const status = this.getStatus()
-        if (!status) return null
-        // 将 PlayerStatus 适配为 MPVStatus（临时方案，等 Timeline 支持 PlayerStatus）
-        return {
-          position: status.currentTime,
-          duration: status.duration,
-          volume: status.volume,
-          path: status.path,
-          phase: status.phase,
-          isSeeking: status.isSeeking,
-          isNetworkBuffering: status.isNetworkBuffering,
-          networkBufferingPercent: status.networkBufferingPercent,
-          errorMessage: status.errorMessage
-        }
+        // 直接返回 PlayerStatus，Timeline 已支持
+        return this.getStatus()
       }
     })
     this.timelineListener = (payload) => {
@@ -109,18 +96,19 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       } else {
         // 如果 getStatus() 返回 null，说明 controller 还未初始化
         // 但从 session 中我们可以获取基本信息来更新状态机
-        const mpvStatus: MPVStatus = {
-          position: session.progress.currentTime,
+        const playerStatus: PlayerStatus = {
+          currentTime: session.progress.currentTime,
           duration: session.progress.duration,
           volume: session.volume,
-          path: session.media?.uri || null,
-          phase: this.mapPlaybackStatusToPhase(session.status),
+          isPaused: session.status === PlaybackStatus.PAUSED,
           isSeeking: session.isSeeking,
           isNetworkBuffering: session.networkBuffering.isBuffering,
           networkBufferingPercent: session.networkBuffering.bufferingPercent,
+          path: session.media?.uri || null,
+          phase: this.mapPlaybackStatusToPhase(session.status),
           errorMessage: session.error || undefined
         }
-        this.stateMachine.updateFromStatus(mpvStatus)
+        this.stateMachine.updateFromStatus(playerStatus)
       }
     }
     this.mediaPlayer.onSessionChange(this.sessionChangeListener)
@@ -443,19 +431,8 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
    * 从 PlayerStatus 更新状态机
    */
   private updateFromPlayerStatus(status: PlayerStatus): void {
-    // 将 PlayerStatus 适配为 MPVStatus 格式（临时方案，等 PlayerStateMachine 支持 PlayerStatus）
-    const mpvStatus: MPVStatus = {
-      position: status.currentTime,
-      duration: status.duration,
-      volume: status.volume,
-      path: status.path,
-      phase: status.phase,
-      isSeeking: status.isSeeking,
-      isNetworkBuffering: status.isNetworkBuffering,
-      networkBufferingPercent: status.networkBufferingPercent,
-      errorMessage: status.errorMessage
-    }
-    this.stateMachine.updateFromStatus(mpvStatus)
+    // 直接传递 PlayerStatus，PlayerStateMachine 已支持
+    this.stateMachine.updateFromStatus(status)
   }
 
   /**

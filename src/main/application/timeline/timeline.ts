@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
-import type { MPVStatus } from '../../infrastructure/mpv'
 import type { PlayerPhase } from '../state/playerState'
+import type { PlayerStatus } from '../core/MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 import { TIMELINE_CONFIG } from '../constants'
 
@@ -14,7 +14,7 @@ type TimelinePayload = {
 
 type TimelineOptions = {
   interval?: number
-  getStatus?: () => MPVStatus | Promise<MPVStatus | null> | null
+  getStatus?: () => PlayerStatus | Promise<PlayerStatus | null> | null
 }
 
 export class Timeline extends EventEmitter {
@@ -125,7 +125,7 @@ export class Timeline extends EventEmitter {
 
   async broadcastTimeline(overrides: { currentTime?: number; duration?: number } = {}) {
     // overrides = this.applySeekProtection(overrides)
-    let status: MPVStatus | null = null
+    let status: PlayerStatus | null = null
     if (this.getStatusFn) {
       const s = await Promise.resolve(this.getStatusFn())
       status = s || null
@@ -134,7 +134,7 @@ export class Timeline extends EventEmitter {
       overrides.currentTime !== undefined
         ? overrides.currentTime
         : status
-        ? status.position
+        ? status.currentTime
         : this.currentTime
     const nextDuration =
       overrides.duration !== undefined

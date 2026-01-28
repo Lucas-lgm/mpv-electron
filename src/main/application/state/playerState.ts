@@ -1,9 +1,8 @@
 import { EventEmitter } from 'events'
-import type { MPVStatus } from '../../infrastructure/mpv'
 import { Media } from '../../domain/models/Media'
 import { PlaybackSession, PlaybackStatus } from '../../domain/models/Playback'
-import { MpvAdapter } from '../../infrastructure/mpv'
 import type { PlayerPhase, PlayerState } from './playerStateTypes'
+import type { PlayerStatus } from '../core/MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 
 export type { PlayerState, PlayerPhase } from './playerStateTypes'
@@ -109,20 +108,41 @@ export class PlayerStateMachine extends EventEmitter {
     this.setState({ ...this.state, session: nextSession })
   }
 
-  updateFromStatus(status: MPVStatus): void {
-    const overridePhase = this.derivePhase(status)
+  /**
+   * 从 PlayerStatus 更新状态机
+   */
+  updateFromStatus(status: PlayerStatus): void {
+    const phase = this.derivePhase(status)
+    const playbackStatus = phaseToStatus(phase)
     const media = status.path ? Media.create(status.path) : null
-    const session = MpvAdapter.toPlaybackSession(status, media, { overridePhase })
+    
+    const session = PlaybackSession.create(
+      media,
+      playbackStatus,
+      {
+        currentTime: status.currentTime,
+        duration: status.duration,
+        updatedAt: Date.now()
+      },
+      status.volume,
+      {
+        isBuffering: status.isNetworkBuffering,
+        bufferingPercent: status.networkBufferingPercent
+      },
+      playbackStatus === PlaybackStatus.ERROR ? (status.errorMessage ?? null) : null,
+      status.isSeeking
+    )
     this.setState({ session })
   }
 
-  private derivePhase(status: MPVStatus): PlayerPhase {
+  private derivePhase(status: PlayerStatus): PlayerPhase {
     if (status.phase === 'stopped') return 'stopped'
     if (status.phase === 'idle' || !status.path) return 'idle'
     if (status.phase === 'paused') return 'paused'
     if (status.phase === 'playing') return 'playing'
     if (status.phase === 'ended') return 'ended'
     if (status.phase === 'error') return 'error'
+    if (status.phase === 'loading') return 'loading'
     return 'idle'
   }
 
