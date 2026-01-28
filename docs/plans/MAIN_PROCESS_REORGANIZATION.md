@@ -45,7 +45,7 @@ src/main/application/
 │   └── timeline.ts            # 移动：时间轴管理
 ├── windows/
 │   └── windowManager.ts       # 移动：窗口管理
-├── presentation/
+├── command/
 │   └── ipcHandlers.ts         # 移动：IPC 处理
 └── videoPlayerApp.ts          # 移动：顶层应用协调器
 ```
@@ -56,7 +56,7 @@ src/main/application/
 - `playerStateTypes.ts` → `application/state/playerStateTypes.ts`：状态类型
 - `timeline.ts` → `application/timeline/timeline.ts`：时间轴
 - `windowManager.ts` → `application/windows/windowManager.ts`：窗口管理
-- `ipcHandlers.ts` → `application/presentation/ipcHandlers.ts`：IPC 处理
+- `ipcHandlers.ts` → `application/command/ipcHandlers.ts`：IPC 处理
 - `videoPlayerApp.ts` → `application/videoPlayerApp.ts`：顶层协调器
 
 ### 2.3 Domain（领域层）
@@ -92,7 +92,7 @@ src/main/
 2. **application/videoPlayerApp.ts**：
    - `./windowManager` → `./windows/windowManager`
    - `./corePlayer` → `./core/corePlayer`
-   - `./ipcHandlers` → `./presentation/ipcHandlers`
+   - `./ipcHandlers` → `./command/ipcHandlers`
 
 3. **application/core/corePlayer.ts**：
    - `./playerState` → `../state/playerState`
@@ -101,7 +101,7 @@ src/main/
    - `./timeline` → `../timeline/timeline`
    - `./renderManager` → `../../infrastructure/rendering/renderManager`
 
-4. **application/presentation/ipcHandlers.ts**：
+4. **application/command/ipcHandlers.ts**：
    - `./videoPlayerApp` → `../videoPlayerApp`
    - `./corePlayer` → `../core/corePlayer`
 
@@ -153,7 +153,7 @@ src/main/
 **阶段 3：应用层核心**（高风险）
 1. 移动 `windowManager.ts` → `application/windows/windowManager.ts`
 2. 移动 `corePlayer.ts` → `application/core/corePlayer.ts`
-3. 移动 `ipcHandlers.ts` → `application/presentation/ipcHandlers.ts`
+3. 移动 `ipcHandlers.ts` → `application/command/ipcHandlers.ts`
 4. 移动 `videoPlayerApp.ts` → `application/videoPlayerApp.ts`
 5. 更新 `main.ts` 导入
 6. 全面测试
@@ -213,7 +213,7 @@ src/main/
 
 - ✅ `windowManager.ts` → `application/windows/windowManager.ts`（更新 preload/renderer 路径）
 - ✅ `corePlayer.ts` → `application/core/corePlayer.ts`（更新所有导入路径）
-- ✅ `ipcHandlers.ts` → `application/presentation/ipcHandlers.ts`（更新导入路径）
+- ✅ `ipcHandlers.ts` → `application/command/ipcHandlers.ts`（更新导入路径）
 - ✅ `videoPlayerApp.ts` → `application/videoPlayerApp.ts`（更新导入路径与 __dirname 路径）
 - ✅ 更新 `main.ts` 导入路径
 - ✅ 构建通过

@@ -68,14 +68,18 @@
 ### 依赖关系
 
 ```
-领域层 (domain)
+命令层 (command/ipc)
     ↓
-应用层 (application) 
+应用层 (application)
     ↓
-基础设施层 (infrastructure)
-    ↓
-表现层 (presentation/ipc)
+领域层 (domain) ← 基础设施层 (infrastructure)
 ```
+
+**说明**：
+- **命令层**：接收外部 IPC 指令，调用应用层方法
+- **应用层**：协调业务逻辑，使用领域模型和基础设施
+- **领域层**：纯业务模型，不依赖其他层
+- **基础设施层**：实现技术细节，依赖领域层接口（如 MediaPlayer），实现领域模型（如 Media, Playback）
 
 ## 🎨 设计方案
 

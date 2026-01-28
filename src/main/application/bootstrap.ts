@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { createCorePlayer } from './core/corePlayer'
 import { VideoPlayerApp } from './videoPlayerApp'
-import { setupIpcHandlers } from './presentation/ipcHandlers'
+import { setupIpcHandlers } from './command/ipcHandlers'
 
 let _app: VideoPlayerApp | null = null
 

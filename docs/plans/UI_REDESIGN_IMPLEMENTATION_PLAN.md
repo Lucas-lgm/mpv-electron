@@ -68,7 +68,7 @@
 - `src/renderer/src/types/mount.ts` - 挂载路径类型
 
 #### 主进程（Main Process）
-- `src/main/application/presentation/ipcHandlers.ts` - 新增挂载路径IPC处理
+- `src/main/application/command/ipcHandlers.ts` - 新增挂载路径IPC处理
 
 ---
 
@@ -693,7 +693,7 @@ export function useMountPaths() {
 - `src/renderer/src/style.css` - 更新全局样式
 
 **IPC处理** (1个):
-- `src/main/application/presentation/ipcHandlers.ts` - 添加挂载路径相关处理
+- `src/main/application/command/ipcHandlers.ts` - 添加挂载路径相关处理
 
 ---
 
