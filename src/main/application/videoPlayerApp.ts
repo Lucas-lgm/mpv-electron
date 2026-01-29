@@ -132,6 +132,8 @@ export class VideoPlayerApp {
   private isQuitting: boolean = false
   private windowSyncTimer: NodeJS.Timeout | null = null
   private lastPlayerPhase: string = 'idle'
+  /** 当前期望播放的视频路径（用于过滤过期的播放状态） */
+  private currentVideoPath: string | null = null
 
   private readonly onEndedPlayNext = (status: PlayerStatus) => {
     const prev = this.lastPlayerPhase
@@ -147,6 +149,18 @@ export class VideoPlayerApp {
    * 业务侧监听：记忆播放进度 + 转发给前端
    */
   private readonly onPlayerStatusBroadcast = (status: PlayerStatus) => {
+    // 过滤掉不属于当前期望视频的状态更新（避免快速切换视频时的状态乱序/闪烁）
+    // 如果 status.path 为空（如 idle/stopped），通常允许通过，除非明确需要过滤
+    // 但为了保险，如果当前有期望视频，且状态中的 path 存在且不匹配，则丢弃
+    if (this.currentVideoPath && status.path && status.path !== this.currentVideoPath) {
+      logger.debug('Ignored stale player status', { 
+        expected: this.currentVideoPath, 
+        received: status.path,
+        phase: status.phase 
+      })
+      return
+    }
+
     // 1) 先做业务：记忆播放进度
     const path = status.path
     
@@ -415,6 +429,9 @@ export class VideoPlayerApp {
       name: target.name,
       path: target.path
     })
+
+    // 更新当前期望视频路径
+    this.currentVideoPath = target.path
 
     // 起播时间：优先使用显式 override，其次使用 PlaylistItem 自带的 startTime
     const effectiveStartTime =
