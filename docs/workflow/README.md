@@ -11,6 +11,7 @@ docs/workflow/
 ├── README.md                    # 本文件，工作流文档索引
 ├── PLANNING_TEMPLATE.md         # 规划文档模板
 ├── PROMPT_TEMPLATES.md          # 提示词模板库
+├── TRAE_CONFIG.md               # Trae 环境配置与使用指南
 ├── WORKFLOW_CHECKLIST.md        # 工作流检查清单
 ├── CHANGELOG.md                 # 工作流文档更新日志
 └── EXAMPLES.md                   # 实际使用示例
