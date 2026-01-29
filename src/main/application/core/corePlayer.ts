@@ -9,6 +9,8 @@ import type { PlaybackSession } from '../../domain/models/Playback'
 import type { MediaPlayer, PlayerStatus } from './MediaPlayer'
 import { createLogger } from '../../infrastructure/logging'
 import { WINDOW_DELAYS } from '../constants'
+import { TaskQueue } from '../../infrastructure/scheduling/TaskQueue'
+import { PlaybackScheduler } from './PlaybackScheduler'
 
 const logger = createLogger('CorePlayer')
 
@@ -60,11 +62,14 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   private renderManager: RenderManager | null = null
   private mediaPlayer: MediaPlayer
   private statusChangeListener?: (status: PlayerStatus) => void
+  private taskQueue = new TaskQueue()
+  private scheduler: PlaybackScheduler
 
   constructor(mediaPlayer?: MediaPlayer) {
     super()
     // 支持依赖注入，默认使用 MpvMediaPlayer
     this.mediaPlayer = mediaPlayer || new MpvMediaPlayer()
+    this.scheduler = new PlaybackScheduler(this.taskQueue, this.stateMachine)
     
     // 初始化渲染管理器（使用 MediaPlayer）
     this.renderManager = new RenderManager(
@@ -87,6 +92,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
       if (this.renderManager && this.shouldStartRenderLoop()) {
         this.renderManager.start()
       }
+      
       // 向外部广播 player-status，覆盖 resetStatus / mpv 回写等所有来源
       this.emit('player-status', status)
     }
@@ -236,10 +242,40 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   }
 
   async play(media: Media, startTime?: number): Promise<void> {
+    // 1. play 是一个重置性操作，使用 'clear_all' 策略
+    // 这会自动清除队列中所有积压的任务（如旧的 seek, pause 等），避免死锁和无效操作
+    // 同时不需要显式调用 stop()，因为 handlePlayTask 内部会处理，或者我们可以依赖 clear_all 的副作用
+    
+    // 注意：虽然 clear_all 清除了队列，但如果当前正在播放，我们可能仍需先停止？
+    // handlePlayTask 会调用 prepareMediaPlayerForPlayback -> resetStatus
+    // 如果 MPV 正在播放，直接 loadfile 会覆盖，MPV 本身支持。
+    // 但为了状态机一致性，如果非 idle/stopped，我们最好显式 stop。
+    // 可是如果我们 clear_all 了，stop 任务也会被清除...
+    // 实际上，play 任务本身应该是一个原子操作：确保环境就绪 -> 播放。
+    
+    // 为了简化和避免死锁（如 seek 阻塞导致无法 play），play 任务将清除一切阻碍。
+    // 并且 play 任务本身不需要 precondition（只要队列空了，它就可以执行，并在执行中处理状态）
+    // 或者，我们让 play 任务依赖于 "无条件执行"
+    
+    return this.scheduler.schedule({
+      type: 'play',
+      meta: { mediaUri: media.uri, startTime },
+      execute: () => this.handlePlayTask(media, startTime)
+    }, undefined, 'clear_all') // undefined condition = always executable immediately
+  }
+
+  private async handlePlayTask(media: Media, startTime?: number): Promise<void> {
+    const currentState = this.stateMachine.getState().phase
+    if (currentState !== 'idle' && currentState !== 'stopped' && currentState !== 'error') {
+       // 强制停止，不经过队列
+       await this.mediaPlayer.stop()
+    }
+    
     const windowId = await this.prepareMediaPlayerForPlayback()
     if (!windowId) {
       throw new Error('Failed to prepare media player for playback')
     }
+
     try {
       this.resetStatus()
       await this.mediaPlayer.play(media, startTime)
@@ -318,22 +354,42 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   }
 
   async pause(): Promise<void> {
-    await this.mediaPlayer.pause()
+    return this.scheduler.schedule({
+      type: 'pause',
+      id: 'playback_toggle', // 共享 ID，与 resume 互斥
+      execute: async () => {
+        await this.mediaPlayer.pause()
+      }
+    }, (phase) => phase === 'playing' || phase === 'paused', 'replace')
   }
 
   async resume(): Promise<void> {
-    await this.mediaPlayer.resume()
+    return this.scheduler.schedule({
+      type: 'resume',
+      id: 'playback_toggle', // 共享 ID，与 pause 互斥
+      execute: async () => {
+        await this.mediaPlayer.resume()
+      }
+    }, (phase) => phase === 'playing' || phase === 'paused', 'replace')
   }
 
   async seek(time: number): Promise<void> {
-    await this.mediaPlayer.seek(time)
-    const status = this.mediaPlayer.getStatus()
-    if (status) {
-      this.updateFromPlayerStatus(status)
-    }
+    return this.scheduler.schedule({
+      type: 'seek',
+      id: 'seek', // 相同 ID 的任务会被替换
+      meta: { time },
+      execute: async () => {
+        await this.mediaPlayer.seek(time)
+        const status = this.mediaPlayer.getStatus()
+        if (status) {
+          this.updateFromPlayerStatus(status)
+        }
+      }
+    }, (phase) => phase === 'playing' || phase === 'paused', 'replace')
   }
 
   async setVolume(volume: number): Promise<void> {
+    // 音量是全局属性，不需要等待播放状态，直接执行以保证响应速度
     await this.mediaPlayer.setVolume(volume)
     const status = this.mediaPlayer.getStatus()
     if (status) {
@@ -342,7 +398,13 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
   }
 
   async stop(): Promise<void> {
-    await this.mediaPlayer.stop()
+    // Stop 也可以清除之前的 seek/pause 等待任务
+    return this.scheduler.schedule({
+      type: 'stop',
+      execute: async () => {
+        await this.mediaPlayer.stop()
+      }
+    }, undefined, 'clear_all')
   }
 
   getCurrentSession(): PlaybackSession | null {
@@ -357,6 +419,7 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
     if (this.isCleaningUp) return
     this.isCleaningUp = true
     try {
+      this.scheduler.clear()
       this.renderManager?.cleanup()
       if (this.pendingResizeTimer) {
         clearTimeout(this.pendingResizeTimer)
@@ -415,7 +478,12 @@ class CorePlayerImpl extends EventEmitter implements CorePlayer {
 
 
   async sendKey(key: string): Promise<void> {
+    // 按键发送通常用于快捷键或调试，不需要严格串行化，避免阻塞
     await this.mediaPlayer.sendKey(key)
+    const status = this.mediaPlayer.getStatus()
+    if (status) {
+      this.updateFromPlayerStatus(status)
+    }
   }
  
   async debugVideoState(): Promise<void> {
