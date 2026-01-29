@@ -107,7 +107,17 @@ class ConfigManager {
    */
   setLastPosition(path: string, position: number): void {
     if (!path) return
-    if (typeof position !== 'number' || !isFinite(position) || position <= 0) return
+    if (typeof position !== 'number' || !isFinite(position)) return
+    
+    // 如果进度 <= 0，则移除记录（视为重置）
+    if (position <= 0) {
+      if (path in this.playbackPositions) {
+        delete this.playbackPositions[path]
+        this.save()
+      }
+      return
+    }
+
     this.playbackPositions[path] = position
     this.save()
   }
@@ -139,23 +149,30 @@ export class VideoPlayerApp {
   private readonly onPlayerStatusBroadcast = (status: PlayerStatus) => {
     // 1) 先做业务：记忆播放进度
     const path = status.path
-    const currentTime = status.currentTime
-    if (
-      path &&
-      typeof currentTime === 'number' &&
-      isFinite(currentTime) &&
-      currentTime > 0
-    ) {
-      // 只在「稳定阶段」记录进度，避免 loading 抖动：
-      // playing / paused / stopped / ended / error
-      if (
-        status.phase === 'playing' ||
-        status.phase === 'paused' ||
-        status.phase === 'stopped' ||
-        status.phase === 'ended' ||
-        status.phase === 'error'
-      ) {
-        this.config.setLastPosition(path, currentTime)
+    
+    if (path) {
+      if (status.phase === 'ended') {
+        // 播放结束，重置进度为 0 (删除记录)
+        this.config.setLastPosition(path, 0)
+      } else {
+        const currentTime = status.currentTime
+        if (
+          typeof currentTime === 'number' &&
+          isFinite(currentTime) &&
+          currentTime > 0
+        ) {
+          // 只在「稳定阶段」记录进度，避免 loading 抖动：
+          // playing / paused / stopped / error
+          // 注意：ended 已经在上面单独处理了
+          if (
+            status.phase === 'playing' ||
+            status.phase === 'paused' ||
+            status.phase === 'stopped' ||
+            status.phase === 'error'
+          ) {
+            this.config.setLastPosition(path, currentTime)
+          }
+        }
       }
     }
 
