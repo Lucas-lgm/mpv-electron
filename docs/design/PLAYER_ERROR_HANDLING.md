@@ -60,7 +60,7 @@
 
 ### 4. 技术简要说明（面向产品/PM）
 
-（技术细节完整版本参见：`docs/development/MPV_ERROR_PROPAGATION.md`）
+（技术细节完整版本参见：`docs/analysis/MPV_ERROR_PROPAGATION.md`）
 
 - **底层采集**：
   - native libmpv 通过事件回调输出 log（包括 `[mpv:error:cplayer] ...`），后台会记录最近的错误和一段日志片段。

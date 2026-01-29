@@ -138,7 +138,7 @@ Key files:
 
 - [native/mpv_render_gl.mm](native/mpv_render_gl.mm) (HDR/SDR configuration)
 - [mpv/video/out/gpu_next/video.c](mpv/video/out/gpu_next/video.c) (libplacebo rendering & subtitle fixes)
-- [docs/GPU_NEXT_INTEGRATION.md](docs/GPU_NEXT_INTEGRATION.md) (Migration details)
+- [docs/design/GPU_NEXT_INTEGRATION.md](docs/design/GPU_NEXT_INTEGRATION.md) (Migration details)
 
 ## Known Issues (Resolved)
 
@@ -217,23 +217,22 @@ The submodule tracks `release/0.41` branch from `git@github.com:Lucas-lgm/mpv.gi
 
 The project includes comprehensive documentation in the `docs/` directory:
 
-### Core Documentation
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Complete system architecture, interfaces, and design patterns (1700+ lines)
-- **[ARCHITECTURE_UPDATE_GUIDE.md](docs/ARCHITECTURE_UPDATE_GUIDE.md)** - Guide for keeping architecture documentation synchronized with code
+- **[ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)** - Complete system architecture, interfaces, and design patterns (1700+ lines)
+- **[ARCHITECTURE_UPDATE_GUIDE.md](docs/architecture/ARCHITECTURE_UPDATE_GUIDE.md)** - Guide for keeping architecture documentation synchronized with code
 
-### Development Guides
-- **[SETUP_GUIDE.md](docs/development/SETUP_GUIDE.md)** - Development environment setup and configuration
-- **[API_REFERENCE.md](docs/development/API_REFERENCE.md)** - Quick reference for core APIs and usage examples
-- **[TROUBLESHOOTING.md](docs/development/TROUBLESHOOTING.md)** - Common problems and solutions
+### Development
+- **[SETUP_GUIDE.md](docs/guides/SETUP_GUIDE.md)** - Development environment setup and configuration
+- **[API_REFERENCE.md](docs/reference/API_REFERENCE.md)** - Quick reference for core APIs and usage examples
+- **[TROUBLESHOOTING.md](docs/guides/TROUBLESHOOTING.md)** - Common problems and solutions
 
-### Feature Documentation
-- **[GPU_NEXT_INTEGRATION.md](docs/features/GPU_NEXT_INTEGRATION.md)** - Migration to gpu-next (libplacebo) backend for HDR
+### Features & Plans
+- **[GPU_NEXT_INTEGRATION.md](docs/design/GPU_NEXT_INTEGRATION.md)** - Migration to gpu-next (libplacebo) backend for HDR
 - **[PLANNING_SEMANTIC_REFACTORING.md](docs/plans/PLANNING_SEMANTIC_REFACTORING.md)** - Plan for semantic refactoring (domain-driven design)
 
-### Deployment & Distribution
-- **[DEPLOYMENT.md](docs/deployment/DEPLOYMENT.md)** - Complete guide for packaging and distribution
+### Deployment
+- **[DEPLOYMENT.md](docs/build/DEPLOYMENT.md)** - Complete guide for packaging and distribution
 
-### Development Workflow
+### Workflow
 - **[workflow/](docs/workflow/)** - AI-assisted development workflow and templates
   - `PROMPT_TEMPLATES.md` - Standardized prompt templates
   - `WORKFLOW_CHECKLIST.md` - Development workflow checklist

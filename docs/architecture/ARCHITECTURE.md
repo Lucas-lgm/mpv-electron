@@ -793,7 +793,7 @@ export type PlayerPhase =
 
 `PlayerStateMachine`/`CorePlayer`/`VideoPlayerApp` 与渲染进程之间的「命令通道 + 状态通道」数据流较为复杂，详细说明请见独立文档：
 
-- `docs/development/PLAYER_STATE_DATAFLOW.md`
+- `docs/analysis/PLAYER_STATE_DATAFLOW.md`
 
 **状态说明**：
 
